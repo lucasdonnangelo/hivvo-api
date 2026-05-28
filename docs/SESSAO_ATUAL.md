@@ -8,8 +8,8 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 ## Estado do Projeto
 
 **Fase atual:** Fase 1 — Backend FastAPI + Supabase  
-**Próxima tarefa:** #6 — Endpoints de parcelas  
-**Última tarefa concluída:** #5 — Endpoints de cartões e faturas
+**Próxima tarefa:** #7 — Endpoints de estatísticas  
+**Última tarefa concluída:** #6 — Endpoints de parcelas
 
 ---
 
@@ -36,7 +36,7 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - [x] 3. Endpoints de auth (registro + login + JWT)
 - [x] 4. Endpoints de transações e categorias
 - [x] 5. Endpoints de cartões e faturas
-- [ ] 6. Endpoints de parcelas
+- [x] 6. Endpoints de parcelas
 - [ ] 7. Endpoints de estatísticas
 - [ ] 8. Endpoint de IA (proxy Gemini)
 - [ ] 9. Setup React + Vite + Tailwind + PWA + layouts
@@ -98,6 +98,10 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - `app/routers/cards.py` — GET/POST/PUT/DELETE + fatura aberta calculada em tempo real
 - `app/routers/invoices.py` — GET /{card_id}/invoices (lista), GET /{card_id}/invoices/{ano}/{mes} (detalhe)
 
+### Tarefa #6 — Parcelas
+- `app/schemas/installment.py` — ParcelaUpdate, ParcelaResponse
+- `app/routers/installments.py` — GET (filtros: cartao_id, pago, cancelado, mes, ano), PUT (marcar paga/cancelar), DELETE (individual)
+
 ---
 
 ## Regras de Trabalho
@@ -137,14 +141,15 @@ beefree-api/
     │   ├── transaction.py   ✓
     │   ├── category.py      ✓
     │   ├── card.py          ✓
-    │   └── invoice.py       ✓
+    │   ├── invoice.py       ✓
+    │   └── installment.py   ✓
     ├── routers/
     │   ├── auth.py          ✓
     │   ├── transactions.py  ✓
     │   ├── categories.py    ✓
     │   ├── cards.py         ✓
     │   ├── invoices.py      ✓
-    │   ├── installments.py  — stub (Tarefa #6)
+    │   ├── installments.py  ✓
     │   ├── statistics.py    — stub (Tarefa #7)
     │   └── ai.py            — stub (Tarefa #8)
     ├── repositories/        — vazio
@@ -187,6 +192,6 @@ beefree-web/
 
 ---
 
-*Última atualização: 28 de Maio de 2026 — Tarefa #5 concluída*  
+*Última atualização: 28 de Maio de 2026 — Tarefa #6 concluída*  
 *Projeto: BeeFree — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

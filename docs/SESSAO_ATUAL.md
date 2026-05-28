@@ -7,9 +7,9 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ## Estado do Projeto
 
-**Fase atual:** Fase 1 — Backend FastAPI + Supabase  
-**Próxima tarefa:** #8 — Endpoint de IA (proxy Gemini)  
-**Última tarefa concluída:** #7 — Endpoints de estatísticas
+**Fase atual:** Fase 2 — Frontend React PWA (base)  
+**Próxima tarefa:** #9 — Setup React + Vite + Tailwind + PWA + layouts  
+**Última tarefa concluída:** #8 — Endpoint de IA (proxy Gemini) — Fase 1 completa ✓
 
 ---
 
@@ -38,7 +38,7 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - [x] 5. Endpoints de cartões e faturas
 - [x] 6. Endpoints de parcelas
 - [x] 7. Endpoints de estatísticas
-- [ ] 8. Endpoint de IA (proxy Gemini)
+- [x] 8. Endpoint de IA (proxy Gemini)
 - [ ] 9. Setup React + Vite + Tailwind + PWA + layouts
 - [ ] 10. Login + Cadastro (frontend)
 - [ ] 11. Dashboard (frontend)
@@ -106,6 +106,10 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - `app/schemas/statistics.py` — CategoriaStats, MensalResponse, MesEvolucao, AnualResponse, CategoriasResponse
 - `app/routers/statistics.py` — GET /statistics/monthly (receitas/despesas/saldo + categorias + variação % vs mês anterior), GET /statistics/yearly (12 meses, totais), GET /statistics/categories (breakdown por categoria com percentual)
 
+### Tarefa #8 — IA (proxy Gemini)
+- `app/schemas/ai.py` — ChatRequest (mensagem, mes, ano), ChatResponse (resposta)
+- `app/routers/ai.py` — POST /ai/chat: busca contexto via helpers de statistics.py (sem duplicar), injeta saldo/receitas/despesas/top5 categorias/parcelas do próximo mês/nº transações no prompt, chama Gemini via google-genai, retorna 503 claro em caso de falha
+
 ---
 
 ## Regras de Trabalho
@@ -156,7 +160,7 @@ beefree-api/
     │   ├── invoices.py      ✓
     │   ├── installments.py  ✓
     │   ├── statistics.py    ✓
-    │   └── ai.py            — stub (Tarefa #8)
+    │   └── ai.py            ✓
     ├── repositories/        — vazio
     ├── services/            — vazio
     └── core/
@@ -197,6 +201,6 @@ beefree-web/
 
 ---
 
-*Última atualização: 28 de Maio de 2026 — Tarefa #7 concluída*  
+*Última atualização: 28 de Maio de 2026 — Fase 1 (backend) concluída, iniciando Fase 2 (frontend)*  
 *Projeto: BeeFree — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

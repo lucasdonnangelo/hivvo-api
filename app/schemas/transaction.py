@@ -1,0 +1,76 @@
+import datetime as dt
+from decimal import Decimal
+from typing import Optional
+
+from pydantic import BaseModel, field_validator, model_validator
+
+
+class TransacaoCreate(BaseModel):
+    tipo: str
+    data: dt.date
+    descricao: str
+    valor: Decimal
+    categoria: str
+    forma_pagamento: str = "Débito"
+    tipo_gasto: str = "Variável"
+    origem: str = "manual"
+    cartao_id: Optional[int] = None
+    parcelado: bool = False
+    total_parcelas: Optional[int] = None
+
+    @field_validator("tipo")
+    @classmethod
+    def tipo_valido(cls, v: str) -> str:
+        if v not in ("receita", "despesa"):
+            raise ValueError("tipo deve ser 'receita' ou 'despesa'")
+        return v
+
+    @field_validator("valor")
+    @classmethod
+    def valor_positivo(cls, v: Decimal) -> Decimal:
+        if v <= 0:
+            raise ValueError("valor deve ser positivo")
+        return v
+
+    @model_validator(mode="after")
+    def valida_parcelamento(self) -> "TransacaoCreate":
+        if self.parcelado and (self.total_parcelas is None or self.total_parcelas < 2):
+            raise ValueError("total_parcelas deve ser >= 2 quando parcelado=True")
+        return self
+
+
+class TransacaoUpdate(BaseModel):
+    tipo: Optional[str] = None
+    data: Optional[dt.date] = None
+    descricao: Optional[str] = None
+    valor: Optional[Decimal] = None
+    categoria: Optional[str] = None
+    forma_pagamento: Optional[str] = None
+    tipo_gasto: Optional[str] = None
+    cartao_id: Optional[int] = None
+    fatura_mes: Optional[int] = None
+    fatura_ano: Optional[int] = None
+
+
+class TransacaoResponse(BaseModel):
+    id: int
+    usuario_id: int
+    tipo: str
+    data: dt.date
+    descricao: str
+    valor: Decimal
+    categoria: str
+    forma_pagamento: str
+    tipo_gasto: str
+    origem: str
+    cartao_id: Optional[int] = None
+    fatura_mes: Optional[int] = None
+    fatura_ano: Optional[int] = None
+    parcelado: bool
+    total_parcelas: Optional[int] = None
+
+    model_config = {"from_attributes": True}
+
+
+class TransacaoCreateResponse(TransacaoResponse):
+    parcelas_criadas: int = 0

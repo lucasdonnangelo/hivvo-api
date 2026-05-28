@@ -1,15 +1,15 @@
 # BeeFree — Sessão Atual
 
 ## Antes de começar
-Leia o arquivo `docs/BeeFree_Referencia.docx` para entender o produto, a arquitetura e as decisões de stack. Não proponha alternativas de tecnologia — as escolhas já foram feitas.
+Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para entender o produto, a arquitetura e as decisões de stack. Não proponha alternativas de tecnologia — as escolhas já foram feitas.
 
 ---
 
 ## Estado do Projeto
 
 **Fase atual:** Fase 1 — Backend FastAPI + Supabase  
-**Próxima tarefa:** #1 — Estrutura FastAPI + conexão Supabase  
-**Última tarefa concluída:** Nenhuma (início do projeto)
+**Próxima tarefa:** #5 — Endpoints de cartões e faturas  
+**Última tarefa concluída:** #4 — Endpoints de transações e categorias
 
 ---
 
@@ -29,25 +29,12 @@ Leia o arquivo `docs/BeeFree_Referencia.docx` para entender o produto, a arquite
 
 ---
 
-## O que Reaproveitar do FinanceAI
-
-| Arquivo | Ação |
-|---|---|
-| `models.py` | Copiar integralmente — SQLModel funciona com PostgreSQL |
-| `repositories.py` | Copiar integralmente — já desacoplado da UI |
-| `logic.py` | Copiar integralmente — lógica de negócio pura |
-| `agent.py` | Adaptar — manter lógica Gemini, trocar interface para HTTP |
-| `auth.py` | Adaptar — manter bcrypt, adicionar JWT |
-| `pages/` + `components/` | Ignorar — Streamlit será descartado |
-
----
-
 ## Ordem de Implementação
 
-- [ ] 1. Estrutura FastAPI + conexão Supabase + health check
-- [ ] 2. Migrar models.py + migrations Alembic
-- [ ] 3. Endpoints de auth (registro + login + JWT)
-- [ ] 4. Endpoints de transações e categorias
+- [x] 1. Estrutura FastAPI + conexão Supabase + health check
+- [x] 2. Migrar models.py + migrations Alembic
+- [x] 3. Endpoints de auth (registro + login + JWT)
+- [x] 4. Endpoints de transações e categorias
 - [ ] 5. Endpoints de cartões e faturas
 - [ ] 6. Endpoints de parcelas
 - [ ] 7. Endpoints de estatísticas
@@ -64,6 +51,49 @@ Leia o arquivo `docs/BeeFree_Referencia.docx` para entender o produto, a arquite
 
 ---
 
+## Decisões Técnicas Tomadas
+
+| Decisão | Detalhes |
+|---|---|
+| `passlib` removido | Incompatível com `bcrypt >= 4.0`. Usando `bcrypt` diretamente. |
+| `fatura_mes`/`fatura_ano` | Derivados da `data_vencimento` da parcela, não da data da compra. |
+| Routers sem trailing slash | Endpoints raiz usam `""` em vez de `"/"` para evitar redirect 307. |
+| Soft delete em categorias | `ativa=False` em vez de DELETE para preservar histórico de transações. |
+| Parcelamento sem cartão | Usa intervalos mensais simples a partir da data da compra. |
+| Arredondamento de parcelas | Última parcela absorve diferença de arredondamento (`ROUND_HALF_UP`). |
+
+---
+
+## Arquivos Criados/Modificados por Tarefa
+
+### Tarefa #1 — Estrutura base
+- `main.py` — FastAPI app, CORS, routers, GET /health
+- `app/core/config.py` — Settings via pydantic-settings
+- `app/core/database.py` — engine + get_session
+- `requirements.txt` — dependências
+
+### Tarefa #2 — Models + Alembic
+- `app/models/user.py` — Usuario (email, username, senha_hash, rate limiting)
+- `app/models/card.py` — Cartao (dia_vencimento, dia_fechamento, mes_offset_vencimento)
+- `app/models/transaction.py` — Transacao (tipo receita/despesa, usuario_id FK)
+- `app/models/category.py` — CategoriaCustomizada
+- `app/models/installment.py` — Parcela (FK transacao + cartao + usuario)
+- `alembic/env.py`, `alembic.ini`, `alembic/script.py.mako`
+- Migration: `abdb546095c0_initial_schema.py` — aplicada no Supabase
+
+### Tarefa #3 — Auth
+- `app/core/auth.py` — hash_password, verify_password (bcrypt direto), create_access_token, get_current_user
+- `app/schemas/auth.py` — RegisterRequest, LoginRequest, UserResponse
+- `app/routers/auth.py` — POST /register, POST /login, POST /logout, GET /me
+
+### Tarefa #4 — Transações e Categorias
+- `app/schemas/transaction.py` — TransacaoCreate, TransacaoUpdate, TransacaoResponse, TransacaoCreateResponse
+- `app/schemas/category.py` — CategoriaCreate, CategoriaResponse
+- `app/routers/transactions.py` — GET/POST/PUT/DELETE + lógica de parcelamento
+- `app/routers/categories.py` — GET/POST/DELETE + 15 categorias padrão hardcoded
+
+---
+
 ## Regras de Trabalho
 
 1. **Uma tarefa por vez** — não avançar sem confirmação
@@ -76,24 +106,45 @@ Leia o arquivo `docs/BeeFree_Referencia.docx` para entender o produto, a arquite
 
 ---
 
-## Estrutura de Pastas Esperada (Backend)
+## Estrutura de Pastas Atual (Backend)
 
 ```
 beefree-api/
 ├── main.py
 ├── .env
 ├── requirements.txt
+├── alembic.ini
 ├── alembic/
-├── app/
-│   ├── models/
-│   ├── repositories/
-│   ├── services/
-│   ├── routers/
-│   ├── schemas/
-│   └── core/
-│       ├── auth.py
-│       ├── database.py
-│       └── config.py
+│   ├── env.py
+│   ├── script.py.mako
+│   └── versions/
+│       └── abdb546095c0_initial_schema.py
+└── app/
+    ├── models/
+    │   ├── user.py          ✓
+    │   ├── card.py          ✓
+    │   ├── transaction.py   ✓
+    │   ├── category.py      ✓
+    │   └── installment.py   ✓
+    ├── schemas/
+    │   ├── auth.py          ✓
+    │   ├── transaction.py   ✓
+    │   └── category.py      ✓
+    ├── routers/
+    │   ├── auth.py          ✓
+    │   ├── transactions.py  ✓
+    │   ├── categories.py    ✓
+    │   ├── cards.py         — stub (Tarefa #5)
+    │   ├── invoices.py      — stub (Tarefa #5)
+    │   ├── installments.py  — stub (Tarefa #6)
+    │   ├── statistics.py    — stub (Tarefa #7)
+    │   └── ai.py            — stub (Tarefa #8)
+    ├── repositories/        — vazio
+    ├── services/            — vazio
+    └── core/
+        ├── auth.py          ✓
+        ├── database.py      ✓
+        └── config.py        ✓
 ```
 
 ---
@@ -128,12 +179,6 @@ beefree-web/
 
 ---
 
-## Notas da Sessão Atual
-
-_(atualizar conforme o trabalho avança)_
-
----
-
-*Documento criado em: Maio 2026*  
+*Última atualização: 28 de Maio de 2026*  
 *Projeto: BeeFree — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

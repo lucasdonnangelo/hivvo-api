@@ -8,8 +8,8 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 ## Estado do Projeto
 
 **Fase atual:** Fase 2 — Frontend React PWA (base)  
-**Próxima tarefa:** #9 — Setup React + Vite + Tailwind + PWA + layouts  
-**Última tarefa concluída:** #8 — Endpoint de IA (proxy Gemini) — Fase 1 completa ✓
+**Próxima tarefa:** #10 — Login + Cadastro (frontend)  
+**Última tarefa concluída:** #9 — Setup React + Vite + Tailwind + PWA + layouts
 
 ---
 
@@ -39,7 +39,7 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - [x] 6. Endpoints de parcelas
 - [x] 7. Endpoints de estatísticas
 - [x] 8. Endpoint de IA (proxy Gemini)
-- [ ] 9. Setup React + Vite + Tailwind + PWA + layouts
+- [x] 9. Setup React + Vite + Tailwind + PWA + layouts
 - [ ] 10. Login + Cadastro (frontend)
 - [ ] 11. Dashboard (frontend)
 - [ ] 12. Transações (frontend)
@@ -110,6 +110,25 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - `app/schemas/ai.py` — ChatRequest (mensagem, mes, ano), ChatResponse (resposta)
 - `app/routers/ai.py` — POST /ai/chat: busca contexto via helpers de statistics.py (sem duplicar), injeta saldo/receitas/despesas/top5 categorias/parcelas do próximo mês/nº transações no prompt, chama Gemini via google-genai, retorna 503 claro em caso de falha
 
+### Tarefa #9 — Setup Frontend (beefree-web/)
+- `vite.config.ts` — PWA plugin configurado com manifest BeeFree
+- `tailwind.config.ts` — tokens de cor/tipografia do brand guide (amber, bg, text, success, danger)
+- `index.html` — Inter font, lang=pt-BR, theme-color=#1A1714
+- `src/index.css` — @tailwind directives + reset de altura full-screen
+- `src/styles/tokens.css` — variáveis CSS do brand guide
+- `src/main.tsx` — QueryClientProvider + BrowserRouter + StrictMode
+- `src/App.tsx` — React Router v6: AppLayout escolhe Mobile vs Desktop via useBreakpoint
+- `src/layouts/MobileLayout.tsx` — header + Outlet + bottom tab bar com FAB central
+- `src/layouts/DesktopLayout.tsx` — sidebar 52px (ícones) + Outlet
+- `src/layouts/AuthLayout.tsx` — card centralizado no fundo escuro
+- `src/hooks/useBreakpoint.ts` — useBreakpoint('md') → true em mobile (<768px)
+- `src/store/authStore.ts` — Zustand: user, isAuthenticated, setUser, clearAuth
+- `src/store/uiStore.ts` — Zustand: toasts, activeModal, isLoading
+- `src/services/api.ts` — Axios com withCredentials + interceptor 401→clearAuth
+- `src/services/auth.ts`, `transactions.ts`, `cards.ts` — stubs dos serviços
+- `public/manifest.json` — PWA manifest estático
+- `docs/` — cópias de BeeFree_Referencia.md e SESSAO_ATUAL.md
+
 ---
 
 ## Regras de Trabalho
@@ -171,7 +190,7 @@ beefree-api/
 
 ---
 
-## Estrutura de Pastas Esperada (Frontend)
+## Estrutura de Pastas Atual (Frontend)
 
 ```
 beefree-web/
@@ -182,25 +201,40 @@ beefree-web/
 │   └── manifest.json
 └── src/
     ├── layouts/
-    │   ├── DesktopLayout.tsx
-    │   ├── MobileLayout.tsx
-    │   └── AuthLayout.tsx
+    │   ├── DesktopLayout.tsx    ✓
+    │   ├── MobileLayout.tsx     ✓
+    │   └── AuthLayout.tsx       ✓
     ├── pages/
+    │   ├── Dashboard/           — placeholder (Tarefa #11)
+    │   ├── Transactions/        — placeholder (Tarefa #12)
+    │   ├── AddTransaction/      — placeholder (Tarefa #13)
+    │   ├── Cards/               — placeholder (Tarefa #14)
+    │   ├── Assistant/           — placeholder (Tarefa #15)
+    │   ├── Auth/                — placeholder (Tarefa #10)
+    │   └── Settings/            — placeholder (Tarefa #17)
     ├── components/
-    │   └── ui/
+    │   ├── ui/                  — vazio (Tarefa #10+)
+    │   ├── charts/              — vazio (Tarefa #11+)
+    │   ├── transaction/         — vazio (Tarefa #12+)
+    │   └── cards/               — vazio (Tarefa #14+)
     ├── hooks/
-    │   └── useBreakpoint.ts
+    │   ├── useBreakpoint.ts     ✓
+    │   ├── useTransactions.ts   ✓ (stub)
+    │   └── useAuth.ts           ✓
     ├── store/
-    │   ├── authStore.ts
-    │   └── uiStore.ts
+    │   ├── authStore.ts         ✓
+    │   └── uiStore.ts           ✓
     ├── services/
-    │   └── api.ts
+    │   ├── api.ts               ✓
+    │   ├── auth.ts              ✓
+    │   ├── transactions.ts      ✓
+    │   └── cards.ts             ✓
     └── styles/
-        └── tokens.css
+        └── tokens.css           ✓
 ```
 
 ---
 
-*Última atualização: 28 de Maio de 2026 — Fase 1 (backend) concluída, iniciando Fase 2 (frontend)*  
+*Última atualização: 28 de Maio de 2026 — Tarefa #9 concluída, iniciando Tarefa #10 (Login + Cadastro)*  
 *Projeto: BeeFree — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

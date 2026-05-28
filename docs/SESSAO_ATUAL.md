@@ -8,8 +8,8 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 ## Estado do Projeto
 
 **Fase atual:** Fase 1 — Backend FastAPI + Supabase  
-**Próxima tarefa:** #5 — Endpoints de cartões e faturas  
-**Última tarefa concluída:** #4 — Endpoints de transações e categorias
+**Próxima tarefa:** #6 — Endpoints de parcelas  
+**Última tarefa concluída:** #5 — Endpoints de cartões e faturas
 
 ---
 
@@ -35,7 +35,7 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - [x] 2. Migrar models.py + migrations Alembic
 - [x] 3. Endpoints de auth (registro + login + JWT)
 - [x] 4. Endpoints de transações e categorias
-- [ ] 5. Endpoints de cartões e faturas
+- [x] 5. Endpoints de cartões e faturas
 - [ ] 6. Endpoints de parcelas
 - [ ] 7. Endpoints de estatísticas
 - [ ] 8. Endpoint de IA (proxy Gemini)
@@ -92,6 +92,12 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - `app/routers/transactions.py` — GET/POST/PUT/DELETE + lógica de parcelamento
 - `app/routers/categories.py` — GET/POST/DELETE + 15 categorias padrão hardcoded
 
+### Tarefa #5 — Cartões e Faturas
+- `app/schemas/card.py` — CartaoCreate, CartaoUpdate, CartaoResponse, CartaoComFaturaResponse
+- `app/schemas/invoice.py` — ParcelaFaturaResponse, TransacaoFaturaResponse, FaturaListItem, FaturaDetalhe
+- `app/routers/cards.py` — GET/POST/PUT/DELETE + fatura aberta calculada em tempo real
+- `app/routers/invoices.py` — GET /{card_id}/invoices (lista), GET /{card_id}/invoices/{ano}/{mes} (detalhe)
+
 ---
 
 ## Regras de Trabalho
@@ -129,13 +135,15 @@ beefree-api/
     ├── schemas/
     │   ├── auth.py          ✓
     │   ├── transaction.py   ✓
-    │   └── category.py      ✓
+    │   ├── category.py      ✓
+    │   ├── card.py          ✓
+    │   └── invoice.py       ✓
     ├── routers/
     │   ├── auth.py          ✓
     │   ├── transactions.py  ✓
     │   ├── categories.py    ✓
-    │   ├── cards.py         — stub (Tarefa #5)
-    │   ├── invoices.py      — stub (Tarefa #5)
+    │   ├── cards.py         ✓
+    │   ├── invoices.py      ✓
     │   ├── installments.py  — stub (Tarefa #6)
     │   ├── statistics.py    — stub (Tarefa #7)
     │   └── ai.py            — stub (Tarefa #8)
@@ -179,6 +187,6 @@ beefree-web/
 
 ---
 
-*Última atualização: 28 de Maio de 2026*  
+*Última atualização: 28 de Maio de 2026 — Tarefa #5 concluída*  
 *Projeto: BeeFree — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

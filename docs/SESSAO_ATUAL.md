@@ -8,8 +8,8 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 ## Estado do Projeto
 
 **Fase atual:** Fase 1 — Backend FastAPI + Supabase  
-**Próxima tarefa:** #7 — Endpoints de estatísticas  
-**Última tarefa concluída:** #6 — Endpoints de parcelas
+**Próxima tarefa:** #8 — Endpoint de IA (proxy Gemini)  
+**Última tarefa concluída:** #7 — Endpoints de estatísticas
 
 ---
 
@@ -37,7 +37,7 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - [x] 4. Endpoints de transações e categorias
 - [x] 5. Endpoints de cartões e faturas
 - [x] 6. Endpoints de parcelas
-- [ ] 7. Endpoints de estatísticas
+- [x] 7. Endpoints de estatísticas
 - [ ] 8. Endpoint de IA (proxy Gemini)
 - [ ] 9. Setup React + Vite + Tailwind + PWA + layouts
 - [ ] 10. Login + Cadastro (frontend)
@@ -102,6 +102,10 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - `app/schemas/installment.py` — ParcelaUpdate, ParcelaResponse
 - `app/routers/installments.py` — GET (filtros: cartao_id, pago, cancelado, mes, ano), PUT (marcar paga/cancelar), DELETE (individual)
 
+### Tarefa #7 — Estatísticas
+- `app/schemas/statistics.py` — CategoriaStats, MensalResponse, MesEvolucao, AnualResponse, CategoriasResponse
+- `app/routers/statistics.py` — GET /statistics/monthly (receitas/despesas/saldo + categorias + variação % vs mês anterior), GET /statistics/yearly (12 meses, totais), GET /statistics/categories (breakdown por categoria com percentual)
+
 ---
 
 ## Regras de Trabalho
@@ -142,7 +146,8 @@ beefree-api/
     │   ├── category.py      ✓
     │   ├── card.py          ✓
     │   ├── invoice.py       ✓
-    │   └── installment.py   ✓
+    │   ├── installment.py   ✓
+    │   └── statistics.py    ✓
     ├── routers/
     │   ├── auth.py          ✓
     │   ├── transactions.py  ✓
@@ -150,7 +155,7 @@ beefree-api/
     │   ├── cards.py         ✓
     │   ├── invoices.py      ✓
     │   ├── installments.py  ✓
-    │   ├── statistics.py    — stub (Tarefa #7)
+    │   ├── statistics.py    ✓
     │   └── ai.py            — stub (Tarefa #8)
     ├── repositories/        — vazio
     ├── services/            — vazio
@@ -192,6 +197,6 @@ beefree-web/
 
 ---
 
-*Última atualização: 28 de Maio de 2026 — Tarefa #6 concluída*  
+*Última atualização: 28 de Maio de 2026 — Tarefa #7 concluída*  
 *Projeto: BeeFree — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

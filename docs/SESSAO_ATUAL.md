@@ -7,9 +7,9 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ## Estado do Projeto
 
-**Fase atual:** Fase 2 — Frontend React PWA (base)  
-**Próxima tarefa:** #10 — Login + Cadastro (frontend)  
-**Última tarefa concluída:** #9 — Setup React + Vite + Tailwind + PWA + layouts
+**Fase atual:** Fase 4 — Monetização e Lançamento  
+**Próxima tarefa:** Definir limites do plano gratuito + integrar Stripe/Pagar.me  
+**Última tarefa concluída:** Fase 3 completa — todas as 17 tarefas implementadas
 
 ---
 
@@ -31,6 +31,8 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ## Ordem de Implementação
 
+### Fase 1 — Backend FastAPI ✅ Completa
+
 - [x] 1. Estrutura FastAPI + conexão Supabase + health check
 - [x] 2. Migrar models.py + migrations Alembic
 - [x] 3. Endpoints de auth (registro + login + JWT)
@@ -39,15 +41,32 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - [x] 6. Endpoints de parcelas
 - [x] 7. Endpoints de estatísticas
 - [x] 8. Endpoint de IA (proxy Gemini)
+- [x] Extra: PUT /auth/me + PUT /auth/password (commit 3789cb6)
+
+### Fase 2 — Frontend React PWA (base) ✅ Completa
+
 - [x] 9. Setup React + Vite + Tailwind + PWA + layouts
-- [ ] 10. Login + Cadastro (frontend)
-- [ ] 11. Dashboard (frontend)
-- [ ] 12. Transações (frontend)
-- [ ] 13. Adicionar transação com parcelamento (frontend)
-- [ ] 14. Cartões e faturas (frontend)
-- [ ] 15. Assistente IA (frontend)
-- [ ] 16. Ver resumo detalhado (frontend)
-- [ ] 17. Features secundárias (CSV, backup, categorias, perfil)
+
+### Fase 3 — Telas Restantes ✅ Completa
+
+- [x] 10. Login + Cadastro (frontend)
+- [x] 11. Dashboard (frontend)
+- [x] 12. Transações (frontend)
+- [x] 13. Adicionar transação com parcelamento (frontend)
+- [x] 14. Cartões e faturas (frontend)
+- [x] 15. Assistente IA (frontend)
+- [x] 16. Ver resumo detalhado (frontend)
+- [x] 17. Features secundárias (CSV, backup, categorias, perfil)
+
+### Fase 4 — Monetização e Lançamento
+
+- [ ] Definir limites do plano gratuito (ex: até 3 cartões, 100 transações/mês)
+- [ ] Integrar Stripe ou Pagar.me para plano Pro
+- [ ] Gate de features por plano no backend
+- [ ] Landing page do BeeFree
+- [ ] Domínio próprio (beefree.app ou similar)
+- [ ] Post LinkedIn + Product Hunt
+- [ ] Analytics com Posthog (gratuito)
 
 ---
 
@@ -86,6 +105,10 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - `app/schemas/auth.py` — RegisterRequest, LoginRequest, UserResponse
 - `app/routers/auth.py` — POST /register, POST /login, POST /logout, GET /me
 
+### Tarefa #3 Extra — Edição de perfil (commit 3789cb6)
+- `app/schemas/auth.py` — UpdateMeRequest, ChangePasswordRequest
+- `app/routers/auth.py` — PUT /auth/me (atualiza username), PUT /auth/password (troca senha)
+
 ### Tarefa #4 — Transações e Categorias
 - `app/schemas/transaction.py` — TransacaoCreate, TransacaoUpdate, TransacaoResponse, TransacaoCreateResponse
 - `app/schemas/category.py` — CategoriaCreate, CategoriaResponse
@@ -104,42 +127,26 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ### Tarefa #7 — Estatísticas
 - `app/schemas/statistics.py` — CategoriaStats, MensalResponse, MesEvolucao, AnualResponse, CategoriasResponse
-- `app/routers/statistics.py` — GET /statistics/monthly (receitas/despesas/saldo + categorias + variação % vs mês anterior), GET /statistics/yearly (12 meses, totais), GET /statistics/categories (breakdown por categoria com percentual)
+- `app/routers/statistics.py` — GET /statistics/monthly, GET /statistics/yearly, GET /statistics/categories
 
 ### Tarefa #8 — IA (proxy Gemini)
 - `app/schemas/ai.py` — ChatRequest (mensagem, mes, ano), ChatResponse (resposta)
-- `app/routers/ai.py` — POST /ai/chat: busca contexto via helpers de statistics.py (sem duplicar), injeta saldo/receitas/despesas/top5 categorias/parcelas do próximo mês/nº transações no prompt, chama Gemini via google-genai, retorna 503 claro em caso de falha
+- `app/routers/ai.py` — POST /ai/chat: contexto financeiro injetado no prompt, chama Gemini via google-genai
 
 ### Tarefa #9 — Setup Frontend (beefree-web/)
 - `vite.config.ts` — PWA plugin configurado com manifest BeeFree
-- `tailwind.config.ts` — tokens de cor/tipografia do brand guide (amber, bg, text, success, danger)
+- `tailwind.config.ts` — tokens de cor/tipografia do brand guide
 - `index.html` — Inter font, lang=pt-BR, theme-color=#1A1714
-- `src/index.css` — @tailwind directives + reset de altura full-screen
-- `src/styles/tokens.css` — variáveis CSS do brand guide
 - `src/main.tsx` — QueryClientProvider + BrowserRouter + StrictMode
 - `src/App.tsx` — React Router v6: AppLayout escolhe Mobile vs Desktop via useBreakpoint
-- `src/layouts/MobileLayout.tsx` — header + Outlet + bottom tab bar com FAB central
-- `src/layouts/DesktopLayout.tsx` — sidebar 52px (ícones) + Outlet
-- `src/layouts/AuthLayout.tsx` — card centralizado no fundo escuro
-- `src/hooks/useBreakpoint.ts` — useBreakpoint('md') → true em mobile (<768px)
-- `src/store/authStore.ts` — Zustand: user, isAuthenticated, setUser, clearAuth
-- `src/store/uiStore.ts` — Zustand: toasts, activeModal, isLoading
-- `src/services/api.ts` — Axios com withCredentials + interceptor 401→clearAuth
-- `src/services/auth.ts`, `transactions.ts`, `cards.ts` — stubs dos serviços
-- `public/manifest.json` — PWA manifest estático
-- `docs/` — cópias de BeeFree_Referencia.md e SESSAO_ATUAL.md
+- `src/layouts/MobileLayout.tsx`, `DesktopLayout.tsx`, `AuthLayout.tsx`
+- `src/hooks/useBreakpoint.ts`, `useAuth.ts`, `useTransactions.ts` (stub)
+- `src/store/authStore.ts`, `uiStore.ts`
+- `src/services/api.ts`, `auth.ts`, `transactions.ts`, `cards.ts`
 
----
-
-## Regras de Trabalho
-
-1. **Uma tarefa por vez** — não avançar sem confirmação
-2. **Sempre rodar testes** antes de marcar tarefa como concluída
-3. **Nunca hardcodar cores** — usar sempre os tokens do brand guide
-4. **Nunca misturar** TanStack Query com Zustand
-5. **Layouts distintos** — MobileLayout e DesktopLayout, nunca CSS responsivo puro
-6. **Valores monetários** — sempre Decimal no Python, toFixed(2) no JS
-7. **JWT** — nunca em localStorage, apenas httpOnly cookie ou memória
+### Tarefas #10–#17 — Frontend completo
+- Todas as telas implementadas: Auth, Dashboard, Transações, AddTransaction, Cartões, Faturas, Assistente IA, Resumo Detalhado
+- Features secundárias: importação CSV, backup JSON/CSV, gerenciar categorias, configurações de perfil
 
 ---
 
@@ -170,7 +177,8 @@ beefree-api/
     │   ├── card.py          ✓
     │   ├── invoice.py       ✓
     │   ├── installment.py   ✓
-    │   └── statistics.py    ✓
+    │   ├── statistics.py    ✓
+    │   └── ai.py            ✓
     ├── routers/
     │   ├── auth.py          ✓
     │   ├── transactions.py  ✓
@@ -190,51 +198,18 @@ beefree-api/
 
 ---
 
-## Estrutura de Pastas Atual (Frontend)
+## Regras de Trabalho
 
-```
-beefree-web/
-├── index.html
-├── vite.config.ts
-├── tailwind.config.ts
-├── public/
-│   └── manifest.json
-└── src/
-    ├── layouts/
-    │   ├── DesktopLayout.tsx    ✓
-    │   ├── MobileLayout.tsx     ✓
-    │   └── AuthLayout.tsx       ✓
-    ├── pages/
-    │   ├── Dashboard/           — placeholder (Tarefa #11)
-    │   ├── Transactions/        — placeholder (Tarefa #12)
-    │   ├── AddTransaction/      — placeholder (Tarefa #13)
-    │   ├── Cards/               — placeholder (Tarefa #14)
-    │   ├── Assistant/           — placeholder (Tarefa #15)
-    │   ├── Auth/                — placeholder (Tarefa #10)
-    │   └── Settings/            — placeholder (Tarefa #17)
-    ├── components/
-    │   ├── ui/                  — vazio (Tarefa #10+)
-    │   ├── charts/              — vazio (Tarefa #11+)
-    │   ├── transaction/         — vazio (Tarefa #12+)
-    │   └── cards/               — vazio (Tarefa #14+)
-    ├── hooks/
-    │   ├── useBreakpoint.ts     ✓
-    │   ├── useTransactions.ts   ✓ (stub)
-    │   └── useAuth.ts           ✓
-    ├── store/
-    │   ├── authStore.ts         ✓
-    │   └── uiStore.ts           ✓
-    ├── services/
-    │   ├── api.ts               ✓
-    │   ├── auth.ts              ✓
-    │   ├── transactions.ts      ✓
-    │   └── cards.ts             ✓
-    └── styles/
-        └── tokens.css           ✓
-```
+1. **Uma tarefa por vez** — não avançar sem confirmação
+2. **Sempre rodar testes** antes de marcar tarefa como concluída
+3. **Nunca hardcodar cores** — usar sempre os tokens do brand guide
+4. **Nunca misturar** TanStack Query com Zustand
+5. **Layouts distintos** — MobileLayout e DesktopLayout, nunca CSS responsivo puro
+6. **Valores monetários** — sempre Decimal no Python, toFixed(2) no JS
+7. **JWT** — nunca em localStorage, apenas httpOnly cookie ou memória
 
 ---
 
-*Última atualização: 28 de Maio de 2026 — Tarefa #9 concluída, iniciando Tarefa #10 (Login + Cadastro)*  
+*Última atualização: 29 de Maio de 2026 — Fases 1, 2 e 3 completas. Iniciando Fase 4 (Monetização e Lançamento)*  
 *Projeto: BeeFree — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

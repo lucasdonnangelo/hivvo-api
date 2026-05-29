@@ -70,6 +70,44 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ---
 
+## Testes de Integração (Fase 4)
+
+### Bloco 1 — Autenticação ✅ Concluído
+- POST /auth/register
+- POST /auth/login
+- GET /auth/me
+- PUT /auth/me
+- PUT /auth/password
+- POST /auth/logout
+
+### Bloco 2 — Dashboard e Transações ✅ Concluído (com bugs corrigidos)
+- GET /statistics/monthly
+- GET /statistics/yearly
+- GET /statistics/categories
+- GET /transactions
+- POST /transactions (simples e parcelada)
+- PUT /transactions/{id}
+- DELETE /transactions/{id}
+- GET /categories
+- POST /categories
+- DELETE /categories/{id}
+
+### Bloco 3 — Cartões, Faturas e Parcelas ⏳ Próximo
+- GET /cards
+- POST /cards
+- PUT /cards/{id}
+- DELETE /cards/{id}
+- GET /cards/{id}/invoices
+- GET /cards/{id}/invoices/{ano}/{mes}
+- GET /installments
+- PUT /installments/{id}
+- DELETE /installments/{id}
+
+### Bloco 4 — IA ⏳ Pendente
+- POST /ai/chat
+
+---
+
 ## Decisões Técnicas Tomadas
 
 | Decisão | Detalhes |
@@ -210,6 +248,6 @@ beefree-api/
 
 ---
 
-*Última atualização: 29 de Maio de 2026 — Fases 1, 2 e 3 completas. Iniciando Fase 4 (Monetização e Lançamento)*  
+*Última atualização: 29 de Maio de 2026 — Testes Bloco 1 e Bloco 2 concluídos. Próximo: Bloco 3 (Cartões, Faturas e Parcelas)*  
 *Projeto: BeeFree — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

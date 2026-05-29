@@ -7,7 +7,13 @@ from app.core.auth import create_access_token, get_current_user, hash_password, 
 from app.core.config import settings
 from app.core.database import get_session
 from app.models.user import Usuario
-from app.schemas.auth import LoginRequest, RegisterRequest, UserResponse
+from app.schemas.auth import (
+    LoginRequest,
+    RegisterRequest,
+    UserResponse,
+    UpdateMeRequest,
+    ChangePasswordRequest,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -88,3 +94,39 @@ def logout(response: Response):
 @router.get("/me", response_model=UserResponse)
 def me(current_user: Usuario = Depends(get_current_user)):
     return UserResponse.model_validate(current_user)
+
+
+@router.put("/me", response_model=UserResponse)
+def update_me(
+    body: UpdateMeRequest,
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    existing = session.exec(
+        select(Usuario).where(
+            Usuario.username == body.username,
+            Usuario.id != current_user.id
+        )
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Username já em uso.")
+
+    current_user.username = body.username
+    session.add(current_user)
+    session.commit()
+    session.refresh(current_user)
+    return UserResponse.model_validate(current_user)
+
+
+@router.put("/password", status_code=204)
+def change_password(
+    body: ChangePasswordRequest,
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if not verify_password(body.senha_atual, current_user.senha_hash):
+        raise HTTPException(status_code=400, detail="Senha atual incorreta.")
+
+    current_user.senha_hash = hash_password(body.nova_senha)
+    session.add(current_user)
+    session.commit()

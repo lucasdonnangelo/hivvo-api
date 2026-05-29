@@ -1,7 +1,7 @@
 import datetime as dt
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class RegisterRequest(BaseModel):
@@ -42,3 +42,12 @@ class UserResponse(BaseModel):
     ativo: bool
 
     model_config = {"from_attributes": True}
+
+
+class UpdateMeRequest(BaseModel):
+    username: str = Field(min_length=2)
+
+
+class ChangePasswordRequest(BaseModel):
+    senha_atual: str
+    nova_senha: str = Field(min_length=8)

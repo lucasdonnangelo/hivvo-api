@@ -1,6 +1,6 @@
 import logging
 import re
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from google import genai
 from google.genai import types
@@ -13,7 +13,7 @@ from app.core.database import get_session
 from app.models.installment import Parcela
 from app.models.user import Usuario
 from app.routers.statistics import _agregar, _buscar_mes, _categorias
-from app.schemas.ai import ChatRequest, ChatResponse
+from app.schemas.ai import ChatRequest, ChatResponse, HistoricoItem
 
 logger = logging.getLogger(__name__)
 
@@ -49,39 +49,74 @@ def _total_parcelas_proximo_mes(session: Session, usuario_id: int, mes: int, ano
     return sum((p.valor_parcela for p in parcelas), _ZERO)
 
 
-def _build_prompt(mensagem: str, mes: int, ano: int, ctx: dict) -> str:
+def _variacao_saldo_pct(session: Session, usuario_id: int, mes: int, ano: int, saldo_atual: Decimal) -> float | None:
+    mes_ant = 12 if mes == 1 else mes - 1
+    ano_ant = ano - 1 if mes == 1 else ano
+    transacoes_ant = _buscar_mes(session, usuario_id, mes_ant, ano_ant)
+    rec_ant, desp_ant = _agregar(transacoes_ant)
+    saldo_ant = rec_ant - desp_ant
+    if saldo_ant == _ZERO:
+        return None
+    try:
+        return float((saldo_atual - saldo_ant) / abs(saldo_ant) * 100)
+    except (InvalidOperation, ZeroDivisionError):
+        return None
+
+
+def _build_system_instruction(mes: int, ano: int, ctx: dict) -> str:
     top5 = "\n".join(
-        f"  - {c.categoria}: R$ {c.total:,.2f} ({c.percentual}%)"
+        f"  - {c.categoria}: R$ {c.total:,.2f} ({c.percentual:.1f}%)"
         for c in ctx["categorias"][:5]
     ) or "  (sem despesas registradas)"
 
-    return f"""Você é o BeeFree, um assistente financeiro pessoal inteligente e objetivo.
+    alerta_saldo = "\n⚠️  SALDO NEGATIVO — veja regra 5 abaixo." if ctx["saldo_negativo"] else ""
 
-DADOS FINANCEIROS DO USUÁRIO — {_MESES.get(mes, mes)}/{ano}:
-- Receitas: R$ {ctx['receitas']:,.2f}
-- Despesas: R$ {ctx['despesas']:,.2f}
-- Saldo: R$ {ctx['saldo']:,.2f}
-- Número de transações: {ctx['num_transacoes']}
-- Total de parcelas no próximo mês: R$ {ctx['parcelas_proximo_mes']:,.2f}
+    variacao_linha = ""
+    if ctx.get("variacao_saldo_pct") is not None:
+        sinal = "+" if ctx["variacao_saldo_pct"] >= 0 else ""
+        variacao_linha = f"\n- Variação do saldo vs mês anterior: {sinal}{ctx['variacao_saldo_pct']:.1f}%"
+
+    nome_linha = f"\n- Usuário: {ctx['usuario_nome']}" if ctx.get("usuario_nome") else ""
+
+    return f"""Você é o BeeFree, um analista financeiro pessoal direto e objetivo — não um assistente genérico.
+
+DADOS FINANCEIROS — {_MESES.get(mes, mes)}/{ano}:{alerta_saldo}{nome_linha}
+- Receitas:  R$ {ctx['receitas']:,.2f}
+- Despesas:  R$ {ctx['despesas']:,.2f}
+- Saldo:     R$ {ctx['saldo']:,.2f}{variacao_linha}
+- Transações no mês: {ctx['num_transacoes']}
+- Parcelas no próximo mês: R$ {ctx['parcelas_proximo_mes']:,.2f}
 
 TOP 5 CATEGORIAS DE DESPESA:
 {top5}
 
-REGRAS:
-1. Baseie respostas APENAS nos dados acima.
-2. Nunca invente números ou informações ausentes.
-3. Se não houver dados suficientes, diga claramente.
-4. Formate valores como R$ X.XXX,XX (vírgula para centavos).
-5. Seja conciso (máximo 150 palavras).
-6. Finalize com uma pergunta contextual curta.
+REGRAS DE COMPORTAMENTO:
+1. NUNCA cumprimente ("Olá", "Oi", "Claro!", "Com certeza!" etc.) — vá direto ao ponto.
+2. Baseie respostas APENAS nos dados acima — nunca invente números ou extrapole.
+3. Se não houver dados suficientes, diga claramente e de forma curta.
+4. Formate valores monetários como R$ X.XXX,XX (padrão brasileiro).
+5. Se despesas > receitas, abra SEMPRE a resposta com esse diagnóstico antes de qualquer outra análise, independente do que foi perguntado.
+6. Se uma categoria tiver mais de 50% das despesas totais, alerte explicitamente sobre essa concentração.
+7. Tom: analista financeiro sênior. Sem elogios, sem frases de incentivo genéricas, sem condescendência.
+8. Use markdown leve quando facilitar a leitura (negrito para valores, listas para múltiplos itens).
+9. Seja conciso mas completo; prefira 3-5 frases diretas a listas longas.
+10. Se pertinente, finalize com uma pergunta contextual curta e específica.
+11. Use o nome do usuário apenas quando soar natural — não em toda resposta."""
 
-PERGUNTA DO USUÁRIO:
-{mensagem}"""
+
+def _build_contents(historico: list[HistoricoItem], mensagem: str) -> list[types.Content]:
+    contents: list[types.Content] = []
+    for item in historico:
+        gemini_role = "model" if item.role == "assistant" else "user"
+        contents.append(types.Content(role=gemini_role, parts=[types.Part(text=item.text)]))
+    contents.append(types.Content(role="user", parts=[types.Part(text=mensagem)]))
+    return contents
 
 
 def _post_process(texto: str) -> str:
+    # Fix spacing after R$ without collapsing newlines (markdown depends on them)
     texto = re.sub(r"R\$\s*(\d)", r"R$ \1", texto)
-    texto = re.sub(r"\s+", " ", texto)
+    texto = re.sub(r"[ \t]+", " ", texto)  # collapse only horizontal whitespace
     return texto.strip()
 
 
@@ -100,25 +135,35 @@ def chat(
     transacoes = _buscar_mes(session, current_user.id, body.mes, body.ano)
     receitas, despesas = _agregar(transacoes)
 
+    saldo = receitas - despesas
     ctx = {
         "receitas": receitas,
         "despesas": despesas,
-        "saldo": receitas - despesas,
+        "saldo": saldo,
+        "saldo_negativo": saldo < _ZERO,
         "num_transacoes": len(transacoes),
         "categorias": _categorias(transacoes),
         "parcelas_proximo_mes": _total_parcelas_proximo_mes(
             session, current_user.id, body.mes, body.ano
         ),
+        "usuario_nome": current_user.username,
+        "variacao_saldo_pct": _variacao_saldo_pct(
+            session, current_user.id, body.mes, body.ano, saldo
+        ),
     }
 
-    prompt = _build_prompt(body.mensagem, body.mes, body.ano, ctx)
+    system_instruction = _build_system_instruction(body.mes, body.ano, ctx)
+    contents = _build_contents(body.historico, body.mensagem)
 
     try:
         client = genai.Client(api_key=settings.GEMINI_API_KEY)
         response = client.models.generate_content(
             model=_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(safety_settings=_SAFETY),
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                safety_settings=_SAFETY,
+            ),
         )
         if not response.text:
             raise HTTPException(

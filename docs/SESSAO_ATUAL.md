@@ -7,9 +7,85 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ## Estado do Projeto
 
-**Fase atual:** Fase 4 — Monetização e Lançamento  
-**Próxima tarefa:** Definir limites do plano gratuito + integrar Stripe/Pagar.me  
-**Última tarefa concluída:** Fase 3 completa — todas as 17 tarefas implementadas
+**Fase atual:** Testes end-to-end e refinamentos  
+**Status:** Todos os testes (Blocos 1–5) concluídos. Bugs críticos corrigidos. PWA instalável e funcionando.  
+**Próximo passo imediato:** Continuar refinamentos e melhorias pontuais  
+**Próxima fase:** Deploy — backend no Railway/Render, frontend no Vercel  
+**Última tarefa concluída:** Bloco 5 — Qualidade de build (TypeScript, PWA, bugs de UI)
+
+---
+
+## Testes de Integração — Estado Atual
+
+| Bloco | Escopo | Status | Observações |
+|---|---|---|---|
+| Bloco 1 | Autenticação (register, login, me, update, password, logout) | ✅ Concluído | — |
+| Bloco 2 | Dashboard e Transações (statistics, transactions CRUD, categories) | ✅ Concluído | 2 bugs corrigidos no frontend |
+| Bloco 3 | Cartões, Faturas e Parcelas | ✅ Concluído | — |
+| Bloco 4 | Assistente IA, Importar CSV, Backup, Configurações | ✅ Concluído | 1 bug corrigido em /settings |
+| Bloco 5 | Build limpo, PWA instalável, qualidade de código | ✅ Concluído | 12 erros TS corrigidos, ícones PWA criados |
+
+### Endpoints testados por bloco
+
+**Bloco 1 — Autenticação**
+- `POST /auth/register`
+- `POST /auth/login`
+- `GET /auth/me`
+- `PUT /auth/me`
+- `PUT /auth/password`
+- `POST /auth/logout`
+
+**Bloco 2 — Dashboard e Transações**
+- `GET /statistics/monthly`
+- `GET /statistics/yearly`
+- `GET /statistics/categories`
+- `GET /transactions`, `POST /transactions` (simples e parcelada)
+- `PUT /transactions/{id}`, `DELETE /transactions/{id}`
+- `GET /categories`, `POST /categories`, `DELETE /categories/{id}`
+
+**Bloco 3 — Cartões, Faturas e Parcelas**
+- `GET /cards`, `POST /cards`, `PUT /cards/{id}`, `DELETE /cards/{id}`
+- `GET /cards/{id}/invoices`
+- `GET /cards/{id}/invoices/{ano}/{mes}`
+- `GET /installments`, `PUT /installments/{id}`, `DELETE /installments/{id}`
+
+**Bloco 4 — IA**
+- `POST /ai/chat`
+
+**Bloco 5 — Build e PWA (frontend)**
+- Build TypeScript sem erros
+- PWA instalável com ícones 192×192 e 512×512
+
+### Bugs corrigidos durante testes
+
+| Commit | Arquivo | Problema | Solução |
+|---|---|---|---|
+| `a66c92d` | `DonutChart.tsx:82` | `percentual.toFixed is not a function` — backend retorna string | `Number(item.percentual).toFixed(1)` |
+| `a66c92d` | `AddTransactionPage.tsx:612` | Saldo estimado exibia `R$ NaN` — concatenação de string | `Number(stats.saldo)` na passagem para `ImpactPreview` |
+| `fe3c8c9` | `SettingsPage.tsx:317` | Confirmação de remoção exibida para todas as categorias por padrão | `deletingId !== null &&` antes da comparação com `cat.id` |
+| `07d476b` | `CardFormModal`, `EditTransactionModal`, `AddTransactionPage` | 12 erros TypeScript: Zod v4 + zodResolver + Recharts formatter | `.refine()`, cast `Resolver<z.infer<typeof schema>>`, `value: unknown` |
+| `15798da` | `public/` | Ícones PWA `icon-192.png` e `icon-512.png` ausentes | Gerados via Pillow: fundo âmbar #EF9F27, letra B off-white centralizada |
+
+---
+
+## Próximos Passos
+
+### Refinamentos (etapa atual)
+- Identificar e corrigir eventuais bugs visuais ou de UX
+- Melhorias pontuais de performance ou acessibilidade
+- Validar fluxos edge-case (ex: transação parcelada sem cartão, mês sem dados)
+
+### Deploy (próxima etapa)
+- **Backend — Railway ou Render (free tier):**
+  - Criar serviço apontando para o repositório `beefree-api`
+  - Configurar variáveis de ambiente: `DATABASE_URL`, `SECRET_KEY`, `GEMINI_API_KEY`
+  - Apontar `DATABASE_URL` para o Supabase de produção
+  - Verificar health check em `GET /health`
+  - Anotar a URL pública gerada (ex: `https://beefree-api.railway.app`)
+- **Frontend — Vercel:**
+  - Criar projeto apontando para `beefree-web`
+  - Configurar `VITE_API_URL` com a URL do backend em produção
+  - Verificar PWA instalável no celular após deploy
 
 ---
 
@@ -20,7 +96,7 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - **Estado:** Zustand (UI) + TanStack Query (servidor)
 - **Roteamento:** React Router v6
 - **Gráficos:** Recharts
-- **PWA:** Vite PWA Plugin
+- **PWA:** Vite PWA Plugin — instalável, ícones gerados (192×192 e 512×512)
 - **Deploy backend:** Railway ou Render (free tier)
 - **Deploy frontend:** Vercel
 - **Autenticação:** JWT (httpOnly cookie)
@@ -58,7 +134,20 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - [x] 16. Ver resumo detalhado (frontend)
 - [x] 17. Features secundárias (CSV, backup, categorias, perfil)
 
-### Fase 4 — Monetização e Lançamento
+### Testes e Refinamentos ✅ Concluídos (Blocos 1–5)
+
+- [x] 18. Testes end-to-end Blocos 1–5 + correção de todos os bugs críticos
+- [x] 19. Build TypeScript limpo (zero erros)
+- [x] 20. PWA com ícones gerados e instalável
+
+### Fase 4 — Deploy
+
+- [ ] Publicar backend no Railway ou Render
+- [ ] Publicar frontend no Vercel
+- [ ] Configurar variáveis de ambiente de produção
+- [ ] Verificar fluxo completo em produção
+
+### Fase 5 — Monetização e Lançamento (pós-deploy)
 
 - [ ] Definir limites do plano gratuito (ex: até 3 cartões, 100 transações/mês)
 - [ ] Integrar Stripe ou Pagar.me para plano Pro
@@ -67,44 +156,6 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - [ ] Domínio próprio (beefree.app ou similar)
 - [ ] Post LinkedIn + Product Hunt
 - [ ] Analytics com Posthog (gratuito)
-
----
-
-## Testes de Integração (Fase 4)
-
-### Bloco 1 — Autenticação ✅ Concluído
-- POST /auth/register
-- POST /auth/login
-- GET /auth/me
-- PUT /auth/me
-- PUT /auth/password
-- POST /auth/logout
-
-### Bloco 2 — Dashboard e Transações ✅ Concluído (com bugs corrigidos)
-- GET /statistics/monthly
-- GET /statistics/yearly
-- GET /statistics/categories
-- GET /transactions
-- POST /transactions (simples e parcelada)
-- PUT /transactions/{id}
-- DELETE /transactions/{id}
-- GET /categories
-- POST /categories
-- DELETE /categories/{id}
-
-### Bloco 3 — Cartões, Faturas e Parcelas ⏳ Próximo
-- GET /cards
-- POST /cards
-- PUT /cards/{id}
-- DELETE /cards/{id}
-- GET /cards/{id}/invoices
-- GET /cards/{id}/invoices/{ano}/{mes}
-- GET /installments
-- PUT /installments/{id}
-- DELETE /installments/{id}
-
-### Bloco 4 — IA ⏳ Pendente
-- POST /ai/chat
 
 ---
 
@@ -118,73 +169,8 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 | Soft delete em categorias | `ativa=False` em vez de DELETE para preservar histórico de transações. |
 | Parcelamento sem cartão | Usa intervalos mensais simples a partir da data da compra. |
 | Arredondamento de parcelas | Última parcela absorve diferença de arredondamento (`ROUND_HALF_UP`). |
-
----
-
-## Arquivos Criados/Modificados por Tarefa
-
-### Tarefa #1 — Estrutura base
-- `main.py` — FastAPI app, CORS, routers, GET /health
-- `app/core/config.py` — Settings via pydantic-settings
-- `app/core/database.py` — engine + get_session
-- `requirements.txt` — dependências
-
-### Tarefa #2 — Models + Alembic
-- `app/models/user.py` — Usuario (email, username, senha_hash, rate limiting)
-- `app/models/card.py` — Cartao (dia_vencimento, dia_fechamento, mes_offset_vencimento)
-- `app/models/transaction.py` — Transacao (tipo receita/despesa, usuario_id FK)
-- `app/models/category.py` — CategoriaCustomizada
-- `app/models/installment.py` — Parcela (FK transacao + cartao + usuario)
-- `alembic/env.py`, `alembic.ini`, `alembic/script.py.mako`
-- Migration: `abdb546095c0_initial_schema.py` — aplicada no Supabase
-
-### Tarefa #3 — Auth
-- `app/core/auth.py` — hash_password, verify_password (bcrypt direto), create_access_token, get_current_user
-- `app/schemas/auth.py` — RegisterRequest, LoginRequest, UserResponse
-- `app/routers/auth.py` — POST /register, POST /login, POST /logout, GET /me
-
-### Tarefa #3 Extra — Edição de perfil (commit 3789cb6)
-- `app/schemas/auth.py` — UpdateMeRequest, ChangePasswordRequest
-- `app/routers/auth.py` — PUT /auth/me (atualiza username), PUT /auth/password (troca senha)
-
-### Tarefa #4 — Transações e Categorias
-- `app/schemas/transaction.py` — TransacaoCreate, TransacaoUpdate, TransacaoResponse, TransacaoCreateResponse
-- `app/schemas/category.py` — CategoriaCreate, CategoriaResponse
-- `app/routers/transactions.py` — GET/POST/PUT/DELETE + lógica de parcelamento
-- `app/routers/categories.py` — GET/POST/DELETE + 15 categorias padrão hardcoded
-
-### Tarefa #5 — Cartões e Faturas
-- `app/schemas/card.py` — CartaoCreate, CartaoUpdate, CartaoResponse, CartaoComFaturaResponse
-- `app/schemas/invoice.py` — ParcelaFaturaResponse, TransacaoFaturaResponse, FaturaListItem, FaturaDetalhe
-- `app/routers/cards.py` — GET/POST/PUT/DELETE + fatura aberta calculada em tempo real
-- `app/routers/invoices.py` — GET /{card_id}/invoices (lista), GET /{card_id}/invoices/{ano}/{mes} (detalhe)
-
-### Tarefa #6 — Parcelas
-- `app/schemas/installment.py` — ParcelaUpdate, ParcelaResponse
-- `app/routers/installments.py` — GET (filtros: cartao_id, pago, cancelado, mes, ano), PUT (marcar paga/cancelar), DELETE (individual)
-
-### Tarefa #7 — Estatísticas
-- `app/schemas/statistics.py` — CategoriaStats, MensalResponse, MesEvolucao, AnualResponse, CategoriasResponse
-- `app/routers/statistics.py` — GET /statistics/monthly, GET /statistics/yearly, GET /statistics/categories
-
-### Tarefa #8 — IA (proxy Gemini)
-- `app/schemas/ai.py` — ChatRequest (mensagem, mes, ano), ChatResponse (resposta)
-- `app/routers/ai.py` — POST /ai/chat: contexto financeiro injetado no prompt, chama Gemini via google-genai
-
-### Tarefa #9 — Setup Frontend (beefree-web/)
-- `vite.config.ts` — PWA plugin configurado com manifest BeeFree
-- `tailwind.config.ts` — tokens de cor/tipografia do brand guide
-- `index.html` — Inter font, lang=pt-BR, theme-color=#1A1714
-- `src/main.tsx` — QueryClientProvider + BrowserRouter + StrictMode
-- `src/App.tsx` — React Router v6: AppLayout escolhe Mobile vs Desktop via useBreakpoint
-- `src/layouts/MobileLayout.tsx`, `DesktopLayout.tsx`, `AuthLayout.tsx`
-- `src/hooks/useBreakpoint.ts`, `useAuth.ts`, `useTransactions.ts` (stub)
-- `src/store/authStore.ts`, `uiStore.ts`
-- `src/services/api.ts`, `auth.ts`, `transactions.ts`, `cards.ts`
-
-### Tarefas #10–#17 — Frontend completo
-- Todas as telas implementadas: Auth, Dashboard, Transações, AddTransaction, Cartões, Faturas, Assistente IA, Resumo Detalhado
-- Features secundárias: importação CSV, backup JSON/CSV, gerenciar categorias, configurações de perfil
+| Zod v4 coerce + RHF | `z.coerce.number()` com `.refine()` requer cast `as Resolver<z.infer<typeof schema>>` no zodResolver. |
+| Recharts Tooltip formatter | Parâmetros tipados como `unknown` com cast interno — `ValueType`/`NameType` são uniões que incluem `undefined`. |
 
 ---
 
@@ -248,6 +234,6 @@ beefree-api/
 
 ---
 
-*Última atualização: 29 de Maio de 2026 — Testes Bloco 1 e Bloco 2 concluídos. Próximo: Bloco 3 (Cartões, Faturas e Parcelas)*  
+*Última atualização: 30 de Maio de 2026 — Todos os testes (Blocos 1–5) concluídos. Bugs críticos corrigidos. PWA instalável com ícones gerados. Próximo: refinamentos e deploy.*  
 *Projeto: BeeFree — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

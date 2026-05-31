@@ -7,11 +7,11 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ## Estado do Projeto
 
-**Fase atual:** Testes end-to-end e refinamentos  
-**Status:** Todos os testes (Blocos 1–5) concluídos. Bugs críticos corrigidos. PWA instalável e funcionando.  
-**Próximo passo imediato:** Continuar refinamentos e melhorias pontuais  
+**Fase atual:** Novas features de autenticação  
+**Status:** Todos os testes (Blocos 1–5) concluídos. Bugs #1–#5 do frontend corrigidos e commitados.  
+**Próximo passo imediato:** (1) Recuperação de senha por e-mail via Resend; (2) Refresh token  
 **Próxima fase:** Deploy — backend no Railway/Render, frontend no Vercel  
-**Última tarefa concluída:** Bloco 5 — Qualidade de build (TypeScript, PWA, bugs de UI)
+**Última tarefa concluída:** Bugs #1–#5 frontend — refinamentos de UX (Settings, categorias, emoji, empty state, toast)
 
 ---
 
@@ -70,10 +70,18 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ## Próximos Passos
 
-### Refinamentos (etapa atual)
-- Identificar e corrigir eventuais bugs visuais ou de UX
-- Melhorias pontuais de performance ou acessibilidade
-- Validar fluxos edge-case (ex: transação parcelada sem cartão, mês sem dados)
+### Features de autenticação (etapa atual)
+
+#### 1. Recuperação de senha por e-mail (Resend)
+- **Dependência:** instalar SDK `resend` no Python; configurar `RESEND_API_KEY` no `.env`
+- `POST /auth/forgot-password` — recebe `{ email }`, gera token JWT de curta duração (15 min), envia link `{FRONTEND_URL}/reset-password?token=...` via Resend
+- `POST /auth/reset-password` — recebe `{ token, nova_senha }`, valida token, atualiza hash da senha no banco
+- Token de reset: JWT separado com `sub=user_id` e `purpose=reset` (não é o access token)
+
+#### 2. Refresh token
+- **Login:** gerar dois tokens — `access_token` (15 min, httpOnly cookie) + `refresh_token` (30 dias, httpOnly cookie separado)
+- `POST /auth/refresh` — lê cookie `refresh_token`, valida, retorna novo `access_token` (e renova `refresh_token` se < 7 dias para expirar)
+- Revogar refresh token no logout
 
 ### Deploy (próxima etapa)
 - **Backend — Railway ou Render (free tier):**
@@ -139,6 +147,12 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - [x] 18. Testes end-to-end Blocos 1–5 + correção de todos os bugs críticos
 - [x] 19. Build TypeScript limpo (zero erros)
 - [x] 20. PWA com ícones gerados e instalável
+- [x] 21. Bugs #1–#5 frontend corrigidos (Settings, categorias, emoji, empty state, toast)
+
+### Features de autenticação (etapa atual)
+
+- [ ] 22. Recuperação de senha por e-mail — endpoints `/auth/forgot-password` e `/auth/reset-password` + integração Resend
+- [ ] 23. Refresh token — `POST /auth/refresh`, tokens de 15 min (access) + 30 dias (refresh)
 
 ### Fase 4 — Deploy
 
@@ -234,6 +248,6 @@ beefree-api/
 
 ---
 
-*Última atualização: 30 de Maio de 2026 — Todos os testes (Blocos 1–5) concluídos. Bugs críticos corrigidos. PWA instalável com ícones gerados. Próximo: refinamentos e deploy.*  
+*Última atualização: 31 de Maio de 2026 — Bugs #1–#5 frontend corrigidos e commitados. Próximo: recuperação de senha via Resend + refresh token.*  
 *Projeto: BeeFree — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

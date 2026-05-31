@@ -1,18 +1,23 @@
 import datetime as dt
+import uuid
 
+import resend
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlmodel import Session, select
 
 from app.core.auth import create_access_token, get_current_user, hash_password, verify_password
 from app.core.config import settings
 from app.core.database import get_session
+from app.models.password_reset_token import PasswordResetToken
 from app.models.user import Usuario
 from app.schemas.auth import (
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
     LoginRequest,
     RegisterRequest,
-    UserResponse,
+    ResetPasswordRequest,
     UpdateMeRequest,
-    ChangePasswordRequest,
+    UserResponse,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -129,4 +134,60 @@ def change_password(
 
     current_user.senha_hash = hash_password(body.nova_senha)
     session.add(current_user)
+    session.commit()
+
+
+@router.post("/forgot-password", status_code=200)
+def forgot_password(body: ForgotPasswordRequest, session: Session = Depends(get_session)):
+    user = session.exec(select(Usuario).where(Usuario.email == body.email)).first()
+
+    if user:
+        token_str = str(uuid.uuid4())
+        reset_token = PasswordResetToken(
+            usuario_id=user.id,
+            token=token_str,
+            expires_at=dt.datetime.utcnow() + dt.timedelta(minutes=15),
+        )
+        session.add(reset_token)
+
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send({
+            "from": "BeeFree <onboarding@resend.dev>",
+            "to": [user.email],
+            "subject": "Recuperação de senha — BeeFree",
+            "html": (
+                f"<p>Olá, {user.nome_completo}!</p>"
+                f"<p>Clique no link abaixo para redefinir sua senha. "
+                f"O link expira em <strong>15 minutos</strong>.</p>"
+                f"<p><a href='{settings.FRONTEND_URL}/reset-password?token={token_str}'>"
+                f"Redefinir senha</a></p>"
+                f"<p>Se você não solicitou a recuperação, ignore este e-mail.</p>"
+            ),
+        })
+
+        session.commit()
+
+    return {"message": "Se o e-mail estiver cadastrado, você receberá um link em breve."}
+
+
+@router.post("/reset-password", status_code=204)
+def reset_password(body: ResetPasswordRequest, session: Session = Depends(get_session)):
+    reset_token = session.exec(
+        select(PasswordResetToken).where(PasswordResetToken.token == body.token)
+    ).first()
+
+    if reset_token is None:
+        raise HTTPException(status_code=404, detail="Token inválido.")
+
+    if reset_token.usado:
+        raise HTTPException(status_code=400, detail="Token já utilizado.")
+
+    if reset_token.expires_at < dt.datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Token expirado.")
+
+    user = session.get(Usuario, reset_token.usuario_id)
+    user.senha_hash = hash_password(body.nova_senha)
+    reset_token.usado = True
+    session.add(user)
+    session.add(reset_token)
     session.commit()

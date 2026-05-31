@@ -8,10 +8,10 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 ## Estado do Projeto
 
 **Fase atual:** Novas features de autenticação  
-**Status:** Todos os testes (Blocos 1–5) concluídos. Bugs #1–#5 do frontend corrigidos e commitados.  
-**Próximo passo imediato:** (1) Recuperação de senha por e-mail via Resend; (2) Refresh token  
+**Status:** Recuperação de senha implementada e testada. Falta configurar RESEND_API_KEY no .env para testar envio real.  
+**Próximo passo imediato:** (1) Configurar RESEND_API_KEY no .env e testar envio real; (2) Refresh token  
 **Próxima fase:** Deploy — backend no Railway/Render, frontend no Vercel  
-**Última tarefa concluída:** Bugs #1–#5 frontend — refinamentos de UX (Settings, categorias, emoji, empty state, toast)
+**Última tarefa concluída:** Recuperação de senha por e-mail — `POST /auth/forgot-password` + `POST /auth/reset-password` + tabela `password_reset_tokens`
 
 ---
 
@@ -151,7 +151,7 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ### Features de autenticação (etapa atual)
 
-- [ ] 22. Recuperação de senha por e-mail — endpoints `/auth/forgot-password` e `/auth/reset-password` + integração Resend
+- [x] 22. Recuperação de senha por e-mail — endpoints `/auth/forgot-password` e `/auth/reset-password` + integração Resend
 - [ ] 23. Refresh token — `POST /auth/refresh`, tokens de 15 min (access) + 30 dias (refresh)
 
 ### Fase 4 — Deploy

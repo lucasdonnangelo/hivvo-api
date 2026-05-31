@@ -51,3 +51,17 @@ class UpdateMeRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     senha_atual: str
     nova_senha: str = Field(min_length=8)
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def email_lowercase(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    nova_senha: str = Field(min_length=8)

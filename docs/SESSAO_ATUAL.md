@@ -8,10 +8,10 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 ## Estado do Projeto
 
 **Fase atual:** Novas features de autenticação  
-**Status:** Recuperação de senha implementada e testada. Falta configurar RESEND_API_KEY no .env para testar envio real.  
-**Próximo passo imediato:** (1) Configurar RESEND_API_KEY no .env e testar envio real; (2) Refresh token  
+**Status:** Recuperação de senha implementada. Bug #7 (encoding) corrigido. Falta configurar `RESEND_API_KEY` no `.env` para testar envio real de e-mail.  
+**Próximo passo imediato:** Refresh token — `POST /auth/refresh` (backend) + interceptor Axios (frontend)  
 **Próxima fase:** Deploy — backend no Railway/Render, frontend no Vercel  
-**Última tarefa concluída:** Recuperação de senha por e-mail — `POST /auth/forgot-password` + `POST /auth/reset-password` + tabela `password_reset_tokens`
+**Última tarefa concluída:** Bug #7 — `UTF8JSONResponse` com `charset=utf-8` como `default_response_class` em `main.py`
 
 ---
 
@@ -65,6 +65,7 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 | `fe3c8c9` | `SettingsPage.tsx:317` | Confirmação de remoção exibida para todas as categorias por padrão | `deletingId !== null &&` antes da comparação com `cat.id` |
 | `07d476b` | `CardFormModal`, `EditTransactionModal`, `AddTransactionPage` | 12 erros TypeScript: Zod v4 + zodResolver + Recharts formatter | `.refine()`, cast `Resolver<z.infer<typeof schema>>`, `value: unknown` |
 | `15798da` | `public/` | Ícones PWA `icon-192.png` e `icon-512.png` ausentes | Gerados via Pillow: fundo âmbar #EF9F27, letra B off-white centralizada |
+| `d9270ae` | `main.py` | Mojibake nas respostas JSON (`vocÃª`, `receberÃ¡`) — bytes UTF-8 lidos como latin-1 | `UTF8JSONResponse` com `charset=utf-8` como `default_response_class` |
 
 ---
 
@@ -72,11 +73,10 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ### Features de autenticação (etapa atual)
 
-#### 1. Recuperação de senha por e-mail (Resend)
-- **Dependência:** instalar SDK `resend` no Python; configurar `RESEND_API_KEY` no `.env`
-- `POST /auth/forgot-password` — recebe `{ email }`, gera token JWT de curta duração (15 min), envia link `{FRONTEND_URL}/reset-password?token=...` via Resend
-- `POST /auth/reset-password` — recebe `{ token, nova_senha }`, valida token, atualiza hash da senha no banco
-- Token de reset: JWT separado com `sub=user_id` e `purpose=reset` (não é o access token)
+#### 1. ~~Recuperação de senha por e-mail (Resend)~~ ✅ Concluído
+- `POST /auth/forgot-password` — recebe `{ email }`, gera token JWT (15 min, `purpose=reset`), envia link via Resend
+- `POST /auth/reset-password` — recebe `{ token, nova_senha }`, valida token, atualiza hash da senha
+- **Pendente:** configurar `RESEND_API_KEY` no `.env` para testar envio real de e-mail
 
 #### 2. Refresh token
 - **Login:** gerar dois tokens — `access_token` (15 min, httpOnly cookie) + `refresh_token` (30 dias, httpOnly cookie separado)
@@ -86,7 +86,7 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 ### Deploy (próxima etapa)
 - **Backend — Railway ou Render (free tier):**
   - Criar serviço apontando para o repositório `beefree-api`
-  - Configurar variáveis de ambiente: `DATABASE_URL`, `SECRET_KEY`, `GEMINI_API_KEY`
+  - Configurar variáveis de ambiente: `DATABASE_URL`, `SECRET_KEY`, `GEMINI_API_KEY`, `RESEND_API_KEY`, `FRONTEND_URL`
   - Apontar `DATABASE_URL` para o Supabase de produção
   - Verificar health check em `GET /health`
   - Anotar a URL pública gerada (ex: `https://beefree-api.railway.app`)
@@ -125,7 +125,7 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - [x] 6. Endpoints de parcelas
 - [x] 7. Endpoints de estatísticas
 - [x] 8. Endpoint de IA (proxy Gemini)
-- [x] Extra: PUT /auth/me + PUT /auth/password (commit 3789cb6)
+- [x] Extra: `PUT /auth/me` + `PUT /auth/password` (commit `3789cb6`)
 
 ### Fase 2 — Frontend React PWA (base) ✅ Completa
 
@@ -133,26 +133,19 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ### Fase 3 — Telas Restantes ✅ Completa
 
-- [x] 10. Login + Cadastro (frontend)
-- [x] 11. Dashboard (frontend)
-- [x] 12. Transações (frontend)
-- [x] 13. Adicionar transação com parcelamento (frontend)
-- [x] 14. Cartões e faturas (frontend)
-- [x] 15. Assistente IA (frontend)
-- [x] 16. Ver resumo detalhado (frontend)
-- [x] 17. Features secundárias (CSV, backup, categorias, perfil)
+- [x] 10–17. Todas as telas frontend (Login, Dashboard, Transações, Cartões, IA, Resumo, CSV, Settings)
 
 ### Testes e Refinamentos ✅ Concluídos (Blocos 1–5)
 
 - [x] 18. Testes end-to-end Blocos 1–5 + correção de todos os bugs críticos
-- [x] 19. Build TypeScript limpo (zero erros)
-- [x] 20. PWA com ícones gerados e instalável
-- [x] 21. Bugs #1–#5 frontend corrigidos (Settings, categorias, emoji, empty state, toast)
 
 ### Features de autenticação (etapa atual)
 
-- [x] 22. Recuperação de senha por e-mail — endpoints `/auth/forgot-password` e `/auth/reset-password` + integração Resend
-- [ ] 23. Refresh token — `POST /auth/refresh`, tokens de 15 min (access) + 30 dias (refresh)
+- [x] 19. Recuperação de senha — `POST /auth/forgot-password` + `POST /auth/reset-password` + Resend
+- [x] 20. UX frontend: confirmação de logout + toggle de visibilidade de senha
+- [x] 21. Bug #6 — "Ver Resumo" mais visível (chip mobile + botão desktop)
+- [x] 22. Bug #7 — encoding UTF-8 (`charset=utf-8` no Content-Type de todas as respostas JSON)
+- [ ] 23. Refresh token — `POST /auth/refresh` + cookie `refresh_token` (30 dias) + interceptor Axios
 
 ### Fase 4 — Deploy
 
@@ -185,6 +178,8 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 | Arredondamento de parcelas | Última parcela absorve diferença de arredondamento (`ROUND_HALF_UP`). |
 | Zod v4 coerce + RHF | `z.coerce.number()` com `.refine()` requer cast `as Resolver<z.infer<typeof schema>>` no zodResolver. |
 | Recharts Tooltip formatter | Parâmetros tipados como `unknown` com cast interno — `ValueType`/`NameType` são uniões que incluem `undefined`. |
+| UTF-8 encoding | `UTF8JSONResponse` com `media_type = "application/json; charset=utf-8"` como `default_response_class` — elimina Mojibake em browsers que não assumem UTF-8 sem charset explícito no Content-Type. |
+| Token de reset de senha | JWT separado com `sub=user_id` e `purpose=reset`, expiração de 15 min — não confundir com o `access_token`. |
 
 ---
 
@@ -192,7 +187,7 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ```
 beefree-api/
-├── main.py
+├── main.py              ✓  (UTF8JSONResponse como default_response_class)
 ├── .env
 ├── requirements.txt
 ├── alembic.ini
@@ -218,7 +213,7 @@ beefree-api/
     │   ├── statistics.py    ✓
     │   └── ai.py            ✓
     ├── routers/
-    │   ├── auth.py          ✓
+    │   ├── auth.py          ✓  (inclui /forgot-password e /reset-password)
     │   ├── transactions.py  ✓
     │   ├── categories.py    ✓
     │   ├── cards.py         ✓
@@ -248,6 +243,6 @@ beefree-api/
 
 ---
 
-*Última atualização: 31 de Maio de 2026 — Bugs #1–#5 frontend corrigidos e commitados. Próximo: recuperação de senha via Resend + refresh token.*  
+*Última atualização: 31 de Maio de 2026 — Recuperação de senha concluída. Bug #7 (encoding) corrigido. Próximo: refresh token.*  
 *Projeto: BeeFree — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

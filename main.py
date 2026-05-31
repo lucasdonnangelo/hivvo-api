@@ -1,16 +1,23 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse as _JSONResponse
 from sqlmodel import Session, text
 
 from app.core.config import settings
 from app.core.database import engine
 from app.routers import auth, transactions, categories, cards, invoices, installments, statistics, ai
 
+
+class UTF8JSONResponse(_JSONResponse):
+    media_type = "application/json; charset=utf-8"
+
+
 app = FastAPI(
     title="BeeFree API",
     version="0.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    default_response_class=UTF8JSONResponse,
 )
 
 app.add_middleware(

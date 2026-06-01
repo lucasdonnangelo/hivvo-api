@@ -152,9 +152,9 @@ def forgot_password(body: ForgotPasswordRequest, session: Session = Depends(get_
 
         resend.api_key = settings.RESEND_API_KEY
         resend.Emails.send({
-            "from": "BeeFree <onboarding@resend.dev>",
+            "from": "Hivvo <onboarding@resend.dev>",
             "to": [user.email],
-            "subject": "Recuperação de senha — BeeFree",
+            "subject": "Recuperação de senha — Hivvo",
             "html": (
                 f"<p>Olá, {user.nome_completo}!</p>"
                 f"<p>Clique no link abaixo para redefinir sua senha. "

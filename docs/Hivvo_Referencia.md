@@ -1,4 +1,4 @@
-# BeeFree — Documento de Referência do Produto
+# Hivvo — Documento de Referência do Produto
 
 **Brand Guide | Arquitetura | Telas | Plano de Migração**  
 Maio 2026 | Lucas Donnangelo
@@ -7,7 +7,7 @@ Maio 2026 | Lucas Donnangelo
 
 ## 1. Visão do Produto
 
-BeeFree é um aplicativo web de gestão financeira pessoal com IA, voltado exclusivamente para pessoa física. O nome carrega duplo sentido: "bee" (abelha, símbolo de organização e construção) + "be free" (liberdade financeira).
+Hivvo é um aplicativo web de gestão financeira pessoal com IA, voltado exclusivamente para pessoa física. O nome carrega duplo sentido: "bee" (abelha, símbolo de organização e construção) + "be free" (liberdade financeira).
 
 ### Pilares
 
@@ -38,7 +38,7 @@ BeeFree é um aplicativo web de gestão financeira pessoal com IA, voltado exclu
 
 | Atributo | Valor |
 |---|---|
-| Nome | BeeFree |
+| Nome | Hivvo |
 | Conceito | Seja livre com seu dinheiro |
 | Mascote | Abelha estilizada, minimalista, vista de frente (em pé) |
 | Wordmark | "Bee" (off-white #F5F0E8) + "Free" (âmbar #EF9F27), peso 500, tracking -0.02em |
@@ -202,7 +202,7 @@ colors: {
 ### Estrutura de Pastas (Frontend)
 
 ```
-beefree-web/
+hivvo-web/
 ├── index.html
 ├── vite.config.ts
 ├── tailwind.config.ts
@@ -302,7 +302,7 @@ O componente nunca chama a API diretamente — sempre via hook do TanStack Query
 ### Estrutura de Pastas (Backend)
 
 ```
-beefree-api/
+hivvo-api/
 ├── main.py
 ├── .env
 ├── requirements.txt
@@ -408,8 +408,8 @@ beefree-api/
 - [ ] Definir limites do plano gratuito (ex: até 3 cartões, 100 transações/mês)
 - [ ] Integrar Stripe ou Pagar.me para plano Pro
 - [ ] Gate de features por plano no backend
-- [ ] Landing page do BeeFree
-- [ ] Domínio próprio (beefree.app ou similar)
+- [ ] Landing page do Hivvo
+- [ ] Domínio próprio (hivvo.app ou similar)
 - [ ] Post LinkedIn + Product Hunt
 - [ ] Analytics com Posthog (gratuito)
 
@@ -432,7 +432,7 @@ beefree-api/
 ### Prompt de Abertura de Sessão
 
 ```
-Leia os arquivos docs/BeeFree_Referencia.md e docs/SESSAO_ATUAL.md antes de começar.
+Leia os arquivos docs/Hivvo_Referencia.md e docs/SESSAO_ATUAL.md antes de começar.
 Confirme que entendeu a arquitetura, as decisões de stack e a ordem de implementação.
 Não proponha alternativas de tecnologia — as escolhas já foram feitas.
 ```
@@ -458,5 +458,5 @@ Não proponha alternativas de tecnologia — as escolhas já foram feitas.
 
 ---
 
-*BeeFree — Documento de Referência v1.0 — Maio 2026*  
+*Hivvo — Documento de Referência v1.0 — Maio 2026*  
 *Repositório original: github.com/lucasdonnangelo/financeai*

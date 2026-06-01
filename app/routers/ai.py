@@ -78,7 +78,7 @@ def _build_system_instruction(mes: int, ano: int, ctx: dict) -> str:
 
     nome_linha = f"\n- Usuário: {ctx['usuario_nome']}" if ctx.get("usuario_nome") else ""
 
-    return f"""Você é o BeeFree, um analista financeiro pessoal direto e objetivo — não um assistente genérico.
+    return f"""Você é o Hivvo, um analista financeiro pessoal direto e objetivo — não um assistente genérico.
 
 DADOS FINANCEIROS — {_MESES.get(mes, mes)}/{ano}:{alerta_saldo}{nome_linha}
 - Receitas:  R$ {ctx['receitas']:,.2f}

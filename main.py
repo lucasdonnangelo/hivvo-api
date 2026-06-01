@@ -13,7 +13,7 @@ class UTF8JSONResponse(_JSONResponse):
 
 
 app = FastAPI(
-    title="BeeFree API",
+    title="Hivvo API",
     version="0.1.0",
     docs_url="/docs",
     redoc_url="/redoc",

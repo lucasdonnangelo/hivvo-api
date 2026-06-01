@@ -1,7 +1,7 @@
-# BeeFree — Sessão Atual
+# Hivvo — Sessão Atual
 
 ## Antes de começar
-Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para entender o produto, a arquitetura e as decisões de stack. Não proponha alternativas de tecnologia — as escolhas já foram feitas.
+Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entender o produto, a arquitetura e as decisões de stack. Não proponha alternativas de tecnologia — as escolhas já foram feitas.
 
 ---
 
@@ -85,13 +85,13 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 
 ### Deploy (próxima etapa)
 - **Backend — Railway ou Render (free tier):**
-  - Criar serviço apontando para o repositório `beefree-api`
+  - Criar serviço apontando para o repositório `hivvo-api`
   - Configurar variáveis de ambiente: `DATABASE_URL`, `SECRET_KEY`, `GEMINI_API_KEY`, `RESEND_API_KEY`, `FRONTEND_URL`
   - Apontar `DATABASE_URL` para o Supabase de produção
   - Verificar health check em `GET /health`
-  - Anotar a URL pública gerada (ex: `https://beefree-api.railway.app`)
+  - Anotar a URL pública gerada (ex: `https://hivvo-api.railway.app`)
 - **Frontend — Vercel:**
-  - Criar projeto apontando para `beefree-web`
+  - Criar projeto apontando para `hivvo-web`
   - Configurar `VITE_API_URL` com a URL do backend em produção
   - Verificar PWA instalável no celular após deploy
 
@@ -159,8 +159,8 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 - [ ] Definir limites do plano gratuito (ex: até 3 cartões, 100 transações/mês)
 - [ ] Integrar Stripe ou Pagar.me para plano Pro
 - [ ] Gate de features por plano no backend
-- [ ] Landing page do BeeFree
-- [ ] Domínio próprio (beefree.app ou similar)
+- [ ] Landing page do Hivvo
+- [ ] Domínio próprio (hivvo.app ou similar)
 - [ ] Post LinkedIn + Product Hunt
 - [ ] Analytics com Posthog (gratuito)
 
@@ -186,7 +186,7 @@ Leia os arquivos `docs/BeeFree_Referencia.md` e `docs/SESSAO_ATUAL.md` para ente
 ## Estrutura de Pastas Atual (Backend)
 
 ```
-beefree-api/
+hivvo-api/
 ├── main.py              ✓  (UTF8JSONResponse como default_response_class)
 ├── .env
 ├── requirements.txt
@@ -244,5 +244,5 @@ beefree-api/
 ---
 
 *Última atualização: 31 de Maio de 2026 — Recuperação de senha concluída. Bug #7 (encoding) corrigido. Próximo: refresh token.*  
-*Projeto: BeeFree — gestão financeira pessoal com IA*  
+*Projeto: Hivvo — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

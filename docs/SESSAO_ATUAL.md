@@ -7,11 +7,11 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 
 ## Estado do Projeto
 
-**Fase atual:** Novas features de autenticação  
-**Status:** Recuperação de senha implementada. Bug #7 (encoding) corrigido. Falta configurar `RESEND_API_KEY` no `.env` para testar envio real de e-mail.  
-**Próximo passo imediato:** Refresh token — `POST /auth/refresh` (backend) + interceptor Axios (frontend)  
+**Fase atual:** Pronto para deploy  
+**Status:** Features de autenticação completas — recuperação de senha ✅, refresh token ✅, todos os bugs #1–#7 corrigidos ✅. Backend totalmente funcional e testado.  
+**Próximo passo imediato:** Sessão de UI/UX (ajustes visuais e de experiência antes do deploy)  
 **Próxima fase:** Deploy — backend no Railway/Render, frontend no Vercel  
-**Última tarefa concluída:** Bug #7 — `UTF8JSONResponse` com `charset=utf-8` como `default_response_class` em `main.py`
+**Última tarefa concluída:** Refresh token — tabela `refresh_tokens`, rotação obrigatória, cookies httpOnly, `access_token` 30 min
 
 ---
 
@@ -71,23 +71,17 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 
 ## Próximos Passos
 
-### Features de autenticação (etapa atual)
+### Sessão de UI/UX (próxima etapa)
+- Revisão visual das telas existentes
+- Ajustes de espaçamento, tipografia e micro-interações
+- Consistência de estados vazios, loading e erro em todas as telas
+- Revisar fluxo mobile vs desktop
 
-#### 1. ~~Recuperação de senha por e-mail (Resend)~~ ✅ Concluído
-- `POST /auth/forgot-password` — recebe `{ email }`, gera token JWT (15 min, `purpose=reset`), envia link via Resend
-- `POST /auth/reset-password` — recebe `{ token, nova_senha }`, valida token, atualiza hash da senha
-- **Pendente:** configurar `RESEND_API_KEY` no `.env` para testar envio real de e-mail
-
-#### 2. Refresh token
-- **Login:** gerar dois tokens — `access_token` (15 min, httpOnly cookie) + `refresh_token` (30 dias, httpOnly cookie separado)
-- `POST /auth/refresh` — lê cookie `refresh_token`, valida, retorna novo `access_token` (e renova `refresh_token` se < 7 dias para expirar)
-- Revogar refresh token no logout
-
-### Deploy (próxima etapa)
+### Deploy
 - **Backend — Railway ou Render (free tier):**
   - Criar serviço apontando para o repositório `hivvo-api`
   - Configurar variáveis de ambiente: `DATABASE_URL`, `SECRET_KEY`, `GEMINI_API_KEY`, `RESEND_API_KEY`, `FRONTEND_URL`
-  - Apontar `DATABASE_URL` para o Supabase de produção
+  - Rodar migration `alembic upgrade head` no ambiente de produção
   - Verificar health check em `GET /health`
   - Anotar a URL pública gerada (ex: `https://hivvo-api.railway.app`)
 - **Frontend — Vercel:**
@@ -139,13 +133,17 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 
 - [x] 18. Testes end-to-end Blocos 1–5 + correção de todos os bugs críticos
 
-### Features de autenticação (etapa atual)
+### Features de autenticação ✅ Completa
 
 - [x] 19. Recuperação de senha — `POST /auth/forgot-password` + `POST /auth/reset-password` + Resend
 - [x] 20. UX frontend: confirmação de logout + toggle de visibilidade de senha
 - [x] 21. Bug #6 — "Ver Resumo" mais visível (chip mobile + botão desktop)
 - [x] 22. Bug #7 — encoding UTF-8 (`charset=utf-8` no Content-Type de todas as respostas JSON)
 - [x] 23. Refresh token — `POST /auth/refresh` + cookie `refresh_token` (7 dias) + tabela `refresh_tokens` + rotação
+
+### Sessão de UI/UX (próxima)
+
+- [ ] 24. Revisão visual e ajustes de UX em todas as telas
 
 ### Fase 4 — Deploy
 
@@ -196,14 +194,18 @@ hivvo-api/
 │   ├── env.py
 │   ├── script.py.mako
 │   └── versions/
-│       └── abdb546095c0_initial_schema.py
+│       ├── abdb546095c0_initial_schema.py
+│       ├── 268b08c02e0a_add_password_reset_tokens.py
+│       └── 207ebc9ef981_add_refresh_tokens.py
 └── app/
     ├── models/
-    │   ├── user.py          ✓
-    │   ├── card.py          ✓
-    │   ├── transaction.py   ✓
-    │   ├── category.py      ✓
-    │   └── installment.py   ✓
+    │   ├── user.py                  ✓
+    │   ├── card.py                  ✓
+    │   ├── transaction.py           ✓
+    │   ├── category.py              ✓
+    │   ├── installment.py           ✓
+    │   ├── password_reset_token.py  ✓
+    │   └── refresh_token.py         ✓
     ├── schemas/
     │   ├── auth.py          ✓
     │   ├── transaction.py   ✓
@@ -214,7 +216,7 @@ hivvo-api/
     │   ├── statistics.py    ✓
     │   └── ai.py            ✓
     ├── routers/
-    │   ├── auth.py          ✓  (inclui /forgot-password e /reset-password)
+    │   ├── auth.py          ✓  (register, login, refresh, logout, me, password, forgot/reset-password)
     │   ├── transactions.py  ✓
     │   ├── categories.py    ✓
     │   ├── cards.py         ✓
@@ -225,9 +227,9 @@ hivvo-api/
     ├── repositories/        — vazio
     ├── services/            — vazio
     └── core/
-        ├── auth.py          ✓
+        ├── auth.py          ✓  (create_refresh_token, rotate_refresh_token)
         ├── database.py      ✓
-        └── config.py        ✓
+        └── config.py        ✓  (ACCESS_TOKEN_EXPIRE_MINUTES=30, REFRESH_TOKEN_EXPIRE_DAYS=7)
 ```
 
 ---
@@ -244,6 +246,6 @@ hivvo-api/
 
 ---
 
-*Última atualização: 01 de Junho de 2026 — Refresh token implementado (tabela refresh_tokens, rotação, cookies httpOnly, access token 30 min). Próximo: interceptor Axios no frontend + deploy.*  
+*Última atualização: 01 de Junho de 2026 — Features de autenticação completas (recuperação de senha + refresh token). Todos os bugs #1–#7 corrigidos. Próximo: sessão de UI/UX → deploy.*  
 *Projeto: Hivvo — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

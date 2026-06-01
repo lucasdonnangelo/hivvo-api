@@ -145,7 +145,7 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 - [x] 20. UX frontend: confirmação de logout + toggle de visibilidade de senha
 - [x] 21. Bug #6 — "Ver Resumo" mais visível (chip mobile + botão desktop)
 - [x] 22. Bug #7 — encoding UTF-8 (`charset=utf-8` no Content-Type de todas as respostas JSON)
-- [ ] 23. Refresh token — `POST /auth/refresh` + cookie `refresh_token` (30 dias) + interceptor Axios
+- [x] 23. Refresh token — `POST /auth/refresh` + cookie `refresh_token` (7 dias) + tabela `refresh_tokens` + rotação
 
 ### Fase 4 — Deploy
 
@@ -180,6 +180,7 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 | Recharts Tooltip formatter | Parâmetros tipados como `unknown` com cast interno — `ValueType`/`NameType` são uniões que incluem `undefined`. |
 | UTF-8 encoding | `UTF8JSONResponse` com `media_type = "application/json; charset=utf-8"` como `default_response_class` — elimina Mojibake em browsers que não assumem UTF-8 sem charset explícito no Content-Type. |
 | Token de reset de senha | JWT separado com `sub=user_id` e `purpose=reset`, expiração de 15 min — não confundir com o `access_token`. |
+| Refresh token | UUID v4 armazenado na tabela `refresh_tokens`; rotação obrigatória a cada uso (token antigo revogado, novo criado). `access_token` reduzido para 30 min. Cookie `refresh_token` httpOnly, 7 dias. |
 
 ---
 
@@ -243,6 +244,6 @@ hivvo-api/
 
 ---
 
-*Última atualização: 31 de Maio de 2026 — Recuperação de senha concluída. Bug #7 (encoding) corrigido. Próximo: refresh token.*  
+*Última atualização: 01 de Junho de 2026 — Refresh token implementado (tabela refresh_tokens, rotação, cookies httpOnly, access token 30 min). Próximo: interceptor Axios no frontend + deploy.*  
 *Projeto: Hivvo — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

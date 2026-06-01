@@ -1,10 +1,11 @@
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
 import bcrypt
 from fastapi import Cookie, Depends, HTTPException, status
 from jose import JWTError, jwt
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.core.database import get_session
@@ -25,6 +26,39 @@ def create_access_token(user_id: int) -> str:
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM,
     )
+
+
+def create_refresh_token(user_id: int, session: Session) -> str:
+    from app.models.refresh_token import RefreshToken
+
+    token_str = str(uuid.uuid4())
+    token = RefreshToken(
+        usuario_id=user_id,
+        token=token_str,
+        expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+    session.add(token)
+    return token_str
+
+
+def rotate_refresh_token(old_token_str: str, session: Session) -> tuple[int, str]:
+    from app.models.refresh_token import RefreshToken
+
+    token = session.exec(
+        select(RefreshToken).where(RefreshToken.token == old_token_str)
+    ).first()
+
+    if token is None or token.revogado or token.expires_at < datetime.utcnow():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token inválido ou expirado",
+        )
+
+    token.revogado = True
+    session.add(token)
+
+    new_token_str = create_refresh_token(token.usuario_id, session)
+    return token.usuario_id, new_token_str
 
 
 def get_current_user(

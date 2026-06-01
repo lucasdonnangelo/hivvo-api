@@ -1,14 +1,23 @@
 import datetime as dt
 import uuid
+from typing import Optional
 
 import resend
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from sqlmodel import Session, select
 
-from app.core.auth import create_access_token, get_current_user, hash_password, verify_password
+from app.core.auth import (
+    create_access_token,
+    create_refresh_token,
+    get_current_user,
+    hash_password,
+    rotate_refresh_token,
+    verify_password,
+)
 from app.core.config import settings
 from app.core.database import get_session
 from app.models.password_reset_token import PasswordResetToken
+from app.models.refresh_token import RefreshToken
 from app.models.user import Usuario
 from app.schemas.auth import (
     ChangePasswordRequest,
@@ -24,17 +33,29 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 _MAX_TENTATIVAS = 5
 _BLOQUEIO_MINUTOS = 15
-_COOKIE_NAME = "access_token"
+_COOKIE_ACCESS = "access_token"
+_COOKIE_REFRESH = "refresh_token"
 
 
 def _set_auth_cookie(response: Response, token: str) -> None:
     response.set_cookie(
-        key=_COOKIE_NAME,
+        key=_COOKIE_ACCESS,
         value=token,
         httponly=True,
         secure=settings.ENVIRONMENT == "production",
         samesite="lax",
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=_COOKIE_REFRESH,
+        value=token,
+        httponly=True,
+        secure=settings.ENVIRONMENT == "production",
+        samesite="lax",
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
     )
 
 
@@ -52,10 +73,14 @@ def register(body: RegisterRequest, response: Response, session: Session = Depen
         senha_hash=hash_password(body.password),
     )
     session.add(user)
+    session.flush()  # popula user.id antes de criar o refresh token
+
+    refresh_token_str = create_refresh_token(user.id, session)
     session.commit()
     session.refresh(user)
 
     _set_auth_cookie(response, create_access_token(user.id))
+    _set_refresh_cookie(response, refresh_token_str)
     return UserResponse.model_validate(user)
 
 
@@ -69,7 +94,6 @@ def login(body: LoginRequest, response: Response, session: Session = Depends(get
     if not user.ativo:
         raise HTTPException(status_code=403, detail="Conta desativada")
 
-    # Rate limiting
     if user.bloqueado_ate and user.bloqueado_ate > dt.datetime.utcnow():
         raise HTTPException(status_code=429, detail="Conta temporariamente bloqueada. Tente novamente mais tarde.")
 
@@ -84,16 +108,54 @@ def login(body: LoginRequest, response: Response, session: Session = Depends(get
     user.tentativas_login = 0
     user.bloqueado_ate = None
     session.add(user)
+
+    refresh_token_str = create_refresh_token(user.id, session)
     session.commit()
     session.refresh(user)
 
     _set_auth_cookie(response, create_access_token(user.id))
+    _set_refresh_cookie(response, refresh_token_str)
+    return UserResponse.model_validate(user)
+
+
+@router.post("/refresh", response_model=UserResponse)
+def refresh(
+    response: Response,
+    refresh_token: Optional[str] = Cookie(default=None),
+    session: Session = Depends(get_session),
+):
+    if refresh_token is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Não autenticado")
+
+    user_id, new_refresh_str = rotate_refresh_token(refresh_token, session)
+    session.commit()
+
+    user = session.get(Usuario, user_id)
+    if user is None or not user.ativo:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuário inativo ou não encontrado")
+
+    _set_auth_cookie(response, create_access_token(user_id))
+    _set_refresh_cookie(response, new_refresh_str)
     return UserResponse.model_validate(user)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(response: Response):
-    response.delete_cookie(_COOKIE_NAME)
+def logout(
+    response: Response,
+    refresh_token: Optional[str] = Cookie(default=None),
+    session: Session = Depends(get_session),
+):
+    if refresh_token is not None:
+        token_record = session.exec(
+            select(RefreshToken).where(RefreshToken.token == refresh_token)
+        ).first()
+        if token_record and not token_record.revogado:
+            token_record.revogado = True
+            session.add(token_record)
+            session.commit()
+
+    response.delete_cookie(_COOKIE_ACCESS)
+    response.delete_cookie(_COOKIE_REFRESH)
 
 
 @router.get("/me", response_model=UserResponse)

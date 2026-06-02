@@ -7,54 +7,23 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 
 ## Estado do Projeto
 
-**Fase atual:** Pronto para deploy  
-**Status:** Features de autenticação completas — recuperação de senha ✅, refresh token ✅, todos os bugs #1–#7 corrigidos ✅. Backend totalmente funcional e testado.  
-**Próximo passo imediato:** Sessão de UI/UX (ajustes visuais e de experiência antes do deploy)  
-**Próxima fase:** Deploy — backend no Railway/Render, frontend no Vercel  
-**Última tarefa concluída:** Refresh token — tabela `refresh_tokens`, rotação obrigatória, cookies httpOnly, `access_token` 30 min
+**Fase atual:** Deploy  
+**Status:** Sessão de UI/UX concluída — melhorias #1 a #10 implementadas e commitadas. App funcional, polido e pronto para produção.  
+**Próximo passo imediato:** Deploy do backend no Railway ou Render  
+**Próxima fase:** Registro do domínio hivvo.app + landing page  
+**Última tarefa concluída:** Melhoria #10 — Onboarding progressivo pós-cadastro (commit `1994d61`)
 
 ---
 
-## Testes de Integração — Estado Atual
+## Testes — Estado Atual
 
 | Bloco | Escopo | Status | Observações |
 |---|---|---|---|
-| Bloco 1 | Autenticação (register, login, me, update, password, logout) | ✅ Concluído | — |
-| Bloco 2 | Dashboard e Transações (statistics, transactions CRUD, categories) | ✅ Concluído | 2 bugs corrigidos no frontend |
+| Bloco 1 | Autenticação (registro, login, logout, sessão persistida) | ✅ Concluído | — |
+| Bloco 2 | Dashboard e Transações (CRUD, filtros, gráficos, resumo detalhado) | ✅ Concluído | 2 bugs corrigidos |
 | Bloco 3 | Cartões, Faturas e Parcelas | ✅ Concluído | — |
 | Bloco 4 | Assistente IA, Importar CSV, Backup, Configurações | ✅ Concluído | 1 bug corrigido em /settings |
 | Bloco 5 | Build limpo, PWA instalável, qualidade de código | ✅ Concluído | 12 erros TS corrigidos, ícones PWA criados |
-
-### Endpoints testados por bloco
-
-**Bloco 1 — Autenticação**
-- `POST /auth/register`
-- `POST /auth/login`
-- `GET /auth/me`
-- `PUT /auth/me`
-- `PUT /auth/password`
-- `POST /auth/logout`
-
-**Bloco 2 — Dashboard e Transações**
-- `GET /statistics/monthly`
-- `GET /statistics/yearly`
-- `GET /statistics/categories`
-- `GET /transactions`, `POST /transactions` (simples e parcelada)
-- `PUT /transactions/{id}`, `DELETE /transactions/{id}`
-- `GET /categories`, `POST /categories`, `DELETE /categories/{id}`
-
-**Bloco 3 — Cartões, Faturas e Parcelas**
-- `GET /cards`, `POST /cards`, `PUT /cards/{id}`, `DELETE /cards/{id}`
-- `GET /cards/{id}/invoices`
-- `GET /cards/{id}/invoices/{ano}/{mes}`
-- `GET /installments`, `PUT /installments/{id}`, `DELETE /installments/{id}`
-
-**Bloco 4 — IA**
-- `POST /ai/chat`
-
-**Bloco 5 — Build e PWA (frontend)**
-- Build TypeScript sem erros
-- PWA instalável com ícones 192×192 e 512×512
 
 ### Bugs corrigidos durante testes
 
@@ -63,31 +32,83 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 | `a66c92d` | `DonutChart.tsx:82` | `percentual.toFixed is not a function` — backend retorna string | `Number(item.percentual).toFixed(1)` |
 | `a66c92d` | `AddTransactionPage.tsx:612` | Saldo estimado exibia `R$ NaN` — concatenação de string | `Number(stats.saldo)` na passagem para `ImpactPreview` |
 | `fe3c8c9` | `SettingsPage.tsx:317` | Confirmação de remoção exibida para todas as categorias por padrão | `deletingId !== null &&` antes da comparação com `cat.id` |
-| `07d476b` | `CardFormModal`, `EditTransactionModal`, `AddTransactionPage` | 12 erros TypeScript: Zod v4 + zodResolver + Recharts formatter | `.refine()`, cast `Resolver<z.infer<typeof schema>>`, `value: unknown` |
+| `07d476b` | `CardFormModal`, `EditTransactionModal`, `AddTransactionPage` | `invalid_type_error` e `error` inexistentes em `z.coerce.number()` no Zod v4 | `.refine(v => !isNaN(v))` + `.refine(v => v > 0)` |
+| `07d476b` | `CardFormModal`, `EditTransactionModal`, `AddTransactionPage` | `zodResolver` infere tipo INPUT (`unknown`) incompatível com `useForm<OutputType>` | Import `Resolver` + cast `zodResolver(schema) as Resolver<z.infer<typeof schema>>` |
+| `07d476b` | `BarChart.tsx`, `DonutChart.tsx` | Formatter do Recharts espera `ValueType/NameType`, não `number/string` | `(value: unknown, name: unknown)` com cast interno |
 | `15798da` | `public/` | Ícones PWA `icon-192.png` e `icon-512.png` ausentes | Gerados via Pillow: fundo âmbar #EF9F27, letra B off-white centralizada |
-| `d9270ae` | `main.py` | Mojibake nas respostas JSON (`vocÃª`, `receberÃ¡`) — bytes UTF-8 lidos como latin-1 | `UTF8JSONResponse` com `charset=utf-8` como `default_response_class` |
+| `f55c4df` | `SettingsPage.tsx` | Error handling genérico ao salvar nome — não exibia mensagem do backend | `extractDetail` extrai `error.response.data.detail` (string/array/objeto) |
+| `f55c4df` | `SettingsPage.tsx` | Botão X aparecia para categorias padrão (`usuario_id === null`) | Loop usa `categories.map()` com condição `{cat.usuario_id !== null && <X>}` |
+| `f55c4df` | `SettingsPage.tsx`, `services/categories.ts`, `hooks/useCategories.ts` | Emoji em categorias: sem suporte a emoji no nome | Campo aceita emoji; `extractEmojiAndName` via `Intl.Segmenter`; fallback `📦`; sugestões desktop |
+| `f55c4df` | `DashboardPage.tsx` | Empty state do Dashboard não diferenciava mobile/desktop | Texto contextual via `useBreakpoint`: 'botão + abaixo' vs 'ícone + na barra lateral' |
+| `41522d5` | `Toast.tsx`, `App.tsx`, hooks | Toast de sucesso ausente em toda a aplicação | `ToastContainer` com auto-dismiss 3s, animação suave, posição adaptativa mobile/desktop |
+| `c592196` | `TransactionsPage.tsx` | "Ver Resumo" discreto e difícil de encontrar em mobile e desktop | Chip âmbar na barra de filtros (mobile) + botão com borda âmbar no topbar (desktop) |
+| `d9270ae` | `hivvo-api/main.py` | Mensagens com Mojibake (`vocÃª`, `receberÃ¡`) — bytes UTF-8 lidos como latin-1 | `UTF8JSONResponse` com `charset=utf-8` como `default_response_class` |
 
 ---
 
 ## Próximos Passos
 
-### Sessão de UI/UX (próxima etapa)
-- Revisão visual das telas existentes
-- Ajustes de espaçamento, tipografia e micro-interações
-- Consistência de estados vazios, loading e erro em todas as telas
-- Revisar fluxo mobile vs desktop
-
-### Deploy
-- **Backend — Railway ou Render (free tier):**
-  - Criar serviço apontando para o repositório `hivvo-api`
-  - Configurar variáveis de ambiente: `DATABASE_URL`, `SECRET_KEY`, `GEMINI_API_KEY`, `RESEND_API_KEY`, `FRONTEND_URL`
-  - Rodar migration `alembic upgrade head` no ambiente de produção
-  - Verificar health check em `GET /health`
-  - Anotar a URL pública gerada (ex: `https://hivvo-api.railway.app`)
-- **Frontend — Vercel:**
-  - Criar projeto apontando para `hivvo-web`
-  - Configurar `VITE_API_URL` com a URL do backend em produção
+### Deploy (etapa atual)
+- **Backend:** publicar `hivvo-api` no Railway ou Render (free tier)
+  - Configurar variáveis de ambiente (.env) no painel do serviço
+  - Apontar `DATABASE_URL` para o Supabase de produção
+  - Verificar health check em `/health`
+- **Frontend:** publicar `hivvo-web` no Vercel
+  - Configurar `VITE_API_URL` apontando para o backend em produção
   - Verificar PWA instalável no celular após deploy
+- **Domínio:** registrar `hivvo.app` e apontar para o Vercel
+
+### Fase seguinte — Lançamento
+- Landing page do Hivvo
+- Post LinkedIn + Product Hunt
+- Analytics com Posthog (gratuito)
+- Definir limites do plano gratuito
+
+---
+
+## Melhorias de UI/UX — Sessão de 01/06/2026 ✅
+
+| # | Melhoria | Commit | Arquivos |
+|---|---|---|---|
+| #1 | Labels na sidebar desktop | (histórico) | `DesktopLayout.tsx` |
+| #2 | Skeleton loading em Transações e Cartões | (histórico) | `TransactionsPage.tsx`, `CardsPage.tsx` |
+| #3 | Importar CSV acessível pela navegação | (histórico) | `SettingsPage.tsx`, layouts |
+| #4 | Widget de compromissos futuros no Dashboard | (histórico) | `DashboardPage.tsx`, `useInstallments.ts` |
+| #5 | Badge de parcela inline nas transações | `6d582fa` | `TransactionItem.tsx`, `services/transactions.ts` |
+| #6 | Acesso a Configurações via avatar — gear badge mobile | `96809d3` | `MobileLayout.tsx` |
+| #7 | Total R$ 0,00 em vermelho nos cartões | `56b334e` | `InvoiceDetail.tsx` |
+| #8 | Termos e Privacidade acessíveis dentro do app | `035dc5f` | `SettingsPage.tsx` |
+| #9 | Barra de limite usado/disponível no card | `36b117a` | `CardVisual.tsx`, `services/cards.ts` |
+| #10 | Onboarding progressivo pós-cadastro | `1994d61` | `OnboardingBanner.tsx`, `DashboardPage.tsx` |
+
+### Detalhes das melhorias #5–#10
+
+**#5 — Badge de parcela inline:**
+- `total_parcelas: number | null` adicionado ao tipo `Transaction` (backend já retornava)
+- `TransactionItem` substituiu `· Parcelado` por badge pill âmbar `{total_parcelas}x`
+- `InvoiceDetail` já tinha badge X/Y correto — sem alteração
+
+**#6 — Acesso a Configurações:**
+- Desktop: já tinha `title="Configurações"` e label "Config." — sem alteração
+- Mobile: badge `⚙` sobreposto no canto inferior-direito do avatar (absolute, 14×14px)
+
+**#7 — Cor do total de fatura:**
+- `total > 0 → text-danger`, `total === 0 → text-text-muted`
+- `parseFloat(detail.total) > 0` como condição
+
+**#8 — Legal em Configurações:**
+- Seção "LEGAL" no final de `SettingsPage` com links para `/terms` e `/privacy`
+- Rotas já estavam fora do `ProtectedRoute` em `App.tsx`
+
+**#9 — Barra de limite:**
+- `fatura_aberta_total: string | null` adicionado ao tipo `Card`
+- Barra `h-1`, track `bg-bg/20`, fill `bg-bg/60`, texto `R$ X usado · R$ Y disponível`
+- `GET /cards` já retornava `fatura_aberta_total` via `CartaoComFaturaResponse`
+
+**#10 — Onboarding:**
+- `OnboardingBanner` auto-contido: 3 steps com botões de ação, dismissal em `localStorage`
+- Condição: `!isLoading && transactions.length === 0 && cards.length === 0`
+- Renderizado acima do `EmptyState` em mobile e desktop
 
 ---
 
@@ -109,8 +130,6 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 
 ## Ordem de Implementação
 
-### Fase 1 — Backend FastAPI ✅ Completa
-
 - [x] 1. Estrutura FastAPI + conexão Supabase + health check
 - [x] 2. Migrar models.py + migrations Alembic
 - [x] 3. Endpoints de auth (registro + login + JWT)
@@ -119,48 +138,25 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 - [x] 6. Endpoints de parcelas
 - [x] 7. Endpoints de estatísticas
 - [x] 8. Endpoint de IA (proxy Gemini)
-- [x] Extra: `PUT /auth/me` + `PUT /auth/password` (commit `3789cb6`)
-
-### Fase 2 — Frontend React PWA (base) ✅ Completa
-
 - [x] 9. Setup React + Vite + Tailwind + PWA + layouts
-
-### Fase 3 — Telas Restantes ✅ Completa
-
-- [x] 10–17. Todas as telas frontend (Login, Dashboard, Transações, Cartões, IA, Resumo, CSV, Settings)
-
-### Testes e Refinamentos ✅ Concluídos (Blocos 1–5)
-
-- [x] 18. Testes end-to-end Blocos 1–5 + correção de todos os bugs críticos
-
-### Features de autenticação ✅ Completa
-
-- [x] 19. Recuperação de senha — `POST /auth/forgot-password` + `POST /auth/reset-password` + Resend
-- [x] 20. UX frontend: confirmação de logout + toggle de visibilidade de senha
+- [x] 10. Login + Cadastro (frontend)
+- [x] 11. Dashboard (frontend)
+- [x] 12. Transações (frontend)
+- [x] 13. Adicionar transação com parcelamento (frontend)
+- [x] 14. Cartões e faturas (frontend)
+- [x] 15. Assistente IA (frontend)
+- [x] 16. Ver resumo detalhado (frontend)
+- [x] 17. Features secundárias (CSV, backup, categorias, perfil)
+- [x] 18. Testes end-to-end Blocos 1–5 + correção de bugs críticos
+- [x] 19. Recuperação de senha — frontend (`/forgot-password`, `/reset-password`) + backend (`/auth/forgot-password`, `/auth/reset-password`)
+- [x] 20. UX: confirmação de logout (modal) + toggle de visibilidade de senha em todos os campos
 - [x] 21. Bug #6 — "Ver Resumo" mais visível (chip mobile + botão desktop)
-- [x] 22. Bug #7 — encoding UTF-8 (`charset=utf-8` no Content-Type de todas as respostas JSON)
-- [x] 23. Refresh token — `POST /auth/refresh` + cookie `refresh_token` (7 dias) + tabela `refresh_tokens` + rotação
-
-### Sessão de UI/UX (próxima)
-
-- [ ] 24. Revisão visual e ajustes de UX em todas as telas
-
-### Fase 4 — Deploy
-
-- [ ] Publicar backend no Railway ou Render
-- [ ] Publicar frontend no Vercel
-- [ ] Configurar variáveis de ambiente de produção
-- [ ] Verificar fluxo completo em produção
-
-### Fase 5 — Monetização e Lançamento (pós-deploy)
-
-- [ ] Definir limites do plano gratuito (ex: até 3 cartões, 100 transações/mês)
-- [ ] Integrar Stripe ou Pagar.me para plano Pro
-- [ ] Gate de features por plano no backend
-- [ ] Landing page do Hivvo
-- [ ] Domínio próprio (hivvo.app ou similar)
-- [ ] Post LinkedIn + Product Hunt
-- [ ] Analytics com Posthog (gratuito)
+- [x] 22. Bug #7 — encoding UTF-8 no backend (`charset=utf-8` no Content-Type)
+- [x] 23. Refresh token — interceptor Axios com retry automático + `refreshToken()` em `auth.ts`
+- [x] 24. Renomeação BeeFree → Hivvo (brand, layouts, títulos, manifest, PWA)
+- [x] 25. Termos de Uso (`/terms`) e Política de Privacidade (`/privacy`) — páginas estáticas em `AuthLayout`
+- [x] 26. Sessão de UI/UX — melhorias #1 a #10 implementadas e commitadas
+- [ ] 27. Deploy — backend Railway/Render + frontend Vercel + domínio hivvo.app
 
 ---
 
@@ -176,60 +172,137 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 | Arredondamento de parcelas | Última parcela absorve diferença de arredondamento (`ROUND_HALF_UP`). |
 | Zod v4 coerce + RHF | `z.coerce.number()` com `.refine()` requer cast `as Resolver<z.infer<typeof schema>>` no zodResolver. |
 | Recharts Tooltip formatter | Parâmetros tipados como `unknown` com cast interno — `ValueType`/`NameType` são uniões que incluem `undefined`. |
-| UTF-8 encoding | `UTF8JSONResponse` com `media_type = "application/json; charset=utf-8"` como `default_response_class` — elimina Mojibake em browsers que não assumem UTF-8 sem charset explícito no Content-Type. |
-| Token de reset de senha | JWT separado com `sub=user_id` e `purpose=reset`, expiração de 15 min — não confundir com o `access_token`. |
-| Refresh token | UUID v4 armazenado na tabela `refresh_tokens`; rotação obrigatória a cada uso (token antigo revogado, novo criado). `access_token` reduzido para 30 min. Cookie `refresh_token` httpOnly, 7 dias. |
+| Input.showToggle | Estado local `visible` encapsulado no componente — não vaza para o formulário. `tabIndex={-1}` no botão do olho para não interferir no tab order. |
+| Button.variant danger | `border border-danger text-danger hover:bg-danger/5` — usado no modal de confirmação de logout. |
+| UTF-8 encoding backend | `UTF8JSONResponse` subclasse com `media_type = "application/json; charset=utf-8"` como `default_response_class` — elimina Mojibake em browsers que não assumem UTF-8 sem charset explícito. |
+| Refresh token — interceptor | `isRefreshing` + `failedQueue` serializam 401s paralelos; falha no refresh faz `clearAuth()` + `window.location.href = '/login'`; dependência circular evitada chamando `api.post('/auth/refresh')` inline. |
+| import type Axios | `AxiosRequestConfig` importado com `import type` — `InternalAxiosRequestConfig` não disponível na versão instalada (Axios 1.16.1). |
+| OnboardingBanner dismiss | Estado lazy `() => localStorage.getItem(STORAGE_KEY) === '1'` — sem flash de re-render. Chave: `hivvo_onboarding_dismissed`. |
+| Badge parcela inline | `total_parcelas` já era retornado pelo backend mas não declarado no tipo TS — sem backend change. `numero_parcela` ausente em `transacoes`; badge mostra `Nx` em vez de `X/Y` (X seria sempre 1 no filtro por data de compra). |
+| Barra de limite CardVisual | `fatura_aberta_total` de `CartaoComFaturaResponse` já disponível — só faltava declarar no tipo `Card` do frontend. Guard `limite > 0` evita divisão por zero. |
 
 ---
 
-## Estrutura de Pastas Atual (Backend)
+## Arquivos Criados/Modificados por Tarefa
+
+### Melhorias UI/UX #5–#10 (01/06/2026)
+- `src/services/transactions.ts` — `total_parcelas: number | null` no tipo `Transaction`
+- `src/components/transaction/TransactionItem.tsx` — badge pill âmbar `{total_parcelas}x`
+- `src/layouts/MobileLayout.tsx` — badge `⚙` sobreposto ao avatar de Configurações
+- `src/components/cards/InvoiceDetail.tsx` — cor condicional do total (`text-danger` / `text-text-muted`)
+- `src/pages/Settings/SettingsPage.tsx` — seção "LEGAL" com links para `/terms` e `/privacy`
+- `src/services/cards.ts` — `fatura_aberta_total: string | null` no tipo `Card`
+- `src/components/cards/CardVisual.tsx` — barra de progresso uso/disponível do limite
+- `src/components/ui/OnboardingBanner.tsx` — novo componente (3 passos, dismissal localStorage)
+- `src/pages/Dashboard/DashboardPage.tsx` — `useCards()` + `showOnboarding` + `OnboardingBanner`
+
+### Tarefas #23 — Refresh token (interceptor Axios)
+- `src/services/auth.ts` — `refreshToken()` exportado chamando `POST /auth/refresh`
+- `src/services/api.ts` — interceptor 401 reescrito: `isRefreshing` + `failedQueue` + retry da request original; redirect `/login` em caso de falha no refresh
+
+### Tarefas #24–#25 — Renomeação + páginas legais
+- Renomeação BeeFree → Hivvo em todos os layouts, títulos, manifest e PWA
+- `src/pages/Legal/TermsPage.tsx` — Termos de Uso (rota `/terms`)
+- `src/pages/Legal/PrivacyPage.tsx` — Política de Privacidade (rota `/privacy`)
+- `src/App.tsx` — rotas `/terms` e `/privacy` dentro do `AuthLayout`, fora do `ProtectedRoute`
+
+### Tarefas #21–#22 — Bugs #6 e #7 (UX + encoding)
+- `src/pages/Transactions/TransactionsPage.tsx` — chip "Resumo" âmbar na barra de filtros mobile; botão com borda âmbar no topbar desktop; `ChartBarIcon` SVG inline (Bug #6)
+- `hivvo-api/main.py` — `UTF8JSONResponse` como `default_response_class` (Bug #7)
+
+### Tarefa #20 — Confirmação de logout + toggle de visibilidade de senha
+- `src/components/ui/Button.tsx` — variante `danger` adicionada
+- `src/components/ui/Input.tsx` — prop `showToggle` com estado local `visible`, botão com ícones SVG `EyeIcon`/`EyeOffIcon`, `pr-10` no input, `tabIndex={-1}` no botão
+- `src/pages/Auth/LoginPage.tsx` — `showToggle` no campo `password`
+- `src/pages/Auth/RegisterPage.tsx` — `showToggle` nos campos `password` e `confirmPassword`
+- `src/pages/Auth/ResetPasswordPage.tsx` — `showToggle` nos campos `nova_senha` e `confirmar_senha`
+- `src/pages/Settings/SettingsPage.tsx` — modal de confirmação de logout (`logoutModalOpen`, `Button variant="danger"`); `showToggle` nos campos `senha_atual`, `nova_senha`, `confirmar`
+
+### Tarefa #19 — Recuperação de senha (frontend)
+- `src/services/auth.ts` — `forgotPassword(email)`, `resetPassword(token, nova_senha)`
+- `src/pages/Auth/ForgotPasswordPage.tsx` — nova página; estado `submitted` — mensagem genérica independente do resultado da API
+- `src/pages/Auth/ResetPasswordPage.tsx` — nova página; lê `token` via `useSearchParams`; redireciona para `/login` se ausente; `status: 'idle' | 'success' | 'error'`
+- `src/pages/Auth/LoginPage.tsx` — link "Esqueceu a senha?" abaixo do botão Entrar
+- `src/App.tsx` — rotas `/forgot-password` e `/reset-password` dentro do `AuthLayout`, fora do `ProtectedRoute`
+
+### Tarefa #18 — Testes e correções de bugs (Blocos 1–5)
+- `src/pages/Settings/SettingsPage.tsx` — guarda `deletingId !== null` na confirmação de remoção de categorias
+- `src/components/cards/CardFormModal.tsx` — Zod v4: `.refine()` substituindo `invalid_type_error`; cast do zodResolver; import `Resolver`
+- `src/components/transaction/EditTransactionModal.tsx` — idem
+- `src/pages/AddTransaction/AddTransactionPage.tsx` — idem
+- `src/components/charts/BarChart.tsx` — formatter `(value: unknown, name: unknown)` com cast interno
+- `src/components/charts/DonutChart.tsx` — idem
+- `public/icon-192.png` — ícone PWA 192×192 (fundo âmbar, letra B off-white)
+- `public/icon-512.png` — ícone PWA 512×512 (fundo âmbar, letra B off-white)
+
+### Tarefa #17 — Features Secundárias (frontend)
+- `src/pages/Import/ImportPage.tsx` — upload CSV com drag-and-drop, parse client-side, preview com validação, importação sequencial
+- `src/pages/Settings/SettingsPage.tsx` — /settings com Perfil, Categorias customizadas e Exportar dados
+- `src/services/auth.ts` — `updateMe(username)`, `changePassword(senha_atual, nova_senha)`
+- `src/services/categories.ts` — `createCategory(nome)`, `deleteCategory(id)`; `usuario_id: number | null`
+- `src/services/transactions.ts` — `getAllTransactions()` sem filtro de mês para backup
+- `src/hooks/useCategories.ts` — `useCreateCategory`, `useDeleteCategory`
+- `src/layouts/MobileLayout.tsx`, `DesktopLayout.tsx` — botão de perfil navega para /settings
+- `src/App.tsx` — rotas `/import` e `/settings` adicionadas
+
+### Tarefa #16 — Ver Resumo Detalhado (frontend)
+- `src/services/statistics.ts` — `getYearlyStats(ano)`, `getCategoryStats({ mes?, ano })`
+- `src/services/installments.ts` — novo
+- `src/hooks/useStatistics.ts` — `useYearlyStats`, `useCategoryStats`, `useQuarterlyStats`
+- `src/hooks/useInstallments.ts` — novo
+- `src/components/charts/BarChart.tsx` — novo
+- `src/pages/Transactions/SummaryPage.tsx` — página completa com toggle Mês/Trimestre/Ano
+
+### Tarefa #15 — Assistente IA (frontend)
+- `src/services/ai.ts` — `sendMessage(mensagem, mes, ano)` como base; `suggestCategory` reutiliza
+- `src/pages/Assistant/AssistantPage.tsx` — chat completo com TypingIndicator, MessageBubble, StatsPanel (desktop)
+
+### Tarefa #14 — Cartões e faturas (frontend)
+- `src/services/cards.ts` — tipos e funções de cartões/faturas
+- `src/hooks/useCards.ts` — mutations e queries de cartões/faturas
+- `src/components/cards/` — CardVisual, CardFormModal, InvoiceMonthGrid, InvoiceDetail
+- `src/pages/Cards/CardsPage.tsx` — página completa mobile/desktop
+
+### Tarefa #13 — Adicionar transação com parcelamento (frontend)
+- `src/pages/AddTransaction/AddTransactionPage.tsx` — form completo com parcelamento, sugestão IA, ImpactPreview
+
+### Tarefa #12 — Transações (frontend)
+- `src/components/transaction/` — TransactionItem, TransactionGroup, EditTransactionModal, DeleteConfirmModal
+- `src/pages/Transactions/TransactionsPage.tsx` — filtros, busca, agrupamento por data
+
+### Tarefa #11 — Dashboard (frontend)
+- `src/components/charts/DonutChart.tsx` — novo
+- `src/pages/Dashboard/DashboardPage.tsx` — métricas, DonutChart, últimas transações, empty state
+
+### Tarefa #10 — Login + Cadastro (frontend)
+- `src/components/ui/Button.tsx`, `Input.tsx`, `Spinner.tsx`
+- `src/pages/Auth/LoginPage.tsx`, `RegisterPage.tsx`
+
+### Tarefas #1–#9 — Backend completo + Setup Frontend
+- Backend FastAPI: auth, transações, categorias, cartões, faturas, parcelas, estatísticas, IA
+- Frontend setup: Vite + Tailwind + PWA + layouts + Zustand + TanStack Query
+
+---
+
+## Estrutura de Pastas Atual (Frontend)
 
 ```
-hivvo-api/
-├── main.py              ✓  (UTF8JSONResponse como default_response_class)
-├── .env
-├── requirements.txt
-├── alembic.ini
-├── alembic/
-│   ├── env.py
-│   ├── script.py.mako
-│   └── versions/
-│       ├── abdb546095c0_initial_schema.py
-│       ├── 268b08c02e0a_add_password_reset_tokens.py
-│       └── 207ebc9ef981_add_refresh_tokens.py
-└── app/
-    ├── models/
-    │   ├── user.py                  ✓
-    │   ├── card.py                  ✓
-    │   ├── transaction.py           ✓
-    │   ├── category.py              ✓
-    │   ├── installment.py           ✓
-    │   ├── password_reset_token.py  ✓
-    │   └── refresh_token.py         ✓
-    ├── schemas/
-    │   ├── auth.py          ✓
-    │   ├── transaction.py   ✓
-    │   ├── category.py      ✓
-    │   ├── card.py          ✓
-    │   ├── invoice.py       ✓
-    │   ├── installment.py   ✓
-    │   ├── statistics.py    ✓
-    │   └── ai.py            ✓
-    ├── routers/
-    │   ├── auth.py          ✓  (register, login, refresh, logout, me, password, forgot/reset-password)
-    │   ├── transactions.py  ✓
-    │   ├── categories.py    ✓
-    │   ├── cards.py         ✓
-    │   ├── invoices.py      ✓
-    │   ├── installments.py  ✓
-    │   ├── statistics.py    ✓
-    │   └── ai.py            ✓
-    ├── repositories/        — vazio
-    ├── services/            — vazio
-    └── core/
-        ├── auth.py          ✓  (create_refresh_token, rotate_refresh_token)
-        ├── database.py      ✓
-        └── config.py        ✓  (ACCESS_TOKEN_EXPIRE_MINUTES=30, REFRESH_TOKEN_EXPIRE_DAYS=7)
+hivvo-web/
+├── index.html
+├── vite.config.ts
+├── tailwind.config.ts
+├── public/
+│   ├── manifest.json        ✓
+│   ├── icon-192.png         ✓  (gerado — fundo âmbar, letra B)
+│   └── icon-512.png         ✓  (gerado — fundo âmbar, letra B)
+└── src/
+    ├── layouts/             DesktopLayout, MobileLayout, AuthLayout  ✓
+    ├── pages/               Dashboard, Transactions/Summary, AddTransaction, Cards, Assistant, Auth (Login, Register, ForgotPassword, ResetPassword), Settings, Import, Legal (Terms, Privacy)  ✓
+    ├── components/          ui/ (Button, Input, Modal, Spinner, Toast, OnboardingBanner), charts/, transaction/, cards/  ✓
+    ├── hooks/               useBreakpoint, useTransactions, useCategories, useStatistics, useCards, useAuth, useInstallments  ✓
+    ├── store/               authStore, uiStore  ✓
+    ├── services/            api, auth, transactions, categories, cards, ai, statistics, installments  ✓
+    └── styles/              tokens.css  ✓
 ```
 
 ---
@@ -246,6 +319,6 @@ hivvo-api/
 
 ---
 
-*Última atualização: 01 de Junho de 2026 — Features de autenticação completas (recuperação de senha + refresh token). Todos os bugs #1–#7 corrigidos. Próximo: sessão de UI/UX → deploy.*  
+*Última atualização: 01 de Junho de 2026 — Sessão de UI/UX concluída (melhorias #1–#10). Próximo: Deploy (Railway/Render + Vercel + domínio hivvo.app).*  
 *Projeto: Hivvo — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

@@ -18,6 +18,13 @@ class TransacaoCreate(BaseModel):
     parcelado: bool = False
     total_parcelas: Optional[int] = None
 
+    @field_validator("valor", mode="before")
+    @classmethod
+    def normaliza_decimal(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.replace(",", ".")
+        return v
+
     @field_validator("tipo")
     @classmethod
     def tipo_valido(cls, v: str) -> str:
@@ -50,6 +57,13 @@ class TransacaoUpdate(BaseModel):
     cartao_id: Optional[int] = None
     fatura_mes: Optional[int] = None
     fatura_ano: Optional[int] = None
+
+    @field_validator("valor", mode="before")
+    @classmethod
+    def normaliza_decimal(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.replace(",", ".")
+        return v
 
 
 class TransacaoResponse(BaseModel):

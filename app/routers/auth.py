@@ -1,4 +1,5 @@
 import datetime as dt
+import re
 import uuid
 from typing import Optional
 
@@ -30,6 +31,17 @@ from app.schemas.auth import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _generate_username(email: str, session: Session) -> str:
+    prefix = email.split("@")[0]
+    base = re.sub(r"[^a-z0-9]", "_", prefix).strip("_") or "user"
+    candidate = base
+    counter = 2
+    while session.exec(select(Usuario).where(Usuario.username == candidate)).first():
+        candidate = f"{base}_{counter}"
+        counter += 1
+    return candidate
 
 _MAX_TENTATIVAS = 5
 _BLOQUEIO_MINUTOS = 15
@@ -63,12 +75,10 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
 def register(body: RegisterRequest, response: Response, session: Session = Depends(get_session)):
     if session.exec(select(Usuario).where(Usuario.email == body.email)).first():
         raise HTTPException(status_code=400, detail="E-mail já cadastrado")
-    if session.exec(select(Usuario).where(Usuario.username == body.username)).first():
-        raise HTTPException(status_code=400, detail="Username já em uso")
 
     user = Usuario(
         email=body.email,
-        username=body.username,
+        username=_generate_username(body.email, session),
         nome_completo=body.nome_completo,
         senha_hash=hash_password(body.password),
     )

@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field, field_validator
 
 class RegisterRequest(BaseModel):
     email: str
-    username: str
     nome_completo: str
     password: str
 

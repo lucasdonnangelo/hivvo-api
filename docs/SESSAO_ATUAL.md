@@ -8,10 +8,12 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 ## Estado do Projeto
 
 **Fase atual:** Deploy  
-**Status:** Sessão de UI/UX concluída — melhorias #1 a #10 implementadas e commitadas. App funcional, polido e pronto para produção.  
+**Status:** Sessão de bugfixes pós-UI/UX concluída — 2 correções de backend commitadas. App funcional, polido e pronto para produção.  
 **Próximo passo imediato:** Deploy do backend no Railway ou Render  
 **Próxima fase:** Registro do domínio hivvo.app + landing page  
-**Última tarefa concluída:** Melhoria #10 — Onboarding progressivo pós-cadastro (commit `1994d61`)
+**Última tarefa concluída:** Remoção do campo `username` do formulário de cadastro — auto-geração a partir do email (commit `f7abfdd`)
+
+> **Pendente no frontend:** remover o campo `username` do formulário de cadastro (`RegisterPage.tsx`).
 
 ---
 
@@ -24,6 +26,13 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 | Bloco 3 | Cartões, Faturas e Parcelas | ✅ Concluído | — |
 | Bloco 4 | Assistente IA, Importar CSV, Backup, Configurações | ✅ Concluído | 1 bug corrigido em /settings |
 | Bloco 5 | Build limpo, PWA instalável, qualidade de código | ✅ Concluído | 12 erros TS corrigidos, ícones PWA criados |
+
+### Bugfixes pós-UI/UX — Sessão de 03/06/2026
+
+| Commit | Arquivo | Problema | Solução |
+|---|---|---|---|
+| `f370bdb` | `app/schemas/transaction.py` | HTTP 422 ao enviar `valor` com vírgula decimal (`"150,00"`) | `field_validator("valor", mode="before")` normaliza `,` → `.` antes da coerção do Pydantic; aplicado em `TransacaoCreate` e `TransacaoUpdate` |
+| `f7abfdd` | `app/schemas/auth.py`, `app/routers/auth.py` | Campo `username` obrigatório no cadastro mas nunca exibido no app | `username` removido do `RegisterRequest`; `_generate_username()` gera a partir do prefixo do email (caracteres não-alfanuméricos → `_`, sufixo `_2`/`_3` se já existir); sem migration |
 
 ### Bugs corrigidos durante testes
 
@@ -178,6 +187,8 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 | Refresh token — interceptor | `isRefreshing` + `failedQueue` serializam 401s paralelos; falha no refresh faz `clearAuth()` + `window.location.href = '/login'`; dependência circular evitada chamando `api.post('/auth/refresh')` inline. |
 | import type Axios | `AxiosRequestConfig` importado com `import type` — `InternalAxiosRequestConfig` não disponível na versão instalada (Axios 1.16.1). |
 | OnboardingBanner dismiss | Estado lazy `() => localStorage.getItem(STORAGE_KEY) === '1'` — sem flash de re-render. Chave: `hivvo_onboarding_dismissed`. |
+| Vírgula decimal em `valor` | `field_validator(mode="before")` em `TransacaoCreate` e `TransacaoUpdate` normaliza `"150,00"` → `"150.00"` antes da coerção do Pydantic para `Decimal`. |
+| `username` auto-gerado | Removido do `RegisterRequest`; gerado via `_generate_username(email, session)` — prefixo do email, não-alfanuméricos viram `_`, sufixo `_2`/`_3` garante unicidade. Banco e `UpdateMeRequest` inalterados — usuário pode ajustar em Configurações. |
 | Badge parcela inline | `total_parcelas` já era retornado pelo backend mas não declarado no tipo TS — sem backend change. `numero_parcela` ausente em `transacoes`; badge mostra `Nx` em vez de `X/Y` (X seria sempre 1 no filtro por data de compra). |
 | Barra de limite CardVisual | `fatura_aberta_total` de `CartaoComFaturaResponse` já disponível — só faltava declarar no tipo `Card` do frontend. Guard `limite > 0` evita divisão por zero. |
 
@@ -319,6 +330,6 @@ hivvo-web/
 
 ---
 
-*Última atualização: 01 de Junho de 2026 — Sessão de UI/UX concluída (melhorias #1–#10). Próximo: Deploy (Railway/Render + Vercel + domínio hivvo.app).*  
+*Última atualização: 03 de Junho de 2026 — Bugfixes de backend: vírgula decimal em `valor` + auto-geração de `username`. Próximo: Deploy (Railway/Render + Vercel + domínio hivvo.app) + remover campo `username` do `RegisterPage.tsx`.*  
 *Projeto: Hivvo — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

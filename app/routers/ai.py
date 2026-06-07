@@ -1,19 +1,21 @@
+import datetime as dt
 import logging
 import re
 from decimal import Decimal, InvalidOperation
 
 from google import genai
 from google.genai import types
-from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
+from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlmodel import Session, delete, select
 
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.database import get_session
+from app.models.chat import ChatMessage
 from app.models.installment import Parcela
 from app.models.user import Usuario
 from app.routers.statistics import _agregar, _buscar_mes, _categorias
-from app.schemas.ai import ChatRequest, ChatResponse, HistoricoItem
+from app.schemas.ai import ChatRequest, ChatResponse, HistoricoItem, HistoricoResponseItem
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +89,13 @@ def _build_historico_anual(session: Session, usuario_id: int, mes: int, ano: int
     return "HISTÓRICO — ÚLTIMOS 12 MESES:\n" + "\n".join(linhas)
 
 
-def _build_system_instruction(mes: int, ano: int, ctx: dict, historico_anual: str = "") -> str:
+def _build_system_instruction(
+    mes: int,
+    ano: int,
+    ctx: dict,
+    historico_anual: str = "",
+    primeira_vez: bool = False,
+) -> str:
     top5 = "\n".join(
         f"  - {c.categoria}: R$ {c.total:,.2f} ({c.percentual:.1f}%)"
         for c in ctx["categorias"][:5]
@@ -103,6 +111,23 @@ def _build_system_instruction(mes: int, ano: int, ctx: dict, historico_anual: st
     nome_linha = f"\n- Usuário: {ctx['usuario_nome']}" if ctx.get("usuario_nome") else ""
 
     historico_bloco = f"\n\n{historico_anual}" if historico_anual else ""
+
+    if primeira_vez:
+        apresentacao_bloco = (
+            "\n\nCOMPORTAMENTO NESTA MENSAGEM — PRIMEIRA VEZ:\n"
+            "É a primeira vez que este usuário usa o Assistente Hivvo. "
+            "Apresente-se como Assistente Hivvo, explique brevemente o que você pode fazer "
+            "(análise de gastos, parcelas, comparações, planejamento financeiro) "
+            "e convide o usuário a fazer sua primeira pergunta. Seja caloroso mas conciso. "
+            "Ignore as regras 1 e 8 apenas nesta mensagem — uma saudação breve é adequada."
+        )
+    else:
+        apresentacao_bloco = (
+            "\n\nCOMPORTAMENTO NESTA MENSAGEM — USUÁRIO RECORRENTE:\n"
+            "Este usuário já usou o Assistente anteriormente. "
+            "Não se apresente. Cumprimente brevemente apenas se o usuário cumprimentar. "
+            "Vá direto ao ponto."
+        )
 
     return f"""Você é o Hivvo, um analista financeiro pessoal direto e objetivo — não um assistente genérico.
 
@@ -128,7 +153,8 @@ REGRAS DE COMPORTAMENTO:
 9. Use markdown leve quando facilitar a leitura (negrito para valores, listas para múltiplos itens).
 10. Seja conciso mas completo; prefira 3-5 frases diretas a listas longas.
 11. Só faça uma pergunta ao usuário se a resposta permitir entregar uma análise concreta e diferente — exemplos válidos: "Quer ver por cartão ou por categoria?", "Prefere o período de 2025 ou 2026?". Nunca faça perguntas abertas sem ação possível ("Isso te preocupa?", "O que você acha?", "Você tem um plano?").
-12. Use o nome do usuário apenas quando soar natural — não em toda resposta.{historico_bloco}"""
+12. Use o nome do usuário apenas quando soar natural — não em toda resposta.
+13. Quando o usuário iniciar a conversa com uma saudação simples (ex: "Oi", "Olá", "Boa tarde"), responda apenas com um cumprimento breve e aguarde a pergunta. Nunca retome assuntos ou dados de conversas anteriores sem que o usuário pergunte explicitamente.{apresentacao_bloco}{historico_bloco}"""
 
 
 def _build_contents(historico: list[HistoricoItem], mensagem: str) -> list[types.Content]:
@@ -147,6 +173,36 @@ def _post_process(texto: str) -> str:
     return texto.strip()
 
 
+@router.get("/historico", response_model=list[HistoricoResponseItem])
+def get_historico(
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    limite = dt.datetime.utcnow() - dt.timedelta(hours=24)
+    mensagens = session.exec(
+        select(ChatMessage)
+        .where(
+            ChatMessage.usuario_id == current_user.id,
+            ChatMessage.created_at >= limite,
+        )
+        .order_by(ChatMessage.created_at)
+    ).all()
+    return [
+        HistoricoResponseItem(role=m.role, text=m.text, created_at=m.created_at)
+        for m in mensagens
+    ]
+
+
+@router.delete("/historico", status_code=204)
+def delete_historico(
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    session.exec(delete(ChatMessage).where(ChatMessage.usuario_id == current_user.id))
+    session.commit()
+    return Response(status_code=204)
+
+
 @router.post("/chat", response_model=ChatResponse)
 def chat(
     body: ChatRequest,
@@ -158,6 +214,21 @@ def chat(
             status_code=503,
             detail="Serviço de IA indisponível: GEMINI_API_KEY não configurada.",
         )
+
+    # Busca as últimas 50 mensagens ANTES de salvar a atual (evita duplicação no contexto)
+    historico_db = session.exec(
+        select(ChatMessage)
+        .where(ChatMessage.usuario_id == current_user.id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(50)
+    ).all()
+    historico_db = list(reversed(historico_db))  # ordena ASC para o Gemini
+
+    primeira_vez = len(historico_db) == 0
+
+    # Salva a mensagem do usuário no banco
+    session.add(ChatMessage(usuario_id=current_user.id, role="user", text=body.mensagem))
+    session.commit()
 
     transacoes = _buscar_mes(session, current_user.id, body.mes, body.ano)
     receitas, despesas = _agregar(transacoes)
@@ -180,8 +251,11 @@ def chat(
     }
 
     historico_anual = _build_historico_anual(session, current_user.id, body.mes, body.ano)
-    system_instruction = _build_system_instruction(body.mes, body.ano, ctx, historico_anual)
-    contents = _build_contents(body.historico, body.mensagem)
+    system_instruction = _build_system_instruction(
+        body.mes, body.ano, ctx, historico_anual, primeira_vez
+    )
+    historico_items = [HistoricoItem(role=m.role, text=m.text) for m in historico_db]
+    contents = _build_contents(historico_items, body.mensagem)
 
     try:
         client = genai.Client(api_key=settings.GEMINI_API_KEY)
@@ -207,5 +281,9 @@ def chat(
             status_code=503,
             detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",
         )
+
+    # Salva a resposta da IA no banco
+    session.add(ChatMessage(usuario_id=current_user.id, role="assistant", text=texto))
+    session.commit()
 
     return ChatResponse(resposta=texto)

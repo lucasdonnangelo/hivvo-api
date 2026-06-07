@@ -10,6 +10,7 @@ class ChatMessage(SQLModel, table=True):
 
     id: Optional[uuid.UUID] = Field(default_factory=uuid.uuid4, primary_key=True)
     usuario_id: int = Field(foreign_key="usuarios.id", index=True)
+    sessao_id: uuid.UUID
     role: str = Field(max_length=20)
     text: str
     created_at: dt.datetime = Field(default_factory=dt.datetime.utcnow, index=True)

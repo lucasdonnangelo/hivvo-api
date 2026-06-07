@@ -1,11 +1,13 @@
 import datetime as dt
 import logging
 import re
+import uuid
 from decimal import Decimal, InvalidOperation
 
 from google import genai
 from google.genai import types
 from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlalchemy import func
 from sqlmodel import Session, delete, select
 
 from app.core.auth import get_current_user
@@ -178,12 +180,26 @@ def get_historico(
     current_user: Usuario = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    limite = dt.datetime.utcnow() - dt.timedelta(hours=24)
+    # Busca a sessão mais recente do usuário e o timestamp da sua última mensagem
+    row = session.execute(
+        select(ChatMessage.sessao_id, func.max(ChatMessage.created_at).label("ultima"))
+        .where(ChatMessage.usuario_id == current_user.id)
+        .group_by(ChatMessage.sessao_id)
+        .order_by(func.max(ChatMessage.created_at).desc())
+        .limit(1)
+    ).first()
+
+    if not row:
+        return []
+
+    if (dt.datetime.utcnow() - row.ultima) > dt.timedelta(hours=24):
+        return []
+
     mensagens = session.exec(
         select(ChatMessage)
         .where(
             ChatMessage.usuario_id == current_user.id,
-            ChatMessage.created_at >= limite,
+            ChatMessage.sessao_id == row.sessao_id,
         )
         .order_by(ChatMessage.created_at)
     ).all()
@@ -215,7 +231,9 @@ def chat(
             detail="Serviço de IA indisponível: GEMINI_API_KEY não configurada.",
         )
 
-    # Busca as últimas 50 mensagens ANTES de salvar a atual (evita duplicação no contexto)
+    sessao_uuid = uuid.UUID(body.sessao_id)
+
+    # Busca as últimas 50 mensagens do banco (todas as sessões) para contexto da IA
     historico_db = session.exec(
         select(ChatMessage)
         .where(ChatMessage.usuario_id == current_user.id)
@@ -224,10 +242,22 @@ def chat(
     ).all()
     historico_db = list(reversed(historico_db))  # ordena ASC para o Gemini
 
-    primeira_vez = len(historico_db) == 0
+    # primeira_vez = nenhuma mensagem ainda nesta sessão
+    count_sessao = session.execute(
+        select(func.count()).where(
+            ChatMessage.usuario_id == current_user.id,
+            ChatMessage.sessao_id == sessao_uuid,
+        )
+    ).scalar()
+    primeira_vez = count_sessao == 0
 
     # Salva a mensagem do usuário no banco
-    session.add(ChatMessage(usuario_id=current_user.id, role="user", text=body.mensagem))
+    session.add(ChatMessage(
+        usuario_id=current_user.id,
+        role="user",
+        text=body.mensagem,
+        sessao_id=sessao_uuid,
+    ))
     session.commit()
 
     transacoes = _buscar_mes(session, current_user.id, body.mes, body.ano)
@@ -283,7 +313,12 @@ def chat(
         )
 
     # Salva a resposta da IA no banco
-    session.add(ChatMessage(usuario_id=current_user.id, role="assistant", text=texto))
+    session.add(ChatMessage(
+        usuario_id=current_user.id,
+        role="assistant",
+        text=texto,
+        sessao_id=sessao_uuid,
+    ))
     session.commit()
 
     return ChatResponse(resposta=texto)

@@ -171,6 +171,34 @@ Botão "Nova conversa":
 
 ---
 
+## Revisão da arquitetura — Sessões de chat
+
+A implementação original usava filtro de 24h direto na query. A arquitetura foi revisada para usar o conceito de sessão.
+
+### Mudança no banco
+- Adicionar coluna `sessao_id` (UUID, nullable) na tabela `chat_messages`
+- Gerar nova migration Alembic
+
+### Comportamento de sessão
+- Cada "Nova conversa" gera um novo `sessao_id` no frontend e o envia nas próximas mensagens
+- `GET /ai/historico` retorna apenas mensagens da sessão mais recente do usuário
+  - Se a última mensagem da sessão mais recente tiver **mais de 24h** → retorna vazio (UI limpa, nova sessão automática)
+  - Se tiver **menos de 24h** → retorna mensagens da sessão (UI mostra conversa)
+- `POST /ai/chat` recebe `sessao_id` no body e salva em cada mensagem
+- A IA sempre recebe as últimas 50 mensagens do banco (todas as sessões) como contexto invisível
+
+### Comportamento na prática
+- Volta em menos de 24h → UI mostra sessão mais recente
+- Volta após mais de 24h → UI limpa, nova sessão automática
+- Clica "Nova conversa" → UI limpa, novo `sessao_id` gerado no frontend
+
+### Impacto nas Fases
+- **Fase 1 (backend):** migration para adicionar `sessao_id`; ajustar `GET /ai/historico` (busca por sessão mais recente + cheque de 24h); ajustar `POST /ai/chat` (recebe e persiste `sessao_id`)
+- **Fase 2 (frontend):** `sendMessage()` passa `sessao_id`; geração de novo UUID em "Nova conversa" em vez de chamar `DELETE /ai/historico`
+- `DELETE /ai/historico` pode ser mantido para uso administrativo/futuro
+
+---
+
 ## Melhorias de UI/UX — Sessão de 01/06/2026 ✅
 
 | # | Melhoria | Commit | Arquivos |

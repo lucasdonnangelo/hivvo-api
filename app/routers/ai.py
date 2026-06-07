@@ -63,7 +63,31 @@ def _variacao_saldo_pct(session: Session, usuario_id: int, mes: int, ano: int, s
         return None
 
 
-def _build_system_instruction(mes: int, ano: int, ctx: dict) -> str:
+def _build_historico_anual(session: Session, usuario_id: int, mes: int, ano: int) -> str:
+    linhas: list[str] = []
+    m, a = mes, ano
+    for _ in range(12):
+        m -= 1
+        if m == 0:
+            m = 12
+            a -= 1
+        transacoes = _buscar_mes(session, usuario_id, m, a)
+        if not transacoes:
+            continue
+        rec, desp = _agregar(transacoes)
+        saldo = rec - desp
+        cats = _categorias(transacoes)[:3]
+        top = ", ".join(f"{c.categoria} {c.percentual:.0f}%" for c in cats) or "—"
+        linhas.append(
+            f"- {_MESES[m][:3]}/{a}: "
+            f"Rec R$ {rec:,.0f} | Desp R$ {desp:,.0f} | Saldo R$ {saldo:,.0f} | Top: {top}"
+        )
+    if not linhas:
+        return ""
+    return "HISTÓRICO — ÚLTIMOS 12 MESES:\n" + "\n".join(linhas)
+
+
+def _build_system_instruction(mes: int, ano: int, ctx: dict, historico_anual: str = "") -> str:
     top5 = "\n".join(
         f"  - {c.categoria}: R$ {c.total:,.2f} ({c.percentual:.1f}%)"
         for c in ctx["categorias"][:5]
@@ -77,6 +101,8 @@ def _build_system_instruction(mes: int, ano: int, ctx: dict) -> str:
         variacao_linha = f"\n- Variação do saldo vs mês anterior: {sinal}{ctx['variacao_saldo_pct']:.1f}%"
 
     nome_linha = f"\n- Usuário: {ctx['usuario_nome']}" if ctx.get("usuario_nome") else ""
+
+    historico_bloco = f"\n\n{historico_anual}" if historico_anual else ""
 
     return f"""Você é o Hivvo, um analista financeiro pessoal direto e objetivo — não um assistente genérico.
 
@@ -92,7 +118,7 @@ TOP 5 CATEGORIAS DE DESPESA:
 
 REGRAS DE COMPORTAMENTO:
 1. NUNCA cumprimente ("Olá", "Oi", "Claro!", "Com certeza!" etc.) — vá direto ao ponto.
-2. Baseie respostas APENAS nos dados acima — nunca invente números ou extrapole.
+2. Baseie respostas APENAS nos dados acima e no histórico abaixo — nunca invente números ou extrapole.
 3. Se não houver dados suficientes, diga claramente e de forma curta.
 4. Se a pergunta não estiver relacionada às finanças do usuário, responda em 1-2 frases que você é especializado em análise financeira pessoal e redirecione para o contexto disponível — nunca recuse, nunca retorne vazio, nunca diga que não pode ajudar.
 5. Formate valores monetários como R$ X.XXX,XX (padrão brasileiro).
@@ -102,7 +128,7 @@ REGRAS DE COMPORTAMENTO:
 9. Use markdown leve quando facilitar a leitura (negrito para valores, listas para múltiplos itens).
 10. Seja conciso mas completo; prefira 3-5 frases diretas a listas longas.
 11. Se pertinente, finalize com uma pergunta contextual curta e específica.
-12. Use o nome do usuário apenas quando soar natural — não em toda resposta."""
+12. Use o nome do usuário apenas quando soar natural — não em toda resposta.{historico_bloco}"""
 
 
 def _build_contents(historico: list[HistoricoItem], mensagem: str) -> list[types.Content]:
@@ -153,7 +179,8 @@ def chat(
         ),
     }
 
-    system_instruction = _build_system_instruction(body.mes, body.ano, ctx)
+    historico_anual = _build_historico_anual(session, current_user.id, body.mes, body.ano)
+    system_instruction = _build_system_instruction(body.mes, body.ano, ctx, historico_anual)
     contents = _build_contents(body.historico, body.mensagem)
 
     try:

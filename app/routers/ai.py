@@ -195,11 +195,12 @@ def get_historico(
     if (dt.datetime.utcnow() - row.ultima) > dt.timedelta(hours=24):
         return []
 
+    sessao_id_mais_recente = uuid.UUID(str(row.sessao_id))
     mensagens = session.exec(
         select(ChatMessage)
         .where(
             ChatMessage.usuario_id == current_user.id,
-            ChatMessage.sessao_id == row.sessao_id,
+            ChatMessage.sessao_id == sessao_id_mais_recente,
         )
         .order_by(ChatMessage.created_at)
     ).all()
@@ -244,7 +245,7 @@ def chat(
 
     # primeira_vez = nenhuma mensagem ainda nesta sessão
     count_sessao = session.execute(
-        select(func.count()).where(
+        select(func.count(ChatMessage.id)).where(
             ChatMessage.usuario_id == current_user.id,
             ChatMessage.sessao_id == sessao_uuid,
         )

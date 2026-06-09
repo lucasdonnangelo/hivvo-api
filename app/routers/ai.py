@@ -308,9 +308,11 @@ def chat(
     historico_items = [HistoricoItem(role=m.role, text=m.text) for m in historico_db]
     contents = _build_contents(historico_items, body.mensagem)
 
+    _RETRY_WAITS = [2, 4, 6, 8, 10]  # backoff linear entre 5 tentativas
+
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
     texto: str | None = None
-    for attempt in range(1, 4):  # até 3 tentativas
+    for attempt in range(1, 6):  # até 5 tentativas
         try:
             response = client.models.generate_content(
                 model=_MODEL,
@@ -330,11 +332,12 @@ def chat(
         except HTTPException:
             raise
         except genai_errors.ServerError as e:
-            if attempt < 3:
-                logger.warning("[chat] Gemini 503, tentativa %d/3 — aguardando 2s", attempt)
-                time.sleep(2)
+            if attempt < 5:
+                wait = _RETRY_WAITS[attempt - 1]
+                logger.warning("[chat] Gemini 503, tentativa %d/5 — aguardando %ds", attempt, wait)
+                time.sleep(wait)
                 continue
-            logger.exception("Gemini 503 após 3 tentativas: %s", e)
+            logger.exception("Gemini 503 após 5 tentativas: %s", e)
             raise HTTPException(
                 status_code=503,
                 detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",

@@ -1,10 +1,12 @@
 import datetime as dt
 import logging
 import re
+import time
 import uuid
 from decimal import Decimal, InvalidOperation
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func
@@ -306,30 +308,43 @@ def chat(
     historico_items = [HistoricoItem(role=m.role, text=m.text) for m in historico_db]
     contents = _build_contents(historico_items, body.mensagem)
 
-    try:
-        client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        response = client.models.generate_content(
-            model=_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                safety_settings=_SAFETY,
-            ),
-        )
-        if not response.text:
+    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    texto: str | None = None
+    for attempt in range(1, 4):  # até 3 tentativas
+        try:
+            response = client.models.generate_content(
+                model=_MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    safety_settings=_SAFETY,
+                ),
+            )
+            if not response.text:
+                raise HTTPException(
+                    status_code=503,
+                    detail="A IA não gerou resposta. Tente reformular a pergunta.",
+                )
+            texto = _post_process(response.text)
+            break
+        except HTTPException:
+            raise
+        except genai_errors.ServerError as e:
+            if attempt < 3:
+                logger.warning("[chat] Gemini 503, tentativa %d/3 — aguardando 2s", attempt)
+                time.sleep(2)
+                continue
+            logger.exception("Gemini 503 após 3 tentativas: %s", e)
             raise HTTPException(
                 status_code=503,
-                detail="A IA não gerou resposta. Tente reformular a pergunta.",
+                detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",
             )
-        texto = _post_process(response.text)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Gemini request failed — traceback completo: %s", e)
-        raise HTTPException(
-            status_code=503,
-            detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",
-        )
+        except Exception as e:
+            logger.exception("Gemini request failed — traceback completo: %s", e)
+            raise HTTPException(
+                status_code=503,
+                detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",
+            )
 
     # Salva user + assistant atomicamente — só persiste se o Gemini respondeu com sucesso
     session.add(ChatMessage(

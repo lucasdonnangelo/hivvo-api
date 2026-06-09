@@ -190,12 +190,18 @@ def get_historico(
     ).first()
 
     if not row:
+        logger.info("[historico] nenhuma sessão encontrada para usuario_id=%s", current_user.id)
         return []
 
+    logger.info("[historico] sessao_id mais recente: %s | ultima_msg: %s", row.sessao_id, row.ultima)
+
     if (dt.datetime.utcnow() - row.ultima) > dt.timedelta(hours=24):
+        logger.info("[historico] sessão expirada (>24h) — retornando vazio")
         return []
 
     sessao_id_mais_recente = uuid.UUID(str(row.sessao_id))
+    logger.info("[historico] buscando mensagens para sessao_id=%s (tipo=%s)", sessao_id_mais_recente, type(sessao_id_mais_recente))
+
     mensagens = session.exec(
         select(ChatMessage)
         .where(
@@ -204,6 +210,11 @@ def get_historico(
         )
         .order_by(ChatMessage.created_at)
     ).all()
+
+    logger.info("[historico] total de mensagens encontradas: %d", len(mensagens))
+    for m in mensagens:
+        logger.info("[historico]   role=%s | sessao_id=%s | text=%.60s", m.role, m.sessao_id, m.text)
+
     return [
         HistoricoResponseItem(role=m.role, text=m.text, created_at=m.created_at)
         for m in mensagens
@@ -252,15 +263,6 @@ def chat(
     ).scalar()
     primeira_vez = count_sessao == 0
 
-    # Salva a mensagem do usuário no banco
-    session.add(ChatMessage(
-        usuario_id=current_user.id,
-        role="user",
-        text=body.mensagem,
-        sessao_id=sessao_uuid,
-    ))
-    session.commit()
-
     transacoes = _buscar_mes(session, current_user.id, body.mes, body.ano)
     receitas, despesas = _agregar(transacoes)
 
@@ -307,13 +309,19 @@ def chat(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Gemini request failed: %s", e)
+        logger.exception("Gemini request failed — traceback completo: %s", e)
         raise HTTPException(
             status_code=503,
             detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",
         )
 
-    # Salva a resposta da IA no banco
+    # Salva user + assistant atomicamente — só persiste se o Gemini respondeu com sucesso
+    session.add(ChatMessage(
+        usuario_id=current_user.id,
+        role="user",
+        text=body.mensagem,
+        sessao_id=sessao_uuid,
+    ))
     session.add(ChatMessage(
         usuario_id=current_user.id,
         role="assistant",

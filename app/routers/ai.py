@@ -160,12 +160,28 @@ REGRAS DE COMPORTAMENTO:
 
 
 def _build_contents(historico: list[HistoricoItem], mensagem: str) -> list[types.Content]:
-    contents: list[types.Content] = []
-    for item in historico:
-        gemini_role = "model" if item.role == "assistant" else "user"
-        contents.append(types.Content(role=gemini_role, parts=[types.Part(text=item.text)]))
-    contents.append(types.Content(role="user", parts=[types.Part(text=mensagem)]))
-    return contents
+    # Inclui a mensagem atual no final para sanitizá-la junto com o histórico
+    all_items = historico + [HistoricoItem(role="user", text=mensagem)]
+
+    # Remove turns consecutivos do mesmo role — mantém o mais recente de cada sequência.
+    # Processa em reverso: o primeiro encontrado (mais novo) vence; depois reverte.
+    deduped: list[HistoricoItem] = []
+    for item in reversed(all_items):
+        if not deduped or deduped[-1].role != item.role:
+            deduped.append(item)
+    deduped.reverse()
+
+    # Gemini exige que contents comece com role="user"
+    while deduped and deduped[0].role != "user":
+        deduped.pop(0)
+
+    return [
+        types.Content(
+            role="model" if item.role == "assistant" else "user",
+            parts=[types.Part(text=item.text)],
+        )
+        for item in deduped
+    ]
 
 
 def _post_process(texto: str) -> str:

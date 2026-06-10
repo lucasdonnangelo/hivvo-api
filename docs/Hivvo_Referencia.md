@@ -1,20 +1,22 @@
 # Hivvo — Documento de Referência do Produto
 
-**Brand Guide | Arquitetura | Telas | Plano de Migração**  
-Maio 2026 | Lucas Donnangelo
+**Brand Guide | Arquitetura | Telas | Estado de Qualidade | Roadmap**
+Atualizado em 10 de junho de 2026 | Lucas Donnangelo
+
+> **Nota de versão (10/06/2026):** documento sincronizado com o estado real do código após as auditorias de segurança e técnica (`docs/AUDITORIA_SEGURANCA.md`, `docs/AUDITORIA_TECNICA.md`). Correções relevantes: a arquitetura em camadas (Repository Pattern) **descrita anteriormente como pronta não existe no código** — está planejada para o pós-deploy. Ver §5 e §8.
 
 ---
 
 ## 1. Visão do Produto
 
-Hivvo é um aplicativo web de gestão financeira pessoal com IA, voltado exclusivamente para pessoa física. O nome carrega duplo sentido: "bee" (abelha, símbolo de organização e construção) + "be free" (liberdade financeira).
+Hivvo é um aplicativo web (PWA) de gestão financeira pessoal com IA, voltado exclusivamente para pessoa física. O nome carrega duplo sentido: "bee" (abelha, organização e construção) + "be free" (liberdade financeira).
 
 ### Pilares
 
 - Controle financeiro completo: transações, cartões, faturas e parcelamentos
-- Inteligência artificial (Gemini) como diferencial de insights
+- Inteligência artificial (Gemini) como diferencial de insights, com contexto financeiro real do usuário
 - Experiência premium: design escuro, paleta âmbar, identidade única
-- PWA — funciona como app sem passar pela App Store
+- PWA instalável — funciona como app pelo navegador (distribuição nas lojas é meta futura; ver §8)
 - Desktop e mobile com layouts distintos e otimizados
 
 ### Público-alvo
@@ -25,10 +27,11 @@ Hivvo é um aplicativo web de gestão financeira pessoal com IA, voltado exclusi
 
 ### Diferenciais Competitivos
 
-- **Parcelamento completo** — gestão por fatura, indicador 2/12 por transação
+- **Parcelamento completo** — gestão por fatura, indicador 2/12 por transação, controle **manual** (posicionamento contra concorrentes que dependem de Open Finance/conexão automática)
 - **IA com contexto financeiro real** — não é chatbot genérico
 - **Layout responsivo genuíno** — não é apenas CSS adaptativo
-- **Detecção automática de assinaturas recorrentes**
+
+> Itens como "detecção automática de assinaturas recorrentes" e "alerta de gasto acima da média" são **roadmap**, não estão implementados (ver §8).
 
 ---
 
@@ -89,22 +92,11 @@ Hivvo é um aplicativo web de gestão financeira pessoal com IA, voltado exclusi
 ```js
 // tailwind.config.ts
 colors: {
-  amber: {
-    DEFAULT: '#EF9F27',
-    light: '#FAC775',
-    dark: '#BA7517',
-  },
-  bg: {
-    DEFAULT: '#1A1714',
-    surface: '#2A2520',
-    border: '#3A3530',
-  },
-  text: {
-    primary: '#F5F0E8',
-    muted: '#888580',
-  },
+  amber: { DEFAULT: '#EF9F27', light: '#FAC775', dark: '#BA7517' },
+  bg:    { DEFAULT: '#1A1714', surface: '#2A2520', border: '#3A3530' },
+  text:  { primary: '#F5F0E8', muted: '#888580' },
   success: '#3DBF7F',
-  danger: '#E85D5D',
+  danger:  '#E85D5D',
 }
 ```
 
@@ -122,170 +114,79 @@ colors: {
 | 4 | Cartões | Faturas, Gerenciar Parcelas | Lista de cartões + detalhe de fatura |
 | 5 | Assistente IA | — | Chat Gemini + painel de insights |
 
-**Menu secundário (ícone de perfil no header):**
-- Importar CSV
-- Backup (download JSON/CSV)
-- Gerenciar categorias
-- Configurações da conta
+**Menu secundário (ícone de perfil no header):** Importar CSV · Backup (download JSON/CSV) · Gerenciar categorias · Configurações da conta · Termos e Privacidade
 
-### Features por Tela
+### Features por Tela (implementadas)
 
-#### Dashboard
-- Métricas: saldo do mês, receitas, despesas, comparativo vs mês anterior
-- Navegação entre meses
-- Últimas transações
-- Gráfico de gastos por categoria
-- Resumo de faturas abertas
-- Empty state inteligente (diferencia usuário novo de mês sem dados)
+**Dashboard** — métricas (saldo do mês, receitas, despesas, comparativo vs. mês anterior), navegação entre meses, últimas transações, gráfico de gastos por categoria, resumo de faturas abertas, empty state inteligente, onboarding progressivo pós-cadastro, widget de compromissos futuros (parcelas).
 
-#### Transações
-- Busca por descrição, categoria ou valor
-- Filtros: tipo, categoria (múltipla), forma de pagamento, valor min/max
-- Navegação entre meses
-- Lista agrupada por data com total filtrado
-- Editar e deletar transação (com confirmação)
-- Acesso a importação CSV
+**Transações** — busca por descrição/categoria/valor, filtros (tipo, categoria múltipla, forma de pagamento, valor min/max), navegação entre meses, lista agrupada por data com total filtrado, editar/deletar com confirmação, acesso à importação CSV, badge de parcela inline.
 
-#### Adicionar Transação
-- Campos: tipo, valor (formatação automática R$), descrição, categoria, data, forma de pagamento, cartão
-- Grid de categorias com ícones + botão nova categoria customizada
-- Parcelamento: número de parcelas, valor por parcela calculado automaticamente
-- Validação em tempo real, botão desabilitado se inválido
-- Sugestão de categoria por descrição via IA
-- Preview de impacto no saldo (desktop apenas)
+**Adicionar Transação** — tipo, valor (formatação automática R$, aceita vírgula decimal), descrição, categoria, data, forma de pagamento, cartão; grid de categorias com ícones/emoji + categoria customizada; parcelamento com valor por parcela calculado; validação em tempo real; sugestão de categoria via IA; preview de impacto no saldo (desktop).
 
-#### Cartões e Faturas
-- Lista de cartões com fatura aberta de cada um
-- Adicionar/editar cartão: nome, limite, dia de fechamento, dia de vencimento, offset de mês, tipo
-- Grid de meses clicável por cartão
-- Detalhe da fatura: total, data de vencimento, transações separadas em parcelas e avulsas
-- Indicador de parcela por transação (2/12, 5/10 etc)
-- Exportar fatura em PDF
-- Gerenciar parcelas: cancelar, editar, ver todas as parcelas futuras
+**Cartões e Faturas** — lista com fatura aberta por cartão e barra de limite usado/disponível; adicionar/editar cartão (nome, limite, dia de fechamento, dia de vencimento, offset de mês, tipo); grid de meses por cartão; detalhe da fatura (total, vencimento, parcelas e avulsas separadas); indicador de parcela por transação; exportar fatura em PDF; gerenciar parcelas (cancelar, editar, ver futuras).
 
-#### Assistente IA
-- Chat conversacional com Gemini
-- Histórico de mensagens na sessão
-- Perguntas rápidas predefinidas
-- Contexto financeiro automático (dados do mês injetados no prompt)
-- Detecção de assinaturas recorrentes
-- Alerta de gasto acima da média histórica
-- Painel lateral com resumo do mês (desktop apenas)
+**Assistente IA** — chat com Gemini; persistência e memória (tabela `chat_messages`, sessões com `sessao_id`, janela de 24h na UI, contexto invisível das últimas 50 mensagens); perguntas rápidas; contexto financeiro injetado no prompt; botão "Nova conversa"; painel lateral com resumo do mês (desktop).
 
-#### Ver Resumo Detalhado (sub-página de Transações)
-- Toggle: Mês / Trimestre / Ano
-- Métricas: receitas, despesas, saldo líquido, parcelas do próximo mês
-- Comparativo percentual vs período anterior
-- Gráfico de pizza por categoria com legenda colorida
-- Gráfico de barras de evolução mensal com média histórica
-- Top categorias com percentual
-- Exportar relatório
+**Ver Resumo Detalhado** — toggle Mês/Trimestre/Ano; métricas (receitas, despesas, saldo líquido, parcelas do próximo mês); comparativo percentual vs. período anterior; pizza por categoria; barras de evolução mensal com média; top categorias; exportar relatório.
+
+**Auth / Conta** — login, cadastro (username auto-gerado a partir do e-mail), recuperação de senha (forgot/reset), troca de senha, toggle de visibilidade de senha, refresh token automático, Termos de Uso e Política de Privacidade (base LGPD).
 
 ---
 
-## 4. Arquitetura Frontend
+## 4. Arquitetura Frontend (hivvo-web)
 
 ### Stack
 
 | Camada | Tecnologia | Motivo |
 |---|---|---|
-| Framework | React + Vite | Build rápido, HMR instantâneo, otimizado para PWA |
+| Framework | React + Vite | Build rápido, HMR, otimizado para PWA |
 | Roteamento | React Router v6 | Rotas aninhadas para sub-páginas |
-| Estilo | Tailwind CSS | Tokens do brand guide mapeados em classes, mobile-first |
-| Estado global | Zustand | Simples, sem boilerplate, ideal para auth e UI state |
-| Requisições | TanStack Query | Cache automático, retry, sync — sem useEffect para fetch |
-| Gráficos | Recharts | SVG responsivo, API declarativa React |
+| Estilo | Tailwind CSS | Tokens do brand guide em classes, mobile-first |
+| Estado global | Zustand | Auth e UI state, sem boilerplate |
+| Requisições | TanStack Query | Cache/retry/sync — sem useEffect para fetch |
+| Gráficos | Recharts | SVG responsivo, API declarativa |
 | PWA | Vite PWA Plugin | Service Worker e manifest automáticos |
-| Formulários | React Hook Form + Zod | Validação em tempo real sem re-renders |
-| Deploy | Vercel | Gratuito, HTTPS, CDN global, deploy automático no push |
+| Formulários | React Hook Form + Zod | Validação em tempo real |
+| HTTP | Axios | Instância com interceptors JWT (refresh automático) |
+| Deploy | Vercel | HTTPS, CDN, deploy no push |
 
-### Estrutura de Pastas (Frontend)
+### Estrutura de Pastas (atual)
 
 ```
 hivvo-web/
-├── index.html
-├── vite.config.ts
-├── tailwind.config.ts
-├── public/
-│   └── manifest.json
+├── index.html · vite.config.ts · tailwind.config.ts
+├── public/  (manifest.json, icon-192.png, icon-512.png)
 └── src/
-    ├── layouts/
-    │   ├── DesktopLayout.tsx     # sidebar + topbar + content
-    │   ├── MobileLayout.tsx      # header + content + bottom bar
-    │   └── AuthLayout.tsx        # login/cadastro centralizado
-    ├── pages/
-    │   ├── Dashboard/
-    │   ├── Transactions/         # inclui Summary como sub-rota
-    │   ├── AddTransaction/
-    │   ├── Cards/                # inclui Invoices e Parcelas
-    │   ├── Assistant/
-    │   ├── Auth/                 # Login, Cadastro, Reset
-    │   └── Settings/
-    ├── components/
-    │   ├── ui/                   # Button, Input, Card, Modal, Badge
-    │   ├── charts/               # DonutChart, BarChart, LineChart
-    │   ├── transaction/          # TransactionItem, TransactionList
-    │   └── cards/                # CardVisual, InvoiceGrid, ParcelaItem
-    ├── hooks/
-    │   ├── useBreakpoint.ts      # detecta mobile vs desktop
-    │   ├── useTransactions.ts    # fetch + cache via TanStack
-    │   └── useAuth.ts            # estado de autenticação
-    ├── store/
-    │   ├── authStore.ts          # Zustand: token, usuário
-    │   └── uiStore.ts            # Zustand: modais, toasts, loading
-    ├── services/
-    │   ├── api.ts                # instância Axios com interceptors JWT
-    │   ├── transactions.ts
-    │   ├── cards.ts
-    │   └── auth.ts
-    └── styles/
-        └── tokens.css            # variáveis CSS do brand guide
+    ├── layouts/      DesktopLayout, MobileLayout, AuthLayout
+    ├── pages/        Dashboard, Transactions(/Summary), AddTransaction,
+    │                 Cards(/Invoices/Parcelas), Assistant, Auth
+    │                 (Login, Register, ForgotPassword, ResetPassword),
+    │                 Settings, Import, Legal(Terms, Privacy)
+    ├── components/    ui/, charts/, transaction/, cards/
+    ├── hooks/         useBreakpoint, useTransactions, useCategories,
+    │                  useStatistics, useCards, useAuth, useInstallments
+    ├── store/         authStore, uiStore
+    ├── services/      api, auth, transactions, categories, cards, ai,
+    │                  statistics, installments
+    └── styles/        tokens.css
 ```
 
-### Lógica de Layout Responsivo
+### Regras de Implementação Frontend (não-negociáveis)
 
-O hook `useBreakpoint` é o ponto central de toda a responsividade:
-
-```tsx
-const isMobile = useBreakpoint('md')
-return isMobile ? <MobileLayout /> : <DesktopLayout />
-```
-
-**Mobile (< 768px):**
-- Header fixo com logo e avatar
-- Bottom tab bar com 5 tabs e FAB central elevado
-- Modais em full screen
-- Navegação por stack (push/pop)
-
-**Desktop (≥ 768px):**
-- Sidebar fixa à esquerda com 52px de largura (só ícones)
-- Topbar contextual por página
-- Painéis laterais side-by-side (filtros + lista, cartões + fatura)
-- Modais centralizados com overlay
-- Hover states em todos os itens interativos
-
-### Fluxo de Dados
-
-> **Regra fundamental:** dados de servidor ficam no TanStack Query. Estado de UI fica no Zustand. Nunca misturar os dois.
-
-```
-FastAPI → services/api.ts → TanStack Query → Componente
-```
-
-O componente nunca chama a API diretamente — sempre via hook do TanStack Query.
-
-### Regras de Implementação Frontend
-
-1. Nunca hardcodar cores — sempre usar tokens do Tailwind
-2. Nunca usar CSS responsivo puro — sempre `MobileLayout` vs `DesktopLayout`
+1. Nunca hardcodar cores — sempre tokens do Tailwind
+2. Nunca CSS responsivo puro — sempre `MobileLayout` vs `DesktopLayout` (via `useBreakpoint`)
 3. Dados de servidor: TanStack Query. Estado de UI: Zustand. Nunca misturar.
-4. Componentes UI base ficam em `src/components/ui/` e são reutilizados em todo o projeto
+4. Componentes UI base em `src/components/ui/`, reutilizados em todo o projeto
 5. Cada endpoint do FastAPI tem um arquivo correspondente em `src/services/`
 6. Valores monetários: sempre `toFixed(2)` no JS
+7. JWT nunca em localStorage — apenas httpOnly cookie ou memória
+
+> **Pendências cross-repo (ver §8):** quando o backend mover para `/api/v1` e mudar o contrato de listagem para envelope paginado, a base URL e os serviços do frontend mudam junto. A página de reset de senha precisa parar de deixar o token na URL.
 
 ---
 
-## 5. Arquitetura Backend
+## 5. Arquitetura Backend (hivvo-api)
 
 ### Stack
 
@@ -295,168 +196,128 @@ O componente nunca chama a API diretamente — sempre via hook do TanStack Query
 | ORM | SQLModel |
 | Banco de dados | PostgreSQL (Supabase) |
 | Migrations | Alembic |
-| Autenticação | JWT (httpOnly cookie) + bcrypt |
-| IA | Google Gemini API |
+| Autenticação | JWT (httpOnly cookie) + bcrypt; refresh token rotativo |
+| IA | Google Gemini API (google-genai) |
+| E-mail | Resend (recuperação de senha) |
 | Deploy | Railway ou Render (free tier) |
 
-### Estrutura de Pastas (Backend)
+### Estrutura de Pastas (estado REAL)
 
 ```
 hivvo-api/
-├── main.py
-├── .env
-├── requirements.txt
-├── alembic/
-│   └── versions/
+├── main.py · .env · requirements.txt
+├── alembic/versions/
 └── app/
-    ├── models/          # SQLModel models (migrados do FinanceAI)
-    ├── repositories/    # Repository Pattern (migrado do FinanceAI)
-    ├── services/        # Lógica de negócio (migrada do FinanceAI)
-    ├── routers/         # Endpoints FastAPI por domínio
-    │   ├── auth.py
-    │   ├── transactions.py
-    │   ├── categories.py
-    │   ├── cards.py
-    │   ├── invoices.py
-    │   ├── installments.py
-    │   ├── statistics.py
-    │   └── ai.py
-    ├── schemas/         # Pydantic schemas (request/response)
-    └── core/
-        ├── auth.py      # JWT + bcrypt
-        ├── database.py  # conexão Supabase
-        └── config.py    # variáveis de ambiente
+    ├── models/          SQLModel models
+    ├── repositories/    ⚠️ VAZIO hoje (alvo pós-deploy — ver §8)
+    ├── services/        ⚠️ VAZIO hoje (alvo pós-deploy — ver §8)
+    ├── routers/         auth, transactions, categories, cards, invoices,
+    │                    installments, statistics, ai  ← lógica de negócio vive AQUI
+    ├── schemas/         Pydantic (request/response)
+    └── core/            auth.py (JWT+bcrypt), database.py, config.py
 ```
 
-### Endpoints por Domínio
+> **Estado real da arquitetura em camadas:** as pastas `repositories/` e `services/` existem mas estão **vazias**. Toda a lógica de domínio — inclusive a criação de parcelas e o cálculo de fatura, que é o diferencial do produto — está hoje **dentro dos routers**, em funções privadas. A lógica de negócio do FinanceAI transferiu e funciona corretamente, mas **não foi reconstruída em camadas**. A extração para `services/`/`repositories/` é a primeira etapa do plano de correção (ver §7 e §8) e o refactor completo é pós-deploy.
 
-| Domínio | Endpoints principais |
+### Endpoints por Domínio (estado real)
+
+| Domínio | Endpoints |
 |---|---|
-| Auth | `POST /auth/register`, `POST /auth/login`, `GET /auth/me`, `POST /auth/logout` |
+| Auth | `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `PUT /auth/me`, `POST /auth/refresh`, `PUT /auth/password`, `POST /auth/forgot-password`, `POST /auth/reset-password` · **planejado:** `DELETE /auth/me` (exclusão de conta, LGPD) |
 | Transações | `GET /transactions`, `POST /transactions`, `PUT /transactions/{id}`, `DELETE /transactions/{id}` |
 | Categorias | `GET /categories`, `POST /categories`, `DELETE /categories/{id}` |
 | Cartões | `GET /cards`, `POST /cards`, `PUT /cards/{id}`, `DELETE /cards/{id}` |
 | Faturas | `GET /cards/{id}/invoices`, `GET /cards/{id}/invoices/{month}` |
 | Parcelas | `GET /installments`, `PUT /installments/{id}`, `DELETE /installments/{id}` |
 | Estatísticas | `GET /statistics/monthly`, `GET /statistics/yearly`, `GET /statistics/categories` |
-| IA | `POST /ai/chat` |
+| IA | `POST /ai/chat`, `GET /ai/historico`, `DELETE /ai/historico` |
+
+> **Planejado (pré-deploy):** prefixar tudo sob `/api/v1` para estabilidade de contrato com clientes (T-28).
+
+### Decisões de domínio (fixas)
+
+- `fatura_mes`/`fatura_ano` derivados da **data de vencimento** da parcela, não da data da compra.
+- Arredondamento de parcelas: última parcela absorve a diferença (`ROUND_HALF_UP`). *(Borda conhecida a corrigir: valores muito pequenos podem gerar última parcela ≤ 0 — T-33.)*
+- Valores monetários: `Decimal` no Python, `Numeric(15,2)` no banco — sem `float` no caminho do dinheiro.
+- Soft delete em categorias (`ativa=False`) para preservar histórico.
+- Convenção de fatura: compra com `dia > dia_fechamento` entra no ciclo seguinte; `mes_offset_vencimento` desloca fechamento→vencimento; dia de vencimento clampado pelo último dia do mês.
 
 ---
 
-## 6. Plano de Migração
+## 6. Origem (migração FinanceAI → Hivvo)
 
-### O que Reaproveitar do FinanceAI
+O Hivvo nasceu da migração do FinanceAI (protótipo Python/Streamlit). A UI Streamlit foi descartada; a lógica de negócio foi transferida para o backend FastAPI.
 
-| Arquivo | Status | Notas |
-|---|---|---|
-| `models.py` | ✅ 100% reaproveitado | SQLModel funciona com PostgreSQL sem alteração |
-| `repositories.py` | ✅ 100% reaproveitado | Repository Pattern já desacoplado da UI |
-| `logic.py` | ✅ 100% reaproveitado | Lógica de negócio pura, sem dependência de UI |
-| `agent.py` | 🔄 Adaptado | Manter lógica Gemini, trocar interface para HTTP |
-| `auth.py` | 🔄 Adaptado | Manter bcrypt, adicionar JWT |
-| `pages/` + `components/` | ❌ Descartado | Streamlit substituído pelo React |
+| Origem | Status real na hivvo-api |
+|---|---|
+| `models.py` | ✅ Transferido — SQLModel com PostgreSQL |
+| `logic.py` / `repositories.py` | 🔄 **Lógica transferida e funcional, mas vive nos routers** — as camadas `services/`/`repositories/` ainda não foram reconstruídas (planejado, §8) |
+| `agent.py` (Gemini) | ✅ Adaptado para HTTP (`routers/ai.py`) com persistência de chat |
+| `auth.py` | ✅ Adaptado — bcrypt + JWT (httpOnly cookie) + refresh token |
+| `pages/` + `components/` (Streamlit) | ❌ Descartado — substituído pelo React |
 
-### Fases do Projeto
-
-#### Fase 1 — Backend FastAPI + Supabase
-**Objetivo:** API funcionando e testável via Swagger, sem frontend ainda.
-
-- [ ] Criar projeto Supabase (PostgreSQL gratuito)
-- [ ] Configurar projeto FastAPI com estrutura de pastas
-- [ ] Configurar SQLModel com PostgreSQL
-- [ ] Migrations com Alembic
-- [ ] Deploy no Railway ou Render (free tier)
-- [ ] Endpoints de auth (registro + login + JWT)
-- [ ] Endpoints de transações e categorias
-- [ ] Endpoints de cartões e faturas
-- [ ] Endpoints de parcelas
-- [ ] Endpoints de estatísticas
-- [ ] Endpoint de IA (proxy Gemini)
-
-#### Fase 2 — Frontend React PWA (base)
-**Objetivo:** Design system, autenticação e Dashboard funcionando com dados reais.
-
-- [ ] Criar projeto Vite + React + TypeScript
-- [ ] Configurar Tailwind com tokens do brand guide
-- [ ] Configurar Vite PWA Plugin + manifest.json
-- [ ] Implementar MobileLayout e DesktopLayout
-- [ ] Hook useBreakpoint
-- [ ] Configurar React Router com rotas aninhadas
-- [ ] Componentes UI base: Button, Input, Card, Modal, Badge
-- [ ] Login e Cadastro
-- [ ] Dashboard com dados reais do Supabase
-- [ ] Zustand authStore + TanStack Query setup
-
-**Critério de avanço:** login funcionando, dashboard com dados reais, PWA instalável no celular.
-
-#### Fase 3 — Telas Restantes
-**Objetivo:** Paridade funcional completa com o FinanceAI atual.
-
-- [ ] Transações — lista, filtros, busca, editar, deletar
-- [ ] Adicionar transação — form completo com parcelamento
-- [ ] Ver resumo — gráficos mês/trimestre/ano
-- [ ] Cartões — lista + detalhe de fatura + parcelas
-- [ ] Assistente IA — chat + painel de insights
-- [ ] Importar CSV
-- [ ] Backup — export JSON/CSV
-- [ ] Gerenciar categorias customizadas
-- [ ] Configurações de perfil
-- [ ] Export de fatura em PDF
-
-#### Fase 4 — Monetização e Lançamento
-
-- [ ] Definir limites do plano gratuito (ex: até 3 cartões, 100 transações/mês)
-- [ ] Integrar Stripe ou Pagar.me para plano Pro
-- [ ] Gate de features por plano no backend
-- [ ] Landing page do Hivvo
-- [ ] Domínio próprio (hivvo.app ou similar)
-- [ ] Post LinkedIn + Product Hunt
-- [ ] Analytics com Posthog (gratuito)
-
-### Ordem de Implementação com Claude Code
-
-| # | Tarefa | Por que primeiro |
-|---|---|---|
-| 1 | Estrutura FastAPI + conexão Supabase | Fundação. Sem isso nada mais funciona. |
-| 2 | Migrar models.py + migrations Alembic | Define o schema do banco. Tudo depende disso. |
-| 3 | Endpoints de auth (registro + login + JWT) | Todas as outras rotas dependem do usuário autenticado. |
-| 4 | Endpoints de transações e categorias | Core do produto. Frontend já tem o suficiente para o Dashboard. |
-| 5 | Setup React + Tailwind + PWA + layouts | Base do frontend. Claude Code precisa dessas decisões antes de gerar telas. |
-| 6 | Login + Dashboard | Primeiro marco visível. Valida o fluxo end-to-end completo. |
-| 7 | Feature por feature (backend + frontend juntos) | Mais fácil de testar e validar. Não acumula bugs invisíveis. |
+As fases de construção (Backend → Frontend base → Telas restantes) estão **concluídas**. O detalhe histórico está em `docs/SESSAO_ATUAL.md`.
 
 ---
 
 ## 7. Como Usar com Claude Code
 
-### Prompt de Abertura de Sessão
+### Prompt de abertura de sessão (atualizado)
 
 ```
-Leia os arquivos docs/Hivvo_Referencia.md e docs/SESSAO_ATUAL.md antes de começar.
-Confirme que entendeu a arquitetura, as decisões de stack e a ordem de implementação.
-Não proponha alternativas de tecnologia — as escolhas já foram feitas.
+Leia docs/Hivvo_Referencia.md, docs/SESSAO_ATUAL.md, docs/AUDITORIA_SEGURANCA.md,
+docs/AUDITORIA_TECNICA.md e docs/PLANO_EXECUCAO_API.md antes de começar.
+Confirme que entendeu a arquitetura real, as decisões de stack e o plano de
+correção em andamento. Não proponha alternativas de tecnologia — já decididas.
+Uma tarefa/batch por vez, com aprovação antes do commit.
 ```
 
 ### Regras para Claude Code
 
-1. Sempre usar os tokens de cor do brand guide — nunca hardcodar cores
-2. Nunca usar CSS responsivo simples — sempre MobileLayout vs DesktopLayout
+1. Tokens de cor do brand guide — nunca hardcodar cores
+2. Nunca CSS responsivo puro — `MobileLayout` vs `DesktopLayout`
 3. Dados de servidor: TanStack Query. Estado de UI: Zustand. Nunca misturar.
-4. Componentes UI base ficam em `src/components/ui/` e são reutilizados em todo o projeto
-5. Cada endpoint do FastAPI tem um arquivo correspondente em `src/services/`
-6. Validar cada feature completa (endpoint + tela) antes de avançar para a próxima
+4. Componentes UI base em `src/components/ui/`, reutilizados
+5. Cada endpoint FastAPI tem arquivo em `src/services/`
+6. Valor monetário: `Decimal` no Python, `toFixed(2)` no JS
 7. JWT nunca em localStorage — apenas httpOnly cookie ou memória
-8. Valores monetários: Decimal no Python, toFixed(2) no JS
-
-### Critérios de Qualidade
-
-- App instalável como PWA no celular (Add to Home Screen)
-- Dashboard renderiza em menos de 2 segundos com dados reais
-- Formulários com validação em tempo real em todos os campos
-- Nenhum dado sensível no localStorage
-- Todos os valores monetários com precisão correta
+8. Uma tarefa/batch por vez; rodar testes antes de concluir; atualizar `SESSAO_ATUAL.md` ao fim
 
 ---
 
-*Hivvo — Documento de Referência v1.0 — Maio 2026*  
-*Repositório original: github.com/lucasdonnangelo/financeai*
+## 8. Estado de Qualidade, Segurança e Roadmap
+
+### Auditorias (10/06/2026)
+
+O backend passou por duas auditorias somente-leitura:
+
+- **`docs/AUDITORIA_SEGURANCA.md`** — 25 achados, **10 bloqueadores de lançamento**. Ponto forte: controle de acesso por usuário (IDOR/BOLA) sólido nos caminhos de leitura. Riscos: gestão de segredos, sessão/cookie cross-domain + CSRF, ausência de rate limiting, tokens em texto claro, RLS ausente, sem exclusão de conta (LGPD).
+- **`docs/AUDITORIA_TECNICA.md`** — ~44 achados. Pontos fortes: ciclo de fatura correto e uniforme, `Decimal` em 100% do dinheiro, API stateless, migrações limpas. Riscos: **zero testes**, arquitetura em camadas inexistente (§5), conexão direta ao Supabase (sem pooler), sem paginação/índices compostos, caminho síncrono frágil para o Gemini, e bugs de domínio (poluição de fatura entre usuários, 500s em updates malformados, quebra do chat com resposta longa).
+
+### Plano de correção
+
+`docs/PLANO_EXECUCAO_API.md` — **16 batches** ordenados (11 pré-deploy + deploy + 5 pós-deploy). Espinha pré-deploy: consolidar a lógica de domínio → cobrir com testes → corrigir os bugs de domínio → hardening de config/sessão → banco (índices, pooler, cascades) → resiliência IA + rate limiting → operacional → topologia + LGPD.
+
+### Decisão pendente (gate de deploy)
+
+**Topologia de hospedagem.** Recomendado: same-site sob `hivvo.app` — `app.hivvo.app` (Vercel) + `api.hivvo.app` (Railway), cookie `Domain=.hivvo.app` `SameSite=Lax`. Resolve o cookie cross-site e preserva a proteção CSRF sem precisar de tokens CSRF. Afeta DNS, cookies e CORS — decidir antes do deploy.
+
+### Arquitetura-alvo (pós-deploy)
+
+- **Repository Pattern completo:** `services/` (regra de negócio) + `repositories/` (acesso a dados), tirando lógica dos routers.
+- **RLS no Supabase** como defesa em profundidade (papel Postgres de privilégio mínimo + políticas por `SET LOCAL`).
+- **Observabilidade:** logging estruturado + Sentry.
+- **Performance:** agregações no banco (não em Python), cache do contexto da IA, paginação com envelope.
+
+### Roadmap de produto
+
+- **Lançamento:** domínio `hivvo.app`, deploy (Railway/Render + Vercel), landing page, Product Hunt/LinkedIn, analytics (Posthog).
+- **Monetização (Fase 4):** plano Free com limites (ex.: nº de cartões, transações/mês) + plano **Pro (~R$ 29,90/mês)**; gate de features no backend; integração Stripe ou Pagar.me; cota de IA por plano.
+- **Features:** planejamento 50/30/20; importação inteligente de CSV; detecção de assinaturas recorrentes; alerta de gasto acima da média; área de consultoria de investimentos (futuro).
+- **Agente de IA com CRUD (futuro):** dar capacidade de escrita ao assistente. **Pré-requisito de segurança:** mitigar prompt injection (F-21) — separar dados de instruções, allow-list de ferramentas, confirmação para ações mutáveis, autorização explícita por recurso.
+- **Distribuição nas lojas (futuro):** o Hivvo é PWA. Google Play aceita via empacotamento (TWA). A App Store da Apple **não lista PWA diretamente** e é restritiva com wrappers finos — exigirá empacotamento (ex.: Capacitor) e atenção à revisão da Apple. Validar a estratégia antes de prometer presença nas lojas.
+
+---
+
+*Hivvo — Documento de Referência v2.0 — 10/06/2026*
+*Repositório original FinanceAI: github.com/lucasdonnangelo/financeai*

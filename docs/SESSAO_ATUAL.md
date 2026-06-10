@@ -8,12 +8,9 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 ## Estado do Projeto
 
 **Fase atual:** Deploy  
-**Status:** Sessão de bugfixes pós-UI/UX concluída — 2 correções de backend commitadas. App funcional, polido e pronto para produção.  
-**Próximo passo imediato:** Deploy do backend no Railway ou Render  
-**Próxima fase:** Registro do domínio hivvo.app + landing page  
-**Última tarefa concluída:** Remoção do campo `username` do formulário de cadastro — auto-geração a partir do email (commit `f7abfdd`)
-
-> **Pendente no frontend:** remover o campo `username` do formulário de cadastro (`RegisterPage.tsx`).
+**Status:** Assistente IA com persistência e memória implementado — tabela `chat_messages`, arquitetura de sessões, histórico com janela de 24h, contexto invisível das últimas 50 mensagens, retry Gemini 5x com backoff linear. Pendente validação de UX.  
+**Próximo passo imediato:** Validar itens pendentes do Assistente quando o Gemini estabilizar + implementar melhorias de UX da Fase 3  
+**Última tarefa concluída:** Retry Gemini 503 aumentado para 5 tentativas com backoff linear 2/4/6/8s (commit `de35c33`)
 
 ---
 
@@ -57,7 +54,18 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 
 ## Próximos Passos
 
-### Deploy (etapa atual)
+### Validação pendente — Assistente IA (aguardando Gemini estabilizar)
+- Histórico completo ao reabrir (user + assistant visíveis)
+- Fluxo de 5+ mensagens consecutivas sem erro 503
+
+### Melhorias de UX — Fase 3 (próxima implementação)
+- Unificação dos formulários de criação/edição de transação (modal único reutilizável)
+- Widget de parcelas ativas no Dashboard (resumo visual das parcelas em aberto)
+- Destacar toggle "Parcelar compra" no formulário de transação
+- Reorganizar Configurações (hierarquia e agrupamento mais claro)
+- Value proposition no login (frase de impacto + benefícios visíveis antes de autenticar)
+
+### Deploy (etapa em paralelo)
 - **Backend:** publicar `hivvo-api` no Railway ou Render (free tier)
   - Configurar variáveis de ambiente (.env) no painel do serviço
   - Apontar `DATABASE_URL` para o Supabase de produção
@@ -75,7 +83,7 @@ Leia os arquivos `docs/Hivvo_Referencia.md` e `docs/SESSAO_ATUAL.md` para entend
 
 ---
 
-## Próxima implementação — Assistente IA com Persistência e Memória
+## ✅ Implementado — Assistente IA com Persistência e Memória
 
 ### Visão geral do comportamento final
 - Primeira vez no chat → IA se apresenta como Assistente Hivvo
@@ -290,7 +298,7 @@ A implementação original usava filtro de 24h direto na query. A arquitetura fo
 - [x] 25. Termos de Uso (`/terms`) e Política de Privacidade (`/privacy`) — páginas estáticas em `AuthLayout`
 - [x] 26. Sessão de UI/UX — melhorias #1 a #10 implementadas e commitadas
 - [ ] 27. Deploy — backend Railway/Render + frontend Vercel + domínio hivvo.app
-- [ ] 28. Assistente IA com persistência e memória — tabela chat_messages + endpoints GET/DELETE /ai/historico + modificar POST /ai/chat + frontend (getHistorico, clearHistorico, botão "Nova conversa")
+- [x] 28. Assistente IA com persistência e memória — tabela chat_messages + endpoints GET/DELETE /ai/historico + modificar POST /ai/chat + frontend (getHistorico, clearHistorico, botão "Nova conversa")
 
 ---
 
@@ -455,6 +463,6 @@ hivvo-web/
 
 ---
 
-*Última atualização: 07 de Junho de 2026 — Melhorias no Assistente IA: contexto histórico dos últimos 12 meses no prompt Gemini, regra de perguntas restringida a casos com ação concreta. Plano da tarefa #28 (persistência e memória do chat) registrado.*  
+*Última atualização: 09 de Junho de 2026 — Assistente IA com persistência e memória concluído: `chat_messages`, sessões, histórico 24h, salvar user+assistant atomicamente, retry Gemini 5x backoff linear. Pendente validação de UX. Próximo: melhorias UX Fase 3.*  
 *Projeto: Hivvo — gestão financeira pessoal com IA*  
 *Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

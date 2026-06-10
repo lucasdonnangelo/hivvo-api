@@ -11,3 +11,6 @@ build/
 .coverage
 htmlcov/
 *.db
+*.log
+*.err
+cookies.xml

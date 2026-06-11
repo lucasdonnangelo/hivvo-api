@@ -1,6 +1,4 @@
-import calendar
-import datetime as dt
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -19,83 +17,10 @@ from app.schemas.transaction import (
     TransacaoResponse,
     TransacaoUpdate,
 )
+from app.services.faturas import _fatura_cartao_avulso
+from app.services.parcelas import _criar_parcelas
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
-
-
-def _add_months(d: dt.date, months: int) -> dt.date:
-    month = d.month + months
-    year = d.year
-    while month > 12:
-        month -= 12
-        year += 1
-    day = min(d.day, calendar.monthrange(year, month)[1])
-    return dt.date(year, month, day)
-
-
-def _data_vencimento_parcela(
-    transaction_date: dt.date,
-    parcela_num: int,
-    card: Optional[Cartao],
-) -> dt.date:
-    if card and card.dia_vencimento:
-        # Determina o mês de fatura da primeira parcela
-        if card.dia_fechamento and transaction_date.day > card.dia_fechamento:
-            # Compra após fechamento: entra no ciclo do mês seguinte
-            base_fatura = _add_months(transaction_date.replace(day=1), 1)
-        else:
-            base_fatura = transaction_date.replace(day=1)
-
-        # Mês de fatura da parcela i = base + (i-1) meses
-        fatura_date = _add_months(base_fatura, parcela_num - 1)
-
-        # Vencimento = mês de fatura + mes_offset_vencimento, no dia_vencimento do cartão
-        due_base = _add_months(fatura_date, card.mes_offset_vencimento)
-        due_day = min(card.dia_vencimento, calendar.monthrange(due_base.year, due_base.month)[1])
-        return dt.date(due_base.year, due_base.month, due_day)
-    else:
-        # Sem cartão: i meses a partir da data da compra
-        return _add_months(transaction_date, parcela_num)
-
-
-def _criar_parcelas(session: Session, transacao: Transacao, card: Optional[Cartao]) -> int:
-    total = transacao.total_parcelas
-    valor_base = (transacao.valor / total).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    valor_ultima = (transacao.valor - valor_base * (total - 1)).quantize(Decimal("0.01"))
-
-    for i in range(1, total + 1):
-        valor_parcela = valor_ultima if i == total else valor_base
-        data_venc = _data_vencimento_parcela(transacao.data, i, card)
-
-        parcela = Parcela(
-            usuario_id=transacao.usuario_id,
-            transacao_id=transacao.id,
-            numero_parcela=i,
-            total_parcelas=total,
-            valor_parcela=valor_parcela,
-            data_vencimento=data_venc,
-            fatura_mes=data_venc.month,  # derivado da data_vencimento da parcela
-            fatura_ano=data_venc.year,
-            descricao=f"{transacao.descricao} ({i}/{total})",
-            categoria=transacao.categoria,
-            cartao_id=transacao.cartao_id,
-        )
-        session.add(parcela)
-
-    session.commit()
-    return total
-
-
-def _fatura_cartao_avulso(data: dt.date, card: Cartao) -> tuple[int, int]:
-    """Retorna (fatura_mes, fatura_ano) para crédito avulso pelo vencimento do cartão."""
-    if card.dia_fechamento and data.day > card.dia_fechamento:
-        base = _add_months(data.replace(day=1), 1)
-    else:
-        base = data.replace(day=1)
-    due_base = _add_months(base, card.mes_offset_vencimento)
-    due_day = min(card.dia_vencimento, calendar.monthrange(due_base.year, due_base.month)[1])
-    due = dt.date(due_base.year, due_base.month, due_day)
-    return due.month, due.year
 
 
 @router.get("", response_model=list[TransacaoResponse])

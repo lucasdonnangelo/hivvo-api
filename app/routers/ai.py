@@ -18,7 +18,7 @@ from app.core.database import get_session
 from app.models.chat import ChatMessage
 from app.models.installment import Parcela
 from app.models.user import Usuario
-from app.routers.statistics import _agregar, _buscar_mes, _categorias
+from app.services.estatisticas import _agregar, _buscar_mes, _categorias
 from app.schemas.ai import ChatRequest, ChatResponse, HistoricoItem, HistoricoResponseItem
 
 logger = logging.getLogger(__name__)

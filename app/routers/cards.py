@@ -1,7 +1,5 @@
-import calendar
 import datetime as dt
 from decimal import Decimal
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select, func
@@ -18,38 +16,9 @@ from app.schemas.card import (
     CartaoResponse,
     CartaoUpdate,
 )
+from app.services.faturas import _current_open_fatura
 
 router = APIRouter(prefix="/cards", tags=["cards"])
-
-
-def _add_months(d: dt.date, months: int) -> dt.date:
-    month = d.month + months
-    year = d.year
-    while month > 12:
-        month -= 12
-        year += 1
-    day = min(d.day, calendar.monthrange(year, month)[1])
-    return dt.date(year, month, day)
-
-
-def _fatura_vencimento(card: Cartao, fatura_mes: int, fatura_ano: int) -> Optional[dt.date]:
-    if not card.dia_vencimento:
-        return None
-    day = min(card.dia_vencimento, calendar.monthrange(fatura_ano, fatura_mes)[1])
-    return dt.date(fatura_ano, fatura_mes, day)
-
-
-def _current_open_fatura(card: Cartao, today: dt.date) -> tuple[int, int, Optional[dt.date]]:
-    """Retorna (fatura_mes, fatura_ano, data_vencimento) da fatura aberta atual."""
-    if card.dia_fechamento and today.day > card.dia_fechamento:
-        base = _add_months(today.replace(day=1), 1)
-    else:
-        base = today.replace(day=1)
-    due_base = _add_months(base, card.mes_offset_vencimento)
-    fatura_mes = due_base.month
-    fatura_ano = due_base.year
-    venc = _fatura_vencimento(card, fatura_mes, fatura_ano)
-    return fatura_mes, fatura_ano, venc
 
 
 @router.get("", response_model=list[CartaoComFaturaResponse])

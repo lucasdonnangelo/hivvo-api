@@ -11,11 +11,11 @@ from app.models.transaction import Transacao
 from app.models.user import Usuario
 from app.schemas.statistics import (
     AnualResponse,
-    CategoriaStats,
     CategoriasResponse,
     MensalResponse,
     MesEvolucao,
 )
+from app.services.estatisticas import _agregar, _buscar_mes, _categorias
 
 router = APIRouter(prefix="/statistics", tags=["statistics"])
 
@@ -33,48 +33,6 @@ def _variacao(atual: Decimal, anterior: Decimal) -> Optional[Decimal]:
     if anterior == _ZERO:
         return None
     return ((atual - anterior) / anterior * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-
-def _agregar(transacoes: list[Transacao]) -> tuple[Decimal, Decimal]:
-    """Retorna (receitas, despesas) para uma lista de transações."""
-    receitas = sum((t.valor for t in transacoes if t.tipo == "receita"), _ZERO)
-    despesas = sum((t.valor for t in transacoes if t.tipo == "despesa"), _ZERO)
-    return receitas, despesas
-
-
-def _categorias(transacoes: list[Transacao]) -> list[CategoriaStats]:
-    """Agrupa despesas por categoria com percentual do total."""
-    despesas = [t for t in transacoes if t.tipo == "despesa"]
-    total = sum((t.valor for t in despesas), _ZERO)
-    if not total:
-        return []
-
-    grupos: dict[str, Decimal] = {}
-    for t in despesas:
-        grupos[t.categoria] = grupos.get(t.categoria, _ZERO) + t.valor
-
-    return sorted(
-        [
-            CategoriaStats(
-                categoria=cat,
-                total=val,
-                percentual=(val / total * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-            )
-            for cat, val in grupos.items()
-        ],
-        key=lambda x: x.total,
-        reverse=True,
-    )
-
-
-def _buscar_mes(session: Session, usuario_id: int, mes: int, ano: int) -> list[Transacao]:
-    return session.exec(
-        select(Transacao).where(
-            Transacao.usuario_id == usuario_id,
-            extract("month", Transacao.data) == mes,
-            extract("year", Transacao.data) == ano,
-        )
-    ).all()
 
 
 @router.get("/monthly", response_model=MensalResponse)

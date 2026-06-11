@@ -1,7 +1,4 @@
-import calendar
-import datetime as dt
 from decimal import Decimal
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
@@ -18,25 +15,9 @@ from app.schemas.invoice import (
     ParcelaFaturaResponse,
     TransacaoFaturaResponse,
 )
+from app.services.faturas import _fatura_vencimento
 
 router = APIRouter(prefix="/cards", tags=["invoices"])
-
-
-def _add_months(d: dt.date, months: int) -> dt.date:
-    month = d.month + months
-    year = d.year
-    while month > 12:
-        month -= 12
-        year += 1
-    day = min(d.day, calendar.monthrange(year, month)[1])
-    return dt.date(year, month, day)
-
-
-def _fatura_vencimento(card: Cartao, fatura_mes: int, fatura_ano: int) -> Optional[dt.date]:
-    if not card.dia_vencimento:
-        return None
-    day = min(card.dia_vencimento, calendar.monthrange(fatura_ano, fatura_mes)[1])
-    return dt.date(fatura_ano, fatura_mes, day)
 
 
 def _get_card_for_user(session: Session, card_id: int, usuario_id: int) -> Cartao:

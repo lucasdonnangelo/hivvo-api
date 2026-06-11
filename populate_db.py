@@ -30,6 +30,7 @@ from app.models.user import Usuario
 from app.models.card import Cartao
 from app.models.transaction import Transacao
 from app.models.installment import Parcela
+from app.services.faturas import _add_months
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
@@ -41,16 +42,6 @@ TARGET_EMAIL = "lucasjrdonnangelo@gmail.com"
 TODAY = dt.date(2026, 6, 5)
 
 # ── Helpers (espelham transactions.py) ────────────────────────────────────────
-
-def _add_months(d: dt.date, months: int) -> dt.date:
-    month = d.month + months
-    year = d.year
-    while month > 12:
-        month -= 12
-        year += 1
-    day = min(d.day, calendar.monthrange(year, month)[1])
-    return dt.date(year, month, day)
-
 
 def _data_vencimento_parcela(
     transaction_date: dt.date, parcela_num: int, card: Cartao

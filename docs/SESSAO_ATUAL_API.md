@@ -9,8 +9,9 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
-**Próximo passo imediato:** Batch 2 do plano — rede de testes do domínio (pytest sobre `services/faturas.py` e `services/parcelas.py`).
-**Batch 1 concluído (11/06/2026, aguardando commit):** lógica de fatura/parcela/estatísticas consolidada em `app/services/` — ver seção "Batch 1" abaixo.
+**Próximo passo imediato:** Batch 3 do plano — correção dos bugs de domínio contra a rede de testes (T-36, T-34, T-35, T-40, T-33, T-38, T-41, T-37, T-27 parcial).
+**Batch 1 concluído (11/06/2026, commitado):** lógica de fatura/parcela/estatísticas consolidada em `app/services/`.
+**Batch 2 concluído (11/06/2026, aguardando commit):** primeira suíte automatizada — 44 testes (42 pass + 2 xfail), 100% de cobertura em `services/faturas.py` e `services/parcelas.py` — ver seção "Batch 2" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
 
 ---
@@ -24,6 +25,22 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 | `docs/PLANO_EXECUCAO_API.md` | **16 batches** ordenados (11 pré-deploy + deploy + 5 pós-deploy). Executar um por vez, com aprovação. |
 
 **Gates:** Batches 1→2→3 são sequenciais (consolidar → testar → corrigir). Batch 7 tem passos manuais no Supabase. Batch 11 depende da decisão de topologia (`app.`/`api.hivvo.app`). Auditoria de **produto** será feita à parte (estratégia/mercado), não pelo Claude Code.
+
+---
+
+## Batch 2 — Rede de testes do domínio (11/06/2026)
+
+Primeira suíte automatizada do projeto (T-23, subconjunto). Nenhuma mudança em `app/` — só `requirements.txt` (pytest, pytest-mock, pytest-cov) e `tests/`.
+
+**Estrutura:** `tests/conftest.py` (fixture `session`: SQLite in-memory com `StaticPool`, `SQLModel.metadata.create_all`; dinheiro sempre comparado via `Decimal(str(x))` por causa da coerção float do SQLite) + `tests/services/test_faturas.py`, `test_parcelas.py`, `test_variacao.py`.
+
+**Resultado:** `42 passed, 2 xfailed` · cobertura **100%** em `app/services/faturas.py` (44 stmts) e `app/services/parcelas.py` (18 stmts).
+
+**Cobertura de casos:** fechamento em meses de 28/29/30/31 dias; compra no dia exato do fechamento (entra na fatura atual) vs. dia seguinte; virada dezembro→janeiro (pelo fechamento e pelo offset); offset 0/1/2; clamp do dia de vencimento (31 em fev normal/bissexto e mês de 30 dias); `_add_months` com salto de 25 meses; cartão sem `dia_vencimento`/`dia_fechamento`; arredondamento com dízima (última absorve para cima E para baixo); soma das parcelas == valor total (5 combinações); campos derivados (`fatura_mes/ano` da data de vencimento, descrição `(i/n)`).
+
+**xfail documentando bugs (fechar no Batch 3, `strict=True`):**
+- T-33 (`test_parcelas.py`): R$ 0,10 em 12× não pode gerar parcela ≤ 0 (hoje gera −0,01).
+- T-38 (`test_variacao.py`): `_variacao` com saldo anterior negativo deve usar `abs()` no denominador (hoje inverte o sinal). Importa de `app.routers.statistics` — sem efeito colateral real (engine criado mas sem conexão).
 
 ---
 
@@ -72,7 +89,7 @@ Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito 
 
 ## Testes — Estado Real
 
-⚠️ **Não existe suíte de testes automatizada** (sem `tests/`, sem `pytest`; cobertura 0% — T-23). Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos. O Batch 2 do plano introduz a primeira suíte automatizada (funções puras de fatura/parcela).
+✅ **Suíte automatizada introduzida no Batch 2 (11/06/2026):** `tests/` com pytest — 44 testes (42 pass + 2 xfail documentando T-33/T-38), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
 
 | Bloco (manual E2E) | Escopo | Status |
 |---|---|---|
@@ -182,5 +199,5 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 11 de junho de 2026 — Batch 1 concluído (lógica de fatura/parcela/estatísticas consolidada em `app/services/`). Próximo: Batch 2 (rede de testes do domínio).*
+*Última atualização: 11 de junho de 2026 — Batches 1 e 2 concluídos (consolidação em `app/services/` + rede de testes com 100% de cobertura em fatura/parcela). Próximo: Batch 3 (correção dos bugs de domínio; os 2 xfail devem ficar verdes).*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

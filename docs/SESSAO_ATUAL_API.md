@@ -9,9 +9,10 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
-**Próximo passo imediato:** Batch 3 do plano — correção dos bugs de domínio contra a rede de testes (T-36, T-34, T-35, T-40, T-33, T-38, T-41, T-37, T-27 parcial).
+**Próximo passo imediato:** Batch 3b — bugs de domínio de comportamento de endpoint (T-36, T-34, T-35 endpoint/derivação, T-41, T-37, T-27 parcial).
 **Batch 1 concluído (11/06/2026, commitado):** lógica de fatura/parcela/estatísticas consolidada em `app/services/`.
-**Batch 2 concluído (11/06/2026, aguardando commit):** primeira suíte automatizada — 44 testes (42 pass + 2 xfail), 100% de cobertura em `services/faturas.py` e `services/parcelas.py` — ver seção "Batch 2" abaixo.
+**Batch 2 concluído (11/06/2026, commitado):** primeira suíte automatizada — 44 testes (42 pass + 2 xfail), 100% de cobertura em `services/faturas.py` e `services/parcelas.py` — ver seção "Batch 2" abaixo.
+**Batch 3a concluído (12/06/2026, aguardando commit):** validação de entrada + fechamento dos 2 xfail (T-33, T-38, T-40, T-35 parte de schema) — suíte agora com **82 testes, todos verdes, zero xfail** — ver seção "Batch 3a" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
 
 ---
@@ -28,6 +29,27 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 
 ---
 
+## Batch 3a — Validação de entrada + fechamento dos xfail (12/06/2026)
+
+Fecha T-33, T-38, T-40 e a parte de **schema** do T-35. Suíte: **82 testes, todos verdes, zero xfail/xpass**; cobertura 100% mantida em `services/faturas.py` e `services/parcelas.py` (a nova `_variacao` em `services/estatisticas.py` também 100% coberta).
+
+**T-33 (parcela ≤ 0):**
+- `TransacaoCreate.valida_parcelamento` rejeita `valor < total_parcelas × 0.01` (422, "cada parcela deve ser de pelo menos R$ 0,01").
+- `services/parcelas.py` (`_criar_parcelas`) defensivo: `ValueError` antes de criar qualquer parcela — invariante garantido na matemática, não só na borda da API.
+- Caso T-33 em `test_parcelas.py` perdeu o xfail: afirma o raise + nenhuma parcela persistida + caso-limite R$ 0,12 em 12× (mínimo válido).
+
+**T-38 (variação % com saldo anterior negativo):**
+- `_variacao` canônica (com `abs()` no denominador) agora vive em `app/services/estatisticas.py`. `statistics.py` importa de lá (cópia local sem `abs()` removida); em `ai.py`, `_variacao_saldo_pct` virou wrapper fino que busca o mês anterior e delega a fórmula à canônica (cópia da matemática removida). **Nota de comportamento:** o percentual da IA agora sai quantizado em 2 casas (antes era float pleno) — irrelevante, é exibido com `:.1f`.
+- `test_variacao.py` importa de `app.services.estatisticas`, sem xfail, com casos extras (−100→+100 = +200%, base positiva, base zero → None).
+
+**T-40 (validators do CartaoUpdate):** replicados de `CartaoCreate`, todos None-safe (update parcial): `tipo ∈ {Crédito, Débito, Ambos}`, `dia_vencimento`/`dia_fechamento` 1..31, e `mes_offset_vencimento >= 0`. O validator de offset foi adicionado **também ao `CartaoCreate`** (não existia lá — sem ele nasceria cartão com offset negativo que o update rejeita, quebrando a matemática de fatura).
+
+**T-35 (somente schema; endpoint/derivação é o 3b):** `TransacaoUpdate` perdeu `fatura_mes`/`fatura_ano` (derivados — cliente que enviar tem o campo silenciosamente ignorado pelo Pydantic) e ganhou `valor > 0` + `tipo` válido (None-safe; normalização de vírgula decimal mantida).
+
+**Testes novos:** `tests/schemas/` (pydantic puro, sem banco) — `test_card_schemas.py` e `test_transacao_schemas.py` cobrindo rejeições (tipo inválido, dias fora de 1..31, offset negativo, valor ≤ 0, T-33 na borda) e aceites nos limites.
+
+---
+
 ## Batch 2 — Rede de testes do domínio (11/06/2026)
 
 Primeira suíte automatizada do projeto (T-23, subconjunto). Nenhuma mudança em `app/` — só `requirements.txt` (pytest, pytest-mock, pytest-cov) e `tests/`.
@@ -38,7 +60,7 @@ Primeira suíte automatizada do projeto (T-23, subconjunto). Nenhuma mudança em
 
 **Cobertura de casos:** fechamento em meses de 28/29/30/31 dias; compra no dia exato do fechamento (entra na fatura atual) vs. dia seguinte; virada dezembro→janeiro (pelo fechamento e pelo offset); offset 0/1/2; clamp do dia de vencimento (31 em fev normal/bissexto e mês de 30 dias); `_add_months` com salto de 25 meses; cartão sem `dia_vencimento`/`dia_fechamento`; arredondamento com dízima (última absorve para cima E para baixo); soma das parcelas == valor total (5 combinações); campos derivados (`fatura_mes/ano` da data de vencimento, descrição `(i/n)`).
 
-**xfail documentando bugs (fechar no Batch 3, `strict=True`):**
+**xfail documentando bugs (fechados no Batch 3a — hoje são testes verdes normais):**
 - T-33 (`test_parcelas.py`): R$ 0,10 em 12× não pode gerar parcela ≤ 0 (hoje gera −0,01).
 - T-38 (`test_variacao.py`): `_variacao` com saldo anterior negativo deve usar `abs()` no denominador (hoje inverte o sinal). Importa de `app.routers.statistics` — sem efeito colateral real (engine criado mas sem conexão).
 
@@ -89,7 +111,7 @@ Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito 
 
 ## Testes — Estado Real
 
-✅ **Suíte automatizada introduzida no Batch 2 (11/06/2026):** `tests/` com pytest — 44 testes (42 pass + 2 xfail documentando T-33/T-38), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
+✅ **Suíte automatizada (Batch 2 + Batch 3a):** `tests/` com pytest — **82 testes, todos verdes, zero xfail** (`tests/services/` para domínio com SQLite in-memory; `tests/schemas/` para validação pydantic pura), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
 
 | Bloco (manual E2E) | Escopo | Status |
 |---|---|---|
@@ -122,7 +144,7 @@ Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito 
 | `fatura_mes`/`fatura_ano` | Derivados da `data_vencimento` da parcela, não da data da compra. |
 | Routers sem trailing slash | Endpoints raiz usam `""` em vez de `"/"` (evita redirect 307). |
 | Soft delete em categorias | `ativa=False` em vez de DELETE para preservar histórico. |
-| Arredondamento de parcelas | Última parcela absorve a diferença (`ROUND_HALF_UP`). Borda a corrigir: valores pequenos podem gerar parcela ≤ 0 (T-33). |
+| Arredondamento de parcelas | Última parcela absorve a diferença (`ROUND_HALF_UP`). Borda T-33 fechada no Batch 3a: `valor < total_parcelas × 0.01` é rejeitado no schema (422) e por `ValueError` defensivo no service. |
 | Vírgula decimal em `valor` | `field_validator(mode="before")` normaliza `"150,00"` → `"150.00"` em `TransacaoCreate` e `TransacaoUpdate`. |
 | `username` auto-gerado | Removido do `RegisterRequest`; `_generate_username(email)` — prefixo do e-mail, não-alfanuméricos viram `_`, sufixo numérico garante unicidade. |
 | UTF-8 encoding backend | `UTF8JSONResponse` (`charset=utf-8`) como `default_response_class` — elimina Mojibake. |
@@ -199,5 +221,5 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 11 de junho de 2026 — Batches 1 e 2 concluídos (consolidação em `app/services/` + rede de testes com 100% de cobertura em fatura/parcela). Próximo: Batch 3 (correção dos bugs de domínio; os 2 xfail devem ficar verdes).*
+*Última atualização: 12 de junho de 2026 — Batch 3a concluído (T-33, T-38, T-40, T-35-schema; 82 testes verdes, zero xfail). Próximo: Batch 3b (T-36, T-34, T-35 endpoint/derivação, T-41, T-37, T-27 parcial).*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

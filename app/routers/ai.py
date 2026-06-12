@@ -18,7 +18,7 @@ from app.core.database import get_session
 from app.models.chat import ChatMessage
 from app.models.installment import Parcela
 from app.models.user import Usuario
-from app.services.estatisticas import _agregar, _buscar_mes, _categorias
+from app.services.estatisticas import _agregar, _buscar_mes, _categorias, _variacao
 from app.schemas.ai import ChatRequest, ChatResponse, HistoricoItem, HistoricoResponseItem
 
 logger = logging.getLogger(__name__)
@@ -61,12 +61,11 @@ def _variacao_saldo_pct(session: Session, usuario_id: int, mes: int, ano: int, s
     transacoes_ant = _buscar_mes(session, usuario_id, mes_ant, ano_ant)
     rec_ant, desp_ant = _agregar(transacoes_ant)
     saldo_ant = rec_ant - desp_ant
-    if saldo_ant == _ZERO:
-        return None
     try:
-        return float((saldo_atual - saldo_ant) / abs(saldo_ant) * 100)
+        pct = _variacao(saldo_atual, saldo_ant)
     except (InvalidOperation, ZeroDivisionError):
         return None
+    return float(pct) if pct is not None else None
 
 
 def _build_historico_anual(session: Session, usuario_id: int, mes: int, ano: int) -> str:

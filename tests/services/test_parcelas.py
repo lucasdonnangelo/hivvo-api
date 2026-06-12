@@ -142,15 +142,22 @@ class TestComCartao:
         assert sum(valores(parcelas)) == Decimal("600.00")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="T-33: valor pequeno em muitas parcelas gera última parcela <= 0 — corrigir no Batch 3",
-)
-def test_t33_valor_pequeno_nao_pode_gerar_parcela_nao_positiva(session):
-    # R$ 0,10 em 12×: base 0.01, última = 0.10 − 0.11 = −0.01 no código atual.
-    # Comportamento CORRETO: nenhuma parcela pode ser <= 0.
-    transacao = make_transacao(session, "0.10", 12)
-    _criar_parcelas(session, transacao, None)
+class TestT33ValorPequeno:
+    def test_valor_abaixo_de_um_centavo_por_parcela_levanta_valueerror(self, session):
+        # R$ 0,10 em 12×: base 0.01, última seria 0.10 − 0.11 = −0.01.
+        # Comportamento correto (Batch 3a): o service rejeita antes de criar
+        # qualquer parcela — invariante "nenhuma parcela <= 0".
+        transacao = make_transacao(session, "0.10", 12)
+        with pytest.raises(ValueError, match="pelo menos R\\$ 0,01"):
+            _criar_parcelas(session, transacao, None)
 
-    vals = valores(parcelas_do_banco(session, transacao.id))
-    assert all(v > Decimal("0.00") for v in vals)
+        assert parcelas_do_banco(session, transacao.id) == []
+
+    def test_limite_exato_um_centavo_por_parcela_aceito(self, session):
+        # R$ 0,12 em 12× é o mínimo válido: 12 parcelas de R$ 0,01.
+        transacao = make_transacao(session, "0.12", 12)
+        _criar_parcelas(session, transacao, None)
+
+        vals = valores(parcelas_do_banco(session, transacao.id))
+        assert vals == [Decimal("0.01")] * 12
+        assert all(v > Decimal("0.00") for v in vals)

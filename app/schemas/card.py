@@ -27,6 +27,13 @@ class CartaoCreate(BaseModel):
             raise ValueError("dia deve estar entre 1 e 31")
         return v
 
+    @field_validator("mes_offset_vencimento")
+    @classmethod
+    def offset_nao_negativo(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("mes_offset_vencimento deve ser >= 0")
+        return v
+
 
 class CartaoUpdate(BaseModel):
     nome: Optional[str] = None
@@ -36,6 +43,27 @@ class CartaoUpdate(BaseModel):
     dia_fechamento: Optional[int] = None
     mes_offset_vencimento: Optional[int] = None
     ativo: Optional[bool] = None
+
+    @field_validator("tipo")
+    @classmethod
+    def tipo_valido(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("Crédito", "Débito", "Ambos"):
+            raise ValueError("tipo deve ser 'Crédito', 'Débito' ou 'Ambos'")
+        return v
+
+    @field_validator("dia_vencimento", "dia_fechamento", mode="before")
+    @classmethod
+    def dia_valido(cls, v):
+        if v is not None and not (1 <= int(v) <= 31):
+            raise ValueError("dia deve estar entre 1 e 31")
+        return v
+
+    @field_validator("mes_offset_vencimento")
+    @classmethod
+    def offset_nao_negativo(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v < 0:
+            raise ValueError("mes_offset_vencimento deve ser >= 0")
+        return v
 
 
 class CartaoResponse(BaseModel):

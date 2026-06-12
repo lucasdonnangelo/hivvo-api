@@ -1,5 +1,4 @@
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Optional
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import extract
@@ -15,7 +14,7 @@ from app.schemas.statistics import (
     MensalResponse,
     MesEvolucao,
 )
-from app.services.estatisticas import _agregar, _buscar_mes, _categorias
+from app.services.estatisticas import _agregar, _buscar_mes, _categorias, _variacao
 
 router = APIRouter(prefix="/statistics", tags=["statistics"])
 
@@ -26,13 +25,6 @@ def _mes_anterior(mes: int, ano: int) -> tuple[int, int]:
     if mes == 1:
         return 12, ano - 1
     return mes - 1, ano
-
-
-def _variacao(atual: Decimal, anterior: Decimal) -> Optional[Decimal]:
-    """Retorna variação percentual; None se não há dados anteriores."""
-    if anterior == _ZERO:
-        return None
-    return ((atual - anterior) / anterior * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 @router.get("/monthly", response_model=MensalResponse)

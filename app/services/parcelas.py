@@ -11,6 +11,15 @@ from app.services.faturas import _data_vencimento_parcela
 
 def _criar_parcelas(session: Session, transacao: Transacao, card: Optional[Cartao]) -> int:
     total = transacao.total_parcelas
+    # Invariante: nenhuma parcela pode ficar <= 0 (T-33). Abaixo de 1 centavo
+    # por parcela, a absorção da diferença pela última parcela a tornaria
+    # zero ou negativa. A borda da API rejeita antes (422); este guard
+    # protege qualquer outro chamador.
+    if transacao.valor < total * Decimal("0.01"):
+        raise ValueError(
+            f"valor {transacao.valor} insuficiente para {total} parcelas: "
+            "cada parcela deve ser de pelo menos R$ 0,01"
+        )
     valor_base = (transacao.valor / total).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     valor_ultima = (transacao.valor - valor_base * (total - 1)).quantize(Decimal("0.01"))
 

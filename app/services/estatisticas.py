@@ -1,4 +1,5 @@
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Optional
 
 from sqlalchemy import extract
 from sqlmodel import Session, select
@@ -7,6 +8,19 @@ from app.models.transaction import Transacao
 from app.schemas.statistics import CategoriaStats
 
 _ZERO = Decimal("0.00")
+
+
+def _variacao(atual: Decimal, anterior: Decimal) -> Optional[Decimal]:
+    """Retorna variação percentual; None se não há dados anteriores.
+
+    O denominador usa abs(anterior): com base negativa, o sinal da variação
+    deve refletir melhora/piora (−100 → −50 é +50%), não inverter (T-38).
+    """
+    if anterior == _ZERO:
+        return None
+    return ((atual - anterior) / abs(anterior) * 100).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
 
 
 def _agregar(transacoes: list[Transacao]) -> tuple[Decimal, Decimal]:

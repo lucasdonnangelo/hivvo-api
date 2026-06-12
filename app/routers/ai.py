@@ -19,7 +19,7 @@ from app.models.chat import ChatMessage
 from app.models.installment import Parcela
 from app.models.user import Usuario
 from app.services.estatisticas import _agregar, _buscar_mes, _categorias, _variacao
-from app.schemas.ai import ChatRequest, ChatResponse, HistoricoItem, HistoricoResponseItem
+from app.schemas.ai import ChatRequest, ChatResponse, HistoricoResponseItem
 
 logger = logging.getLogger(__name__)
 
@@ -160,28 +160,34 @@ REGRAS DE COMPORTAMENTO:
 13. Quando o usuário iniciar a conversa com uma saudação simples (ex: "Oi", "Olá", "Boa tarde"), responda apenas com um cumprimento breve e aguarde a pergunta. Nunca retome assuntos ou dados de conversas anteriores sem que o usuário pergunte explicitamente.{apresentacao_bloco}{historico_bloco}"""
 
 
-def _build_contents(historico: list[HistoricoItem], mensagem: str) -> list[types.Content]:
+def _build_contents(historico: list[tuple[str, str]], mensagem: str) -> list[types.Content]:
+    """Monta os contents do Gemini a partir de pares (role, text).
+
+    Dados do histórico vêm do próprio banco — não passam por schema de
+    entrada (T-37: revalidar com HistoricoItem quebrava o chat quando uma
+    resposta persistida excedia o max_length de entrada).
+    """
     # Inclui a mensagem atual no final para sanitizá-la junto com o histórico
-    all_items = historico + [HistoricoItem(role="user", text=mensagem)]
+    all_items = list(historico) + [("user", mensagem)]
 
     # Remove turns consecutivos do mesmo role — mantém o mais recente de cada sequência.
     # Processa em reverso: o primeiro encontrado (mais novo) vence; depois reverte.
-    deduped: list[HistoricoItem] = []
+    deduped: list[tuple[str, str]] = []
     for item in reversed(all_items):
-        if not deduped or deduped[-1].role != item.role:
+        if not deduped or deduped[-1][0] != item[0]:
             deduped.append(item)
     deduped.reverse()
 
     # Gemini exige que contents comece com role="user"
-    while deduped and deduped[0].role != "user":
+    while deduped and deduped[0][0] != "user":
         deduped.pop(0)
 
     return [
         types.Content(
-            role="model" if item.role == "assistant" else "user",
-            parts=[types.Part(text=item.text)],
+            role="model" if role == "assistant" else "user",
+            parts=[types.Part(text=text)],
         )
-        for item in deduped
+        for role, text in deduped
     ]
 
 
@@ -304,8 +310,7 @@ def chat(
     system_instruction = _build_system_instruction(
         body.mes, body.ano, ctx, historico_anual, primeira_vez
     )
-    historico_items = [HistoricoItem(role=m.role, text=m.text) for m in historico_db]
-    contents = _build_contents(historico_items, body.mensagem)
+    contents = _build_contents([(m.role, m.text) for m in historico_db], body.mensagem)
 
     _RETRY_WAITS = [2, 4, 6, 8, 10]  # backoff linear entre 5 tentativas
 

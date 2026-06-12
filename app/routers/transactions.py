@@ -87,14 +87,17 @@ def create_transaction(
     if not body.parcelado and card and card.dia_vencimento:
         transacao.fatura_mes, transacao.fatura_ano = _fatura_cartao_avulso(body.data, card)
 
+    # Transação + parcelas num único commit (T-41): falha na geração de
+    # parcelas não pode deixar transação parcelada sem parcelas no banco
     session.add(transacao)
-    session.commit()
-    session.refresh(transacao)
+    session.flush()  # obtém transacao.id sem commitar
 
     parcelas_criadas = 0
     if body.parcelado:
         parcelas_criadas = _criar_parcelas(session, transacao, card)
-        session.refresh(transacao)  # re-carrega após commit dentro de _criar_parcelas
+
+    session.commit()
+    session.refresh(transacao)
 
     return TransacaoCreateResponse.model_validate(
         {**transacao.model_dump(), "parcelas_criadas": parcelas_criadas}
@@ -112,8 +115,41 @@ def update_transaction(
     if not transacao or transacao.usuario_id != current_user.id:
         raise HTTPException(status_code=404, detail="Transação não encontrada")
 
-    for field, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+
+    # Mesmo check de propriedade da criação (T-36): cartão alheio nunca é aceito
+    new_card = None
+    if data.get("cartao_id") is not None:
+        new_card = session.get(Cartao, data["cartao_id"])
+        if not new_card or new_card.usuario_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Cartão não encontrado")
+
+    # Parcelada: valor/data definem as parcelas já criadas — editar dessincronizaria
+    # a soma das parcelas e as faturas (T-35)
+    if transacao.parcelado and ("valor" in data or "data" in data):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Transação parcelada não permite editar valor ou data. "
+                "Exclua e recrie a transação, ou ajuste em Gerenciar Parcelas."
+            ),
+        )
+
+    for field, value in data.items():
         setattr(transacao, field, value)
+
+    # fatura_mes/ano são derivados de data + cartão — rederivar como na criação (T-35)
+    if not transacao.parcelado and ("data" in data or "cartao_id" in data):
+        card = new_card
+        if card is None and transacao.cartao_id:
+            card = session.get(Cartao, transacao.cartao_id)
+        if card and card.dia_vencimento:
+            transacao.fatura_mes, transacao.fatura_ano = _fatura_cartao_avulso(
+                transacao.data, card
+            )
+        else:
+            transacao.fatura_mes = None
+            transacao.fatura_ano = None
 
     session.add(transacao)
     session.commit()
@@ -124,7 +160,6 @@ def update_transaction(
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_transaction(
     id: int,
-    deletar_parcelas: bool = Query(True),
     current_user: Usuario = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
@@ -132,9 +167,10 @@ def delete_transaction(
     if not transacao or transacao.usuario_id != current_user.id:
         raise HTTPException(status_code=404, detail="Transação não encontrada")
 
-    if transacao.parcelado and deletar_parcelas:
-        for p in session.exec(select(Parcela).where(Parcela.transacao_id == id)).all():
-            session.delete(p)
+    # As parcelas referenciam a transação via FK NOT NULL — sempre saem junto,
+    # na mesma transação de banco (T-34)
+    for p in session.exec(select(Parcela).where(Parcela.transacao_id == id)).all():
+        session.delete(p)
 
     session.delete(transacao)
     session.commit()

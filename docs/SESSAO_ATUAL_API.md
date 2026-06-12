@@ -9,10 +9,11 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
-**Próximo passo imediato:** Batch 3b — bugs de domínio de comportamento de endpoint (T-36, T-34, T-35 endpoint/derivação, T-41, T-37, T-27 parcial).
+**Próximo passo imediato:** Batch 4 — config, higiene e versionamento (F-01, F-09, F-13, F-14, F-16, F-22, F-23, F-06, F-11+T-08, T-06, T-07, T-28).
 **Batch 1 concluído (11/06/2026, commitado):** lógica de fatura/parcela/estatísticas consolidada em `app/services/`.
 **Batch 2 concluído (11/06/2026, commitado):** primeira suíte automatizada — 44 testes (42 pass + 2 xfail), 100% de cobertura em `services/faturas.py` e `services/parcelas.py` — ver seção "Batch 2" abaixo.
-**Batch 3a concluído (12/06/2026, aguardando commit):** validação de entrada + fechamento dos 2 xfail (T-33, T-38, T-40, T-35 parte de schema) — suíte agora com **82 testes, todos verdes, zero xfail** — ver seção "Batch 3a" abaixo.
+**Batch 3a concluído (12/06/2026, commitado `c315a3a`):** validação de entrada + fechamento dos 2 xfail (T-33, T-38, T-40, T-35 parte de schema) — ver seção "Batch 3a" abaixo.
+**Batch 3b concluído (12/06/2026, aguardando commit):** comportamento de endpoint (T-36, T-34, T-35-endpoint, T-41, T-37, T-27 data de negócio) — suíte agora com **96 testes, todos verdes** — ver seção "Batch 3b" abaixo. **Fecha o Batch 3 inteiro.**
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
 
 ---
@@ -26,6 +27,29 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 | `docs/PLANO_EXECUCAO_API.md` | **16 batches** ordenados (11 pré-deploy + deploy + 5 pós-deploy). Executar um por vez, com aprovação. |
 
 **Gates:** Batches 1→2→3 são sequenciais (consolidar → testar → corrigir). Batch 7 tem passos manuais no Supabase. Batch 11 depende da decisão de topologia (`app.`/`api.hivvo.app`). Auditoria de **produto** será feita à parte (estratégia/mercado), não pelo Claude Code.
+
+---
+
+## Batch 3b — Comportamento de endpoint (12/06/2026)
+
+Fecha T-36, T-34, T-35 (endpoint), T-41, T-37 e a parte de data de negócio do T-27 — **conclui o Batch 3**. Suíte: **96 testes** (83 + 13 novos), todos verdes.
+
+**T-36 (SEGURANÇA — poluição de fatura entre usuários):**
+- `update_transaction` valida propriedade do `cartao_id` (mesmo check/404 da criação).
+- As duas agregações de `GET /cards` ganharam `usuario_id == current_user.id` (defesa em profundidade — dados legados alheios apontando para o cartão deixam de inflar o total).
+- **Teste de isolamento obrigatório:** `tests/routers/test_cards_router.py` — dados do usuário B na fatura do cartão de A (inseridos direto na sessão, simulando legado) não entram no total de A; + PUT apontando cartão alheio → 404.
+
+**T-34:** `deletar_parcelas` removido de `DELETE /transactions/{id}` (era um caminho impossível → 500 por FK). Parcelas sempre saem junto, no mesmo commit. Query param enviado por cliente antigo é ignorado pelo FastAPI (sem quebra de contrato).
+
+**T-35 (endpoint):** parcelada **bloqueia** edição de `valor`/`data` (400, orienta excluir/recriar ou Gerenciar Parcelas; sem recálculo de parcelas); não-parcelada rederiva `fatura_mes/ano` quando `data` ou `cartao_id` mudam (espelha a criação: `_fatura_cartao_avulso` se cartão com `dia_vencimento`; senão limpa para `None` — ex. cliente removeu o cartão).
+
+**T-41:** criação parcelada atômica — `add` → `flush()` (id) → `_criar_parcelas` → **um** commit no endpoint. `_criar_parcelas` perdeu o `commit()` interno (agora add+`flush()`; o boundary commita). Teste: falha na geração de parcelas → nada persiste (antes ficava transação `parcelado=True` órfã). `populate_db.py` não foi tocado (usa cópia local própria — registro do Batch 1).
+
+**T-37:** `_build_contents` recebe pares `(role, text)` construídos direto das rows; `HistoricoItem` (schema de **entrada**, `max_length=4000`) saiu do caminho de releitura — resposta longa do Gemini persistida não quebra mais o chat. A classe ficou sem nenhum uso e foi **removida** de `schemas/ai.py`.
+
+**T-27 (data de negócio):** novo `app/core/dates.py` — `TZ_PRODUTO = America/Sao_Paulo` + `hoje()` (mockável; testes fixam via `mocker.patch` no nome importado pelo módulo sob teste). Substituiu `date.today()` em `cards.py` (fatura aberta), `installments.py` (`data_pagamento`) e nos `default_factory` de `criado_em` (models `card`/`category`/`installment`). `utcnow()` **não** foi tocado (Batch 16). **Dependência nova:** `tzdata` no `requirements.txt` (Windows e imagens slim não têm a base IANA do sistema — verificado: sem ele o `ZoneInfo` falha).
+
+**Infra de teste nova:** `tests/routers/` — TestClient sobre o `app` real com override de `get_session`/`get_current_user` e fixture de dois usuários (`users` + `as_user`); base para os futuros testes de isolamento (F-02/Batch 15).
 
 ---
 
@@ -77,7 +101,7 @@ Refactor sem mudança de comportamento (T-04 + extração alvo do T-01 + T-02). 
 
 **Módulos criados:**
 - `app/services/faturas.py` — `_add_months`, `_data_vencimento_parcela`, `_fatura_cartao_avulso`, `_fatura_vencimento`, `_current_open_fatura`.
-- `app/services/parcelas.py` — `_criar_parcelas` (mantido o `session` como param e o `commit()` interno — purificação é Batch 12).
+- `app/services/parcelas.py` — `_criar_parcelas` (mantido o `session` como param; o `commit()` interno foi removido no Batch 3b/T-41 — purificação completa é Batch 12).
 - `app/services/estatisticas.py` — `_agregar`, `_categorias`, `_buscar_mes`. `statistics.py` e `ai.py` importam daqui (T-02 resolvido).
 - Routers e `populate_db.py` passaram a importar dos services; imports órfãos (`calendar`, `dt`, `Optional`, `ROUND_HALF_UP`) removidos onde ficaram sem uso.
 
@@ -105,13 +129,13 @@ Executar os batches do `PLANO_EXECUCAO_API.md` na ordem. Não fazer itens pós-d
 Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito (ver roadmap §8 da Referência).
 
 ### Validação pendente — Assistente IA
-- Histórico completo ao reabrir (user + assistant). **Nota:** o Batch 3 corrige o bug que quebra o chat com resposta > 4000 chars (T-37); a validação fim-a-fim segue dependente da estabilização do Gemini (503).
+- Histórico completo ao reabrir (user + assistant). **Nota:** o bug que quebrava o chat com resposta > 4000 chars (T-37) foi corrigido no Batch 3b; a validação fim-a-fim segue dependente da estabilização do Gemini (503).
 
 ---
 
 ## Testes — Estado Real
 
-✅ **Suíte automatizada (Batch 2 + Batch 3a):** `tests/` com pytest — **82 testes, todos verdes, zero xfail** (`tests/services/` para domínio com SQLite in-memory; `tests/schemas/` para validação pydantic pura), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
+✅ **Suíte automatizada (Batches 2, 3a e 3b):** `tests/` com pytest — **96 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
 
 | Bloco (manual E2E) | Escopo | Status |
 |---|---|---|
@@ -221,5 +245,5 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 12 de junho de 2026 — Batch 3a concluído (T-33, T-38, T-40, T-35-schema; 82 testes verdes, zero xfail). Próximo: Batch 3b (T-36, T-34, T-35 endpoint/derivação, T-41, T-37, T-27 parcial).*
+*Última atualização: 12 de junho de 2026 — Batch 3 concluído por inteiro (3a: T-33, T-38, T-40, T-35-schema · 3b: T-36, T-34, T-35-endpoint, T-41, T-37, T-27 data de negócio; 96 testes verdes). Próximo: Batch 4 (config, higiene e versionamento).*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

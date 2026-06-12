@@ -4,6 +4,8 @@ from sqlalchemy import Numeric
 from decimal import Decimal
 import datetime as dt
 
+from app.core.dates import hoje
+
 
 class Parcela(SQLModel, table=True):
     __tablename__ = "parcelas"
@@ -28,7 +30,7 @@ class Parcela(SQLModel, table=True):
 
     pago: bool = False
     cancelado: bool = False
-    criado_em: dt.date = Field(default_factory=dt.date.today)
+    criado_em: dt.date = Field(default_factory=hoje)
 
     fatura_mes: Optional[int] = None
     fatura_ano: Optional[int] = None

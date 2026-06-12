@@ -4,6 +4,8 @@ from sqlalchemy import Numeric
 from decimal import Decimal
 import datetime as dt
 
+from app.core.dates import hoje
+
 
 class Cartao(SQLModel, table=True):
     __tablename__ = "cartoes"
@@ -20,4 +22,4 @@ class Cartao(SQLModel, table=True):
     mes_offset_vencimento: int = 1  # Meses entre fechamento e vencimento
 
     ativo: bool = True
-    criado_em: dt.date = Field(default_factory=dt.date.today)
+    criado_em: dt.date = Field(default_factory=hoje)

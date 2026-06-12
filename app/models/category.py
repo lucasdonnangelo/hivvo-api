@@ -2,6 +2,8 @@ from typing import Optional
 from sqlmodel import Field, SQLModel
 import datetime as dt
 
+from app.core.dates import hoje
+
 
 class CategoriaCustomizada(SQLModel, table=True):
     __tablename__ = "categorias"
@@ -13,4 +15,4 @@ class CategoriaCustomizada(SQLModel, table=True):
     icone: str = "📦"
     tipo: str = "despesa"  # "despesa" | "receita"
     ativa: bool = True
-    criado_em: dt.date = Field(default_factory=dt.date.today)
+    criado_em: dt.date = Field(default_factory=hoje)

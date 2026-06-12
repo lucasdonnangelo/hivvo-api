@@ -42,5 +42,7 @@ def _criar_parcelas(session: Session, transacao: Transacao, card: Optional[Carta
         )
         session.add(parcela)
 
-    session.commit()
+    # Sem commit aqui: o boundary (endpoint/chamador) commita — transação da
+    # compra e parcelas persistem ou falham juntas (T-41)
+    session.flush()
     return total

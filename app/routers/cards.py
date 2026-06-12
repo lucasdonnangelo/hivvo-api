@@ -1,4 +1,3 @@
-import datetime as dt
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -6,6 +5,7 @@ from sqlmodel import Session, select, func
 
 from app.core.auth import get_current_user
 from app.core.database import get_session
+from app.core.dates import hoje
 from app.models.card import Cartao
 from app.models.installment import Parcela
 from app.models.transaction import Transacao
@@ -32,13 +32,14 @@ def list_cards(
         .order_by(Cartao.criado_em)
     ).all()
 
-    today = dt.date.today()
+    today = hoje()
     result = []
     for card in cards:
         fatura_mes, fatura_ano, venc = _current_open_fatura(card, today)
 
         parcelas_total = session.exec(
             select(func.sum(Parcela.valor_parcela)).where(
+                Parcela.usuario_id == current_user.id,
                 Parcela.cartao_id == card.id,
                 Parcela.fatura_mes == fatura_mes,
                 Parcela.fatura_ano == fatura_ano,
@@ -48,6 +49,7 @@ def list_cards(
 
         avulsas_total = session.exec(
             select(func.sum(Transacao.valor)).where(
+                Transacao.usuario_id == current_user.id,
                 Transacao.cartao_id == card.id,
                 Transacao.fatura_mes == fatura_mes,
                 Transacao.fatura_ano == fatura_ano,

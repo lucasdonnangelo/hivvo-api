@@ -6,26 +6,9 @@ from app.core.database import get_session
 from app.models.category import CategoriaCustomizada
 from app.models.user import Usuario
 from app.schemas.category import CategoriaCreate, CategoriaResponse
+from app.services.categorias import CATEGORIAS_PADRAO
 
 router = APIRouter(prefix="/categories", tags=["categories"])
-
-_CATEGORIAS_PADRAO: list[CategoriaResponse] = [
-    CategoriaResponse(nome="Alimentação",  icone="🍔", tipo="despesa", is_padrao=True),
-    CategoriaResponse(nome="Moradia",      icone="🏠", tipo="despesa", is_padrao=True),
-    CategoriaResponse(nome="Transporte",   icone="🚗", tipo="despesa", is_padrao=True),
-    CategoriaResponse(nome="Saúde",        icone="💊", tipo="despesa", is_padrao=True),
-    CategoriaResponse(nome="Educação",     icone="📚", tipo="despesa", is_padrao=True),
-    CategoriaResponse(nome="Lazer",        icone="🎮", tipo="despesa", is_padrao=True),
-    CategoriaResponse(nome="Roupas",       icone="👕", tipo="despesa", is_padrao=True),
-    CategoriaResponse(nome="Assinaturas",  icone="📱", tipo="despesa", is_padrao=True),
-    CategoriaResponse(nome="Viagem",       icone="✈️",  tipo="despesa", is_padrao=True),
-    CategoriaResponse(nome="Pets",         icone="🐾", tipo="despesa", is_padrao=True),
-    CategoriaResponse(nome="Outros",       icone="📦", tipo="despesa", is_padrao=True),
-    CategoriaResponse(nome="Salário",      icone="💰", tipo="receita", is_padrao=True),
-    CategoriaResponse(nome="Freelance",    icone="💻", tipo="receita", is_padrao=True),
-    CategoriaResponse(nome="Investimentos",icone="📈", tipo="receita", is_padrao=True),
-    CategoriaResponse(nome="Outros",       icone="📦", tipo="receita", is_padrao=True),
-]
 
 
 @router.get("", response_model=list[CategoriaResponse])
@@ -39,7 +22,7 @@ def list_categories(
         .where(CategoriaCustomizada.ativa == True)  # noqa: E712
     ).all()
 
-    return _CATEGORIAS_PADRAO + [CategoriaResponse.model_validate(c) for c in custom]
+    return CATEGORIAS_PADRAO + [CategoriaResponse.model_validate(c) for c in custom]
 
 
 @router.post("", response_model=CategoriaResponse, status_code=status.HTTP_201_CREATED)

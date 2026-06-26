@@ -1,5 +1,6 @@
 import datetime as dt
-from typing import Literal
+from decimal import Decimal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,3 +20,13 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     resposta: str
+
+
+class SuggestCategoryRequest(BaseModel):
+    descricao: str = Field(..., min_length=1, max_length=200)
+    valor: Optional[Decimal] = None
+    tipo: Optional[Literal["receita", "despesa"]] = None
+
+
+class SuggestCategoryResponse(BaseModel):
+    categoria: str

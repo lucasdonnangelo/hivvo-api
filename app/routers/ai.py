@@ -15,11 +15,19 @@ from sqlmodel import Session, delete, select
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.database import get_session
+from app.models.category import CategoriaCustomizada
 from app.models.chat import ChatMessage
 from app.models.installment import Parcela
 from app.models.user import Usuario
+from app.services.categorias import CATEGORIAS_PADRAO
 from app.services.estatisticas import _agregar, _buscar_mes, _categorias, _variacao
-from app.schemas.ai import ChatRequest, ChatResponse, HistoricoResponseItem
+from app.schemas.ai import (
+    ChatRequest,
+    ChatResponse,
+    HistoricoResponseItem,
+    SuggestCategoryRequest,
+    SuggestCategoryResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +199,54 @@ def _build_contents(historico: list[tuple[str, str]], mensagem: str) -> list[typ
     ]
 
 
+_RETRY_WAITS = [2, 4, 6, 8, 10]  # backoff linear entre 5 tentativas
+
+
+def _gemini_generate(contents: list[types.Content], system_instruction: str) -> str:
+    """Chamada síncrona ao Gemini — retry/erros idênticos ao comportamento
+    original do /ai/chat (timeout/singleton ficam para o Batch 9/T-21)."""
+    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    for attempt in range(1, 6):  # até 5 tentativas
+        try:
+            response = client.models.generate_content(
+                model=_MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    safety_settings=_SAFETY,
+                ),
+            )
+            if not response.text:
+                raise HTTPException(
+                    status_code=503,
+                    detail="A IA não gerou resposta. Tente reformular a pergunta.",
+                )
+            return response.text
+        except HTTPException:
+            raise
+        except genai_errors.ServerError as e:
+            if attempt < 5:
+                wait = _RETRY_WAITS[attempt - 1]
+                logger.warning("[chat] Gemini 503, tentativa %d/5 — aguardando %ds", attempt, wait)
+                time.sleep(wait)
+                continue
+            logger.exception("Gemini 503 após 5 tentativas: %s", e)
+            raise HTTPException(
+                status_code=503,
+                detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",
+            )
+        except Exception as e:
+            logger.exception("Gemini request failed — traceback completo: %s", e)
+            raise HTTPException(
+                status_code=503,
+                detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",
+            )
+    raise HTTPException(  # inalcançável — toda iteração retorna ou levanta
+        status_code=503,
+        detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",
+    )
+
+
 def _post_process(texto: str) -> str:
     # Fix spacing after R$ without collapsing newlines (markdown depends on them)
     texto = re.sub(r"R\$\s*(\d)", r"R$ \1", texto)
@@ -312,46 +368,7 @@ def chat(
     )
     contents = _build_contents([(m.role, m.text) for m in historico_db], body.mensagem)
 
-    _RETRY_WAITS = [2, 4, 6, 8, 10]  # backoff linear entre 5 tentativas
-
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
-    texto: str | None = None
-    for attempt in range(1, 6):  # até 5 tentativas
-        try:
-            response = client.models.generate_content(
-                model=_MODEL,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    safety_settings=_SAFETY,
-                ),
-            )
-            if not response.text:
-                raise HTTPException(
-                    status_code=503,
-                    detail="A IA não gerou resposta. Tente reformular a pergunta.",
-                )
-            texto = _post_process(response.text)
-            break
-        except HTTPException:
-            raise
-        except genai_errors.ServerError as e:
-            if attempt < 5:
-                wait = _RETRY_WAITS[attempt - 1]
-                logger.warning("[chat] Gemini 503, tentativa %d/5 — aguardando %ds", attempt, wait)
-                time.sleep(wait)
-                continue
-            logger.exception("Gemini 503 após 5 tentativas: %s", e)
-            raise HTTPException(
-                status_code=503,
-                detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",
-            )
-        except Exception as e:
-            logger.exception("Gemini request failed — traceback completo: %s", e)
-            raise HTTPException(
-                status_code=503,
-                detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",
-            )
+    texto = _post_process(_gemini_generate(contents, system_instruction))
 
     # Salva user + assistant atomicamente — só persiste se o Gemini respondeu com sucesso
     session.add(ChatMessage(
@@ -369,3 +386,64 @@ def chat(
     session.commit()
 
     return ChatResponse(resposta=texto)
+
+
+def _match_categoria(resposta: str, nomes: list[str]) -> str:
+    """Garante que a sugestão é uma categoria que o cliente conhece."""
+    limpo = resposta.strip().strip(".\"'")
+    for nome in nomes:
+        if limpo.casefold() == nome.casefold():
+            return nome
+    for nome in nomes:
+        if nome.casefold() in resposta.casefold():
+            return nome
+    return "Outros"
+
+
+@router.post("/suggest-category", response_model=SuggestCategoryResponse)
+def suggest_category(
+    body: SuggestCategoryRequest,
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Sugestão one-shot de categoria para uma transação (Fase 2, raiz do FE-08).
+
+    Stateless por contrato: NÃO escreve em chat_messages, NÃO cria/toca
+    sessao_id e NÃO carrega a janela de 50 mensagens do chat — reusar o
+    /ai/chat para isso poluía a memória do Assistente.
+    """
+    if not settings.GEMINI_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Serviço de IA indisponível: GEMINI_API_KEY não configurada.",
+        )
+
+    # Categorias válidas: padrão + customizadas ativas do usuário (por tipo)
+    nomes = [
+        c.nome for c in CATEGORIAS_PADRAO if body.tipo is None or c.tipo == body.tipo
+    ]
+    stmt = select(CategoriaCustomizada).where(
+        CategoriaCustomizada.usuario_id == current_user.id,
+        CategoriaCustomizada.ativa == True,  # noqa: E712
+    )
+    if body.tipo is not None:
+        stmt = stmt.where(CategoriaCustomizada.tipo == body.tipo)
+    for c in session.exec(stmt).all():
+        if c.nome not in nomes:
+            nomes.append(c.nome)
+
+    system_instruction = (
+        "Você classifica transações financeiras pessoais em categorias. "
+        "Responda APENAS com o nome de UMA categoria, exatamente como está na "
+        "lista, sem pontuação, aspas ou explicação.\n"
+        f"Categorias disponíveis: {', '.join(dict.fromkeys(nomes))}"
+    )
+    partes = [f'Transação: "{body.descricao}"']
+    if body.valor is not None:
+        partes.append(f"Valor: R$ {body.valor}")
+    if body.tipo is not None:
+        partes.append(f"Tipo: {body.tipo}")
+    contents = [types.Content(role="user", parts=[types.Part(text=" | ".join(partes))])]
+
+    resposta = _gemini_generate(contents, system_instruction)
+    return SuggestCategoryResponse(categoria=_match_categoria(resposta, nomes))

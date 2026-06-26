@@ -9,7 +9,7 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
-**Próximo passo imediato:** Batch 4b — itens de comportamento e versionamento que sobraram do Batch 4 (T-28 `/api/v1` cross-repo, F-09, F-16, F-22, F-23, F-06).
+**Próximo passo imediato:** Batch 4b — **só** hardening de auth/entrada (F-09, F-16, F-22, F-23, F-06), backend-local e testável isolado. **T-28 (`/api/v1`) saiu do 4b** — virou passo cross-repo próprio, coordenado API + Web no mesmo sentar (não vai junto do 4b).
 **Batch 4a concluído (26/06/2026, aguardando commit):** robustez de config e higiene — F-01, T-07, F-13, F-14, F-11+T-08, T-06 e separação de dependências de dev. Suíte com **113 testes, todos verdes** — ver seção "Batch 4a" abaixo.
 **Batch 1 concluído (11/06/2026, commitado):** lógica de fatura/parcela/estatísticas consolidada em `app/services/`.
 **Batch 2 concluído (11/06/2026, commitado):** primeira suíte automatizada — 44 testes (42 pass + 2 xfail), 100% de cobertura em `services/faturas.py` e `services/parcelas.py` — ver seção "Batch 2" abaixo.
@@ -110,7 +110,7 @@ Subconjunto do Batch 4 (T-28 e os itens de comportamento ficam para 4b/cross-rep
 
 **Testes novos (`tests/test_config.py`):** SECRET_KEY ausente → `ValidationError` no boot; chave curta/valor de exemplo rejeitados em produção; chave forte aceita em produção; chave curta aceita em dev (só obrigatoriedade); `FRONTEND_URL` default e lido de settings. Usa `_env_file=None` + `monkeypatch.delenv` para isolar do `.env` local.
 
-**Fora do escopo (4b/cross-repo, não tocados):** T-28 (`/api/v1`), F-09 (`ACCESS_TOKEN_EXPIRE_MINUTES`), F-16 (`sessao_id: uuid.UUID`), F-22 (`max_length`), F-23 (`gensalt(rounds=12)`), F-06 (safety do Gemini). Índices (Batch 6) e demais batches intocados.
+**Fora do escopo (não tocados):** Batch 4b (backend-local) — F-09 (`ACCESS_TOKEN_EXPIRE_MINUTES`), F-16 (`sessao_id: uuid.UUID`), F-22 (`max_length`), F-23 (`gensalt(rounds=12)`), F-06 (safety do Gemini). T-28 (`/api/v1`) **não é 4b** — é passo cross-repo próprio (API + Web juntos). Índices (Batch 6) e demais batches intocados.
 
 ---
 
@@ -329,5 +329,5 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 26 de junho de 2026 — Batch 4a: robustez de config e higiene (F-01 SECRET_KEY obrigatória, T-07 CORS/constantes via Settings, F-13 docs off em prod, F-14 /health público genérico (200 ok / 503 unhealthy), F-11+T-08 logs, T-06 populate_db→scripts/, requirements-dev.txt; 113 testes verdes). Próximo: Batch 4b (T-28 /api/v1 cross-repo, F-09, F-16, F-22, F-23, F-06) · Web-Batch 4 consome o novo endpoint.*
+*Última atualização: 26 de junho de 2026 — Batch 4a: robustez de config e higiene (F-01 SECRET_KEY obrigatória, T-07 CORS/constantes via Settings, F-13 docs off em prod, F-14 /health público genérico (200 ok / 503 unhealthy), F-11+T-08 logs, T-06 populate_db→scripts/, requirements-dev.txt; 113 testes verdes). Próximo: Batch 4b (só F-09, F-16, F-22, F-23, F-06 — auth/entrada backend-local); T-28 /api/v1 é passo cross-repo separado (API + Web juntos) · Web-Batch 4 consome o novo endpoint.*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

@@ -1,4 +1,5 @@
 import datetime as dt
+import logging
 import re
 import uuid
 from typing import Optional
@@ -12,6 +13,8 @@ from app.core.auth import (
     create_refresh_token,
     get_current_user,
     hash_password,
+    hash_token,
+    revoke_all_refresh_tokens,
     rotate_refresh_token,
     verify_password,
 )
@@ -29,6 +32,11 @@ from app.schemas.auth import (
     UpdateMeRequest,
     UserResponse,
 )
+
+logger = logging.getLogger(__name__)
+
+# F-18/T-31: api_key setada na inicialização do módulo, não a cada request.
+resend.api_key = settings.RESEND_API_KEY
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -157,7 +165,7 @@ def logout(
 ):
     if refresh_token is not None:
         token_record = session.exec(
-            select(RefreshToken).where(RefreshToken.token == refresh_token)
+            select(RefreshToken).where(RefreshToken.token == hash_token(refresh_token))
         ).first()
         if token_record and not token_record.revogado:
             token_record.revogado = True
@@ -206,6 +214,8 @@ def change_password(
 
     current_user.senha_hash = hash_password(body.nova_senha)
     session.add(current_user)
+    # F-10: troca de senha revoga todas as sessões na MESMA transação.
+    revoke_all_refresh_tokens(current_user.id, session)
     session.commit()
 
 
@@ -217,27 +227,31 @@ def forgot_password(body: ForgotPasswordRequest, session: Session = Depends(get_
         token_str = str(uuid.uuid4())
         reset_token = PasswordResetToken(
             usuario_id=user.id,
-            token=token_str,
+            token=hash_token(token_str),  # F-24: persiste o hash; o cru vai no e-mail
             expires_at=dt.datetime.utcnow() + dt.timedelta(minutes=15),
         )
         session.add(reset_token)
-
-        resend.api_key = settings.RESEND_API_KEY
-        resend.Emails.send({
-            "from": "Hivvo <onboarding@resend.dev>",
-            "to": [user.email],
-            "subject": "Recuperação de senha — Hivvo",
-            "html": (
-                f"<p>Olá, {user.nome_completo}!</p>"
-                f"<p>Clique no link abaixo para redefinir sua senha. "
-                f"O link expira em <strong>15 minutos</strong>.</p>"
-                f"<p><a href='{settings.FRONTEND_URL}/reset-password?token={token_str}'>"
-                f"Redefinir senha</a></p>"
-                f"<p>Se você não solicitou a recuperação, ignore este e-mail.</p>"
-            ),
-        })
-
+        # F-18/T-31: commitar o token ANTES do envio — a falha de e-mail não pode
+        # impedir que o reset fique disponível.
         session.commit()
+
+        try:
+            resend.Emails.send({
+                "from": "Hivvo <onboarding@resend.dev>",
+                "to": [user.email],
+                "subject": "Recuperação de senha — Hivvo",
+                "html": (
+                    f"<p>Olá, {user.nome_completo}!</p>"
+                    f"<p>Clique no link abaixo para redefinir sua senha. "
+                    f"O link expira em <strong>15 minutos</strong>.</p>"
+                    f"<p><a href='{settings.FRONTEND_URL}/reset-password?token={token_str}'>"
+                    f"Redefinir senha</a></p>"
+                    f"<p>Se você não solicitou a recuperação, ignore este e-mail.</p>"
+                ),
+            })
+        except Exception as e:
+            # F-18: nunca derruba o request com 500; erro só no log (sem token/PII).
+            logger.error("Falha ao enviar e-mail de recuperação de senha: %s", e)
 
     return {"message": "Se o e-mail estiver cadastrado, você receberá um link em breve."}
 
@@ -245,7 +259,7 @@ def forgot_password(body: ForgotPasswordRequest, session: Session = Depends(get_
 @router.post("/reset-password", status_code=204)
 def reset_password(body: ResetPasswordRequest, session: Session = Depends(get_session)):
     reset_token = session.exec(
-        select(PasswordResetToken).where(PasswordResetToken.token == body.token)
+        select(PasswordResetToken).where(PasswordResetToken.token == hash_token(body.token))
     ).first()
 
     if reset_token is None:
@@ -262,4 +276,6 @@ def reset_password(body: ResetPasswordRequest, session: Session = Depends(get_se
     reset_token.usado = True
     session.add(user)
     session.add(reset_token)
+    # F-10: reset de senha revoga todas as sessões na MESMA transação.
+    revoke_all_refresh_tokens(user.id, session)
     session.commit()

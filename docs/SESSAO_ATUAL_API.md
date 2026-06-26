@@ -10,6 +10,7 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
 **Próximo passo imediato:** **T-28 (`/api/v1`)** — passo cross-repo próprio (API + Web no mesmo sentar). Restam ainda, fora dele, os itens pós-deploy e o Batch 11 (F-09 foi adiado para lá).
+**Batch 5 concluído (26/06/2026, aguardando commit):** tokens e sessão — F-24, F-10, F-18/T-31. Suíte com **139 testes, todos verdes** — ver seção "Batch 5" abaixo.
 **Batch 4b concluído (26/06/2026, commitado `6f5e359`):** hardening de entrada e hashing — F-16, F-22, F-23, F-06. Suíte com **128 testes, todos verdes** — ver seção "Batch 4b" abaixo. **F-06 validado em runtime e APROVADO** (nenhuma recusa de safety); observações de system prompt/contexto do Assistente surgidas na validação foram para "Itens diferidos / Backlog".
 **Batch 4a concluído (26/06/2026, commitado `c7f84bf`):** robustez de config e higiene — F-01, T-07, F-13, F-14, F-11+T-08, T-06 e separação de dependências de dev. Suíte com **113 testes, todos verdes** — ver seção "Batch 4a" abaixo.
 **Batch 1 concluído (11/06/2026, commitado):** lógica de fatura/parcela/estatísticas consolidada em `app/services/`.
@@ -84,6 +85,32 @@ Outros `order_by` não foram tocados por não listarem `Transacao`: `installment
 **Testes (`tests/routers/test_transactions_router.py`, classe `TestOrdenacaoEstavel`, reusa `as_user`/`post_transacao`):** 3 transações no mesmo dia criadas em sequência → `GET /transactions` retorna maior id primeiro; caso com datas distintas intercaladas → entre dias manda `data DESC`, dentro do dia `id DESC` (ordem esperada explícita `[b2, b1, a2, a1]`); e 3 avulsas de crédito no mesmo dia → o detalhe de fatura (`GET /cards/{id}/invoices/{ano}/{mes}`) também devolve maior id primeiro (rede do segundo ponto tocado; direção inalterada — já era `data DESC`).
 
 **Resultado:** `106 passed` (103 + 3 novos). App importa OK.
+
+---
+
+## Batch 5 — Tokens e sessão (26/06/2026)
+
+F-24, F-10, F-18/T-31. **Não** inclui F-09 (Batch 11), índices/constraints (Batch 6) nem T-28 (cross-repo). Suíte: **139 testes** (128 + 11 novos), todos verdes. App sobe.
+
+**F-24 (hashear tokens persistidos):** novo helper `hash_token(token)` em [core/auth.py](../app/core/auth.py) — `sha256` hexdigest (uuid4 é alta entropia, ~122 bits → sem salt, preserva busca por índice). A coluna `token` continua `str` e guarda o **hash**; o valor **cru** vai ao cliente (refresh → cookie; reset → e-mail). Pontos de criação **e** lookup atualizados para casar:
+- **Refresh:** criação em `create_refresh_token` persiste `hash_token(token_str)`; lookup em `rotate_refresh_token` compara `hash_token(old_token_str)`.
+- **Reset:** criação em `forgot_password` persiste `hash_token(token_str)`; lookup em `reset_password` compara `hash_token(body.token)`.
+- **5º ponto (além dos 4 do prompt):** o `logout` também faz **lookup de refresh** — hasheado também, senão o logout deixaria de revogar (assimetria quebraria o fluxo).
+- Tokens em texto claro já existentes deixam de validar (aceitável pré-lançamento — desloga sessões atuais). **Sem migration, sem rehash dos antigos.**
+
+**F-10 (revogar sessões na troca de senha):** novo helper `revoke_all_refresh_tokens(user_id, session)` em [core/auth.py](../app/core/auth.py) marca todos os `RefreshToken` não revogados do usuário como `revogado=True` (o chamador commita). Chamado **na mesma transação** em `change_password` E `reset_password`, antes do `commit`. Refresh com token antigo após qualquer um dos dois → 401.
+
+**F-18 + T-31 (envio robusto do e-mail de reset):** em [routers/auth.py](../app/routers/auth.py):
+- `resend.api_key = settings.RESEND_API_KEY` movido para **inicialização do módulo** (não setado a cada request).
+- Token **commitado ANTES** do envio — a falha de e-mail não impede o reset de ficar disponível.
+- Envio em `try/except`: falha → `logger.error` server-side (sem token/PII no log — só a exceção), **nunca** 500.
+- Resposta ao cliente permanece **genérica** (mesma mensagem exista ou não o e-mail — anti-enumeração). `logger` novo no módulo.
+
+**Testes novos (`tests/routers/test_auth_tokens.py`, TestClient + SQLite, Resend mockado):**
+- **F-24 refresh:** após login, o banco guarda o hash (≠ cookie cru) e casa via `hash_token`; `/auth/refresh` com o cru valida; token errado → 401.
+- **F-24 reset:** `forgot-password` grava o hash (≠ token extraído do link do e-mail mockado); `reset-password` com o cru valida (e a nova senha loga); token errado → 404.
+- **F-10:** após `reset-password` e após `change_password`, o refresh anterior → 401.
+- **F-18:** `resend.Emails.send` levantando → request **não** 500, resposta genérica, token **já commitado** (1 linha); caminho feliz commita e chama o send uma vez; e-mail inexistente → resposta genérica, **sem** token e sem chamar o send (anti-enumeração).
 
 ---
 
@@ -260,7 +287,7 @@ Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito 
 
 ## Testes — Estado Real
 
-✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2, regressão round-trip, T-29, Batch 4a e 4b):** `tests/` com pytest — **128 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura — incl. F-22 e a não-regressão T-37; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários, o round-trip de criação parcelada→fatura, a ordenação estável e a validação de sessao_id; `tests/test_config.py` carregamento de Settings — F-01/T-07; `tests/test_auth_hash.py` custo bcrypt — F-23), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
+✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2, regressão round-trip, T-29, Batch 4a, 4b e 5):** `tests/` com pytest — **139 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura — incl. F-22 e a não-regressão T-37; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários, o round-trip de criação parcelada→fatura, a ordenação estável, a validação de sessao_id e os fluxos de token/sessão — `test_auth_tokens.py`: hashing de refresh/reset, revogação de sessões e envio robusto do e-mail; `tests/test_config.py` carregamento de Settings — F-01/T-07; `tests/test_auth_hash.py` custo bcrypt — F-23), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
 
 | Bloco (manual E2E) | Escopo | Status |
 |---|---|---|
@@ -370,5 +397,5 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 26 de junho de 2026 — Batch 4b: hardening de entrada e hashing (F-16 sessao_id uuid.UUID→422, F-22 max_length só em schemas de entrada, F-23 bcrypt rounds=12, F-06 BLOCK_ONLY_HIGH; 128 testes verdes). F-06 validado em runtime e aprovado; 3 observações de system prompt/contexto do Assistente registradas em "Itens diferidos / Backlog". Próximo: T-28 /api/v1 (passo cross-repo, API + Web juntos); F-09 adiado para o Batch 11 · Web-Batch 4 consome o novo endpoint.*
+*Última atualização: 26 de junho de 2026 — Batch 5: tokens e sessão (F-24 hash sha256 de refresh/reset na criação E lookup — incl. logout; F-10 revogação de sessões em change/reset password; F-18/T-31 envio robusto do e-mail — commit antes do envio, try/except com log, resposta genérica, api_key na inicialização; 139 testes verdes). Sem migration, sem rehash dos tokens antigos. Próximo: T-28 /api/v1 (passo cross-repo, API + Web juntos); F-09 adiado para o Batch 11 · Web-Batch 4 consome o endpoint de sugestão.*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

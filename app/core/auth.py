@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -9,6 +10,13 @@ from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.core.database import get_session
+
+
+def hash_token(token: str) -> str:
+    # F-24: refresh/reset tokens são uuid4 de alta entropia (~122 bits), então
+    # SHA-256 sem salt basta e preserva a busca por índice. O valor CRU vai ao
+    # cliente; o banco guarda só o hash (criação E lookup precisam casar).
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def hash_password(password: str) -> str:
@@ -36,18 +44,34 @@ def create_refresh_token(user_id: int, session: Session) -> str:
     token_str = str(uuid.uuid4())
     token = RefreshToken(
         usuario_id=user_id,
-        token=token_str,
+        token=hash_token(token_str),  # F-24: persiste o hash; o cru vai ao cliente
         expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
     )
     session.add(token)
     return token_str
 
 
+def revoke_all_refresh_tokens(user_id: int, session: Session) -> None:
+    # F-10: revoga TODAS as sessões ativas do usuário (troca/reset de senha).
+    # O chamador commita — fica na mesma transação da troca de senha.
+    from app.models.refresh_token import RefreshToken
+
+    tokens = session.exec(
+        select(RefreshToken).where(
+            RefreshToken.usuario_id == user_id,
+            RefreshToken.revogado == False,  # noqa: E712 — comparação SQL
+        )
+    ).all()
+    for token in tokens:
+        token.revogado = True
+        session.add(token)
+
+
 def rotate_refresh_token(old_token_str: str, session: Session) -> tuple[int, str]:
     from app.models.refresh_token import RefreshToken
 
     token = session.exec(
-        select(RefreshToken).where(RefreshToken.token == old_token_str)
+        select(RefreshToken).where(RefreshToken.token == hash_token(old_token_str))
     ).first()
 
     if token is None or token.revogado or token.expires_at < datetime.utcnow():

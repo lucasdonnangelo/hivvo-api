@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 _ZERO = Decimal("0.00")
-_MODEL = "gemini-2.5-flash"
 _MESES = {
     1: "Janeiro", 2: "Fevereiro", 3: "Março",    4: "Abril",
     5: "Maio",    6: "Junho",     7: "Julho",     8: "Agosto",
@@ -199,9 +198,6 @@ def _build_contents(historico: list[tuple[str, str]], mensagem: str) -> list[typ
     ]
 
 
-_RETRY_WAITS = [2, 4, 6, 8, 10]  # backoff linear entre 5 tentativas
-
-
 def _gemini_generate(contents: list[types.Content], system_instruction: str) -> str:
     """Chamada síncrona ao Gemini — retry/erros idênticos ao comportamento
     original do /ai/chat (timeout/singleton ficam para o Batch 9/T-21)."""
@@ -209,7 +205,7 @@ def _gemini_generate(contents: list[types.Content], system_instruction: str) -> 
     for attempt in range(1, 6):  # até 5 tentativas
         try:
             response = client.models.generate_content(
-                model=_MODEL,
+                model=settings.GEMINI_MODEL,
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
@@ -226,7 +222,7 @@ def _gemini_generate(contents: list[types.Content], system_instruction: str) -> 
             raise
         except genai_errors.ServerError as e:
             if attempt < 5:
-                wait = _RETRY_WAITS[attempt - 1]
+                wait = settings.GEMINI_RETRY_WAITS[attempt - 1]
                 logger.warning("[chat] Gemini 503, tentativa %d/5 — aguardando %ds", attempt, wait)
                 time.sleep(wait)
                 continue
@@ -269,17 +265,12 @@ def get_historico(
     ).first()
 
     if not row:
-        logger.info("[historico] nenhuma sessão encontrada para usuario_id=%s", current_user.id)
         return []
 
-    logger.info("[historico] sessao_id mais recente: %s | ultima_msg: %s", row.sessao_id, row.ultima)
-
-    if (dt.datetime.utcnow() - row.ultima) > dt.timedelta(hours=24):
-        logger.info("[historico] sessão expirada (>24h) — retornando vazio")
+    if (dt.datetime.utcnow() - row.ultima) > dt.timedelta(hours=settings.CHAT_SESSION_WINDOW_HOURS):
         return []
 
     sessao_id_mais_recente = uuid.UUID(str(row.sessao_id))
-    logger.info("[historico] buscando mensagens para sessao_id=%s (tipo=%s)", sessao_id_mais_recente, type(sessao_id_mais_recente))
 
     mensagens = session.exec(
         select(ChatMessage)
@@ -289,10 +280,6 @@ def get_historico(
         )
         .order_by(ChatMessage.created_at)
     ).all()
-
-    logger.info("[historico] total de mensagens encontradas: %d", len(mensagens))
-    for m in mensagens:
-        logger.info("[historico]   role=%s | sessao_id=%s | text=%.60s", m.role, m.sessao_id, m.text)
 
     return [
         HistoricoResponseItem(role=m.role, text=m.text, created_at=m.created_at)
@@ -329,7 +316,7 @@ def chat(
         select(ChatMessage)
         .where(ChatMessage.usuario_id == current_user.id)
         .order_by(ChatMessage.created_at.desc())
-        .limit(50)
+        .limit(settings.CHAT_CONTEXT_MESSAGES)
     ).all()
     historico_db = list(reversed(historico_db))  # ordena ASC para o Gemini
 

@@ -1,4 +1,6 @@
-from fastapi import FastAPI, HTTPException
+import logging
+
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse as _JSONResponse
 from sqlmodel import Session, text
@@ -6,6 +8,10 @@ from sqlmodel import Session, text
 from app.core.config import settings
 from app.core.database import engine
 from app.routers import auth, transactions, categories, cards, invoices, installments, statistics, ai
+
+logger = logging.getLogger(__name__)
+
+_IS_PRODUCTION = settings.ENVIRONMENT == "production"
 
 
 class UTF8JSONResponse(_JSONResponse):
@@ -15,14 +21,16 @@ class UTF8JSONResponse(_JSONResponse):
 app = FastAPI(
     title="Hivvo API",
     version="0.1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    # F-13: superfície da API não fica exposta em produção
+    docs_url=None if _IS_PRODUCTION else "/docs",
+    redoc_url=None if _IS_PRODUCTION else "/redoc",
+    openapi_url=None if _IS_PRODUCTION else "/openapi.json",
     default_response_class=UTF8JSONResponse,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite dev server
+    allow_origins=[settings.FRONTEND_URL],  # T-07: dirigido por config (default Vite dev server)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,9 +48,12 @@ app.include_router(ai.router)
 
 @app.get("/health", tags=["health"])
 def health_check():
+    # F-14: /health é público — o corpo não nomeia subsistemas nem o ambiente.
+    # Status saudável genérico; falha vira 503 genérico, com o detalhe real só no log.
     try:
         with Session(engine) as session:
             session.exec(text("SELECT 1"))
-        return {"status": "ok", "database": "connected", "environment": settings.ENVIRONMENT}
+        return {"status": "ok"}
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Database unavailable: {str(e)}")
+        logger.error("Health check falhou: %s", e)
+        return UTF8JSONResponse(status_code=503, content={"status": "unhealthy"})

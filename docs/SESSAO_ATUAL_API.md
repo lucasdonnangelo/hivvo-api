@@ -9,7 +9,8 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
-**Próximo passo imediato:** Batch 4 — config, higiene e versionamento (F-01, F-09, F-13, F-14, F-16, F-22, F-23, F-06, F-11+T-08, T-06, T-07, T-28).
+**Próximo passo imediato:** Batch 4b — itens de comportamento e versionamento que sobraram do Batch 4 (T-28 `/api/v1` cross-repo, F-09, F-16, F-22, F-23, F-06).
+**Batch 4a concluído (26/06/2026, aguardando commit):** robustez de config e higiene — F-01, T-07, F-13, F-14, F-11+T-08, T-06 e separação de dependências de dev. Suíte com **113 testes, todos verdes** — ver seção "Batch 4a" abaixo.
 **Batch 1 concluído (11/06/2026, commitado):** lógica de fatura/parcela/estatísticas consolidada em `app/services/`.
 **Batch 2 concluído (11/06/2026, commitado):** primeira suíte automatizada — 44 testes (42 pass + 2 xfail), 100% de cobertura em `services/faturas.py` e `services/parcelas.py` — ver seção "Batch 2" abaixo.
 **Batch 3a concluído (12/06/2026, commitado `c315a3a`):** validação de entrada + fechamento dos 2 xfail (T-33, T-38, T-40, T-35 parte de schema) — ver seção "Batch 3a" abaixo.
@@ -82,6 +83,34 @@ Outros `order_by` não foram tocados por não listarem `Transacao`: `installment
 **Testes (`tests/routers/test_transactions_router.py`, classe `TestOrdenacaoEstavel`, reusa `as_user`/`post_transacao`):** 3 transações no mesmo dia criadas em sequência → `GET /transactions` retorna maior id primeiro; caso com datas distintas intercaladas → entre dias manda `data DESC`, dentro do dia `id DESC` (ordem esperada explícita `[b2, b1, a2, a1]`); e 3 avulsas de crédito no mesmo dia → o detalhe de fatura (`GET /cards/{id}/invoices/{ano}/{mes}`) também devolve maior id primeiro (rede do segundo ponto tocado; direção inalterada — já era `data DESC`).
 
 **Resultado:** `106 passed` (103 + 3 novos). App importa OK.
+
+---
+
+## Batch 4a — Robustez de config e higiene (26/06/2026)
+
+Subconjunto do Batch 4 (T-28 e os itens de comportamento ficam para 4b/cross-repo). Suíte: **113 testes** (106 + 7 novos), todos verdes. App sobe com `.env` válido.
+
+**F-01 (SECRET_KEY obrigatória):** removido o default `"change-me-in-production"` de `config.py` — `SECRET_KEY: str` sem default, então o boot **falha** (ValidationError do Pydantic) se ausente, em dev e prod. `model_validator(mode="after")` adicionado: quando `ENVIRONMENT == "production"`, rejeita valores de exemplo (`change-me-in-production`, `your-secret-key-here`) e `len < 32` com mensagem clara apontando `openssl rand -hex 32`. **Não** foi inventado default — o `.env` local já tem `SECRET_KEY`.
+
+**T-07 (CORS e constantes via Settings):**
+- `main.py`: CORS `allow_origins=[settings.FRONTEND_URL]` (default `http://localhost:5173`) no lugar do hardcode. `allow_credentials`/métodos/headers **intactos** (a config same-site completa, `Domain=.hivvo.app`, é o Batch 11).
+- Promovidos para `Settings` (só movidos — valores e comportamento idênticos): `GEMINI_MODEL`, `CHAT_SESSION_WINDOW_HOURS=24`, `CHAT_CONTEXT_MESSAGES=50`, `GEMINI_RETRY_WAITS=[2,4,6,8,10]`. Em `ai.py`: `_MODEL`→`settings.GEMINI_MODEL`; `timedelta(hours=24)`→`settings.CHAT_SESSION_WINDOW_HOURS`; `.limit(50)`→`settings.CHAT_CONTEXT_MESSAGES`; `_RETRY_WAITS`→`settings.GEMINI_RETRY_WAITS` (loop `range(1,6)`/`attempt<5` inalterados).
+
+**F-13:** `docs_url`/`redoc_url`/`openapi_url = None` quando `ENVIRONMENT == "production"` (em `main.py`, via `_IS_PRODUCTION`).
+
+**F-14:** `/health` é **público** (sem auth) — o corpo não nomeia subsistemas nem o ambiente. Saudável: `200 {"status":"ok"}` (antes vazava `database`/`environment`); DB fora: `503 {"status":"unhealthy"}` (via `UTF8JSONResponse`, não mais `raise HTTPException`), com o erro real só no log (`logger.error`). `HTTPException` saiu do import de `main.py` (sem outros usos).
+
+**F-11 + T-08 (higiene):**
+- Arquivos `*.log`/`*.err`/`cookies.xml`: **nenhum presente** no diretório (já limpos) e os três padrões **já constavam** no `.gitignore` — nada a remover, **nenhum segredo a reportar/rotacionar** por esta via.
+- Removidos os 6 `logger.info` de `GET /ai/historico` (instrumentação dos 503 do Gemini), incluindo o loop que despejava `text` de cada mensagem do chat (privacidade). `logger` segue em uso no retry do Gemini.
+
+**T-06 (populate_db):** movido via `git mv` para `scripts/populate_db.py`. Guarda no topo: `ENVIRONMENT == "production"` → `sys.exit` (não roda seed em produção). Paths corrigidos para a nova profundidade (`PROJECT_ROOT = Path(__file__).resolve().parent.parent` para `.env` e `sys.path`). Cópias locais de `_data_vencimento_parcela` e `_fatura_cartao_avulso` **removidas** — agora importadas de `app/services/faturas.py`. `_criar_parcelas` **mantido local** de propósito (diverge: marca parcela passada como paga via `pago = data_venc < TODAY`).
+
+**Higiene de dependências:** criado `requirements-dev.txt` (`-r requirements.txt` + pytest, pytest-mock, pytest-cov); essas três **removidas** de `requirements.txt`. `tzdata` **mantido** em `requirements.txt` (dependência de PRODUÇÃO do T-27/ZoneInfo).
+
+**Testes novos (`tests/test_config.py`):** SECRET_KEY ausente → `ValidationError` no boot; chave curta/valor de exemplo rejeitados em produção; chave forte aceita em produção; chave curta aceita em dev (só obrigatoriedade); `FRONTEND_URL` default e lido de settings. Usa `_env_file=None` + `monkeypatch.delenv` para isolar do `.env` local.
+
+**Fora do escopo (4b/cross-repo, não tocados):** T-28 (`/api/v1`), F-09 (`ACCESS_TOKEN_EXPIRE_MINUTES`), F-16 (`sessao_id: uuid.UUID`), F-22 (`max_length`), F-23 (`gensalt(rounds=12)`), F-06 (safety do Gemini). Índices (Batch 6) e demais batches intocados.
 
 ---
 
@@ -190,7 +219,7 @@ Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito 
 
 ## Testes — Estado Real
 
-✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2, regressão round-trip e T-29):** `tests/` com pytest — **106 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários, o round-trip de criação parcelada→fatura e a ordenação estável de transações), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
+✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2, regressão round-trip, T-29 e Batch 4a):** `tests/` com pytest — **113 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários, o round-trip de criação parcelada→fatura e a ordenação estável de transações; `tests/test_config.py` carregamento de Settings — F-01/T-07), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
 
 | Bloco (manual E2E) | Escopo | Status |
 |---|---|---|
@@ -300,5 +329,5 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 26 de junho de 2026 — T-29 ordenação estável de transações (`data DESC, id DESC` em GET /transactions e avulsas de fatura; 106 testes verdes). Próximo: Batch 4 (config, higiene e versionamento) · Web-Batch 4 consome o novo endpoint.*
+*Última atualização: 26 de junho de 2026 — Batch 4a: robustez de config e higiene (F-01 SECRET_KEY obrigatória, T-07 CORS/constantes via Settings, F-13 docs off em prod, F-14 /health público genérico (200 ok / 503 unhealthy), F-11+T-08 logs, T-06 populate_db→scripts/, requirements-dev.txt; 113 testes verdes). Próximo: Batch 4b (T-28 /api/v1 cross-repo, F-09, F-16, F-22, F-23, F-06) · Web-Batch 4 consome o novo endpoint.*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

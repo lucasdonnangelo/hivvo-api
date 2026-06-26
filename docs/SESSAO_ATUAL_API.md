@@ -13,7 +13,8 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Batch 1 concluído (11/06/2026, commitado):** lógica de fatura/parcela/estatísticas consolidada em `app/services/`.
 **Batch 2 concluído (11/06/2026, commitado):** primeira suíte automatizada — 44 testes (42 pass + 2 xfail), 100% de cobertura em `services/faturas.py` e `services/parcelas.py` — ver seção "Batch 2" abaixo.
 **Batch 3a concluído (12/06/2026, commitado `c315a3a`):** validação de entrada + fechamento dos 2 xfail (T-33, T-38, T-40, T-35 parte de schema) — ver seção "Batch 3a" abaixo.
-**Batch 3b concluído (12/06/2026, aguardando commit):** comportamento de endpoint (T-36, T-34, T-35-endpoint, T-41, T-37, T-27 data de negócio) — suíte agora com **96 testes, todos verdes** — ver seção "Batch 3b" abaixo. **Fecha o Batch 3 inteiro.**
+**Batch 3b concluído (12/06/2026, commitado `124086f`):** comportamento de endpoint (T-36, T-34, T-35-endpoint, T-41, T-37, T-27 data de negócio) — ver seção "Batch 3b" abaixo. **Fecha o Batch 3 inteiro.**
+**Fase 2 cross-repo concluída (12/06/2026, aguardando commit):** `POST /ai/suggest-category` — endpoint dedicado de sugestão de categoria, stateless (raiz do FE-08; o **Web-Batch 4** do hivvo-web vai consumi-lo) — suíte com **101 testes, todos verdes** — ver seção "Fase 2" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
 
 ---
@@ -27,6 +28,24 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 | `docs/PLANO_EXECUCAO_API.md` | **16 batches** ordenados (11 pré-deploy + deploy + 5 pós-deploy). Executar um por vez, com aprovação. |
 
 **Gates:** Batches 1→2→3 são sequenciais (consolidar → testar → corrigir). Batch 7 tem passos manuais no Supabase. Batch 11 depende da decisão de topologia (`app.`/`api.hivvo.app`). Auditoria de **produto** será feita à parte (estratégia/mercado), não pelo Claude Code.
+
+---
+
+## Fase 2 (cross-repo) — Endpoint dedicado de sugestão de categoria (12/06/2026)
+
+Resolve a **raiz do FE-08** no servidor: a sugestão de categoria por IA reusava `POST /ai/chat`, persistindo em `chat_messages` e entrando na janela de 50 mensagens — poluía a memória do Assistente e aparecia como "sessão recente". **Aditivo: o comportamento de persistência do `/ai/chat` não mudou** (guardado por teste novo).
+
+**`POST /ai/suggest-category`** (autenticado): entrada `{descricao (1..200), valor?, tipo? ('receita'|'despesa')}` → saída `{categoria}`. One-shot e stateless por contrato: **não** escreve em `chat_messages`, **não** cria/toca `sessao_id`, **não** carrega a janela de 50 mensagens. Única leitura de banco: categorias customizadas ativas do usuário.
+
+**Como funciona:** lista de categorias válidas (padrão + customizadas do usuário, filtradas por `tipo` quando informado) entra na system instruction; o Gemini responde com um nome; `_match_categoria` normaliza (match exato case-insensitive → substring → fallback `"Outros"`) — a sugestão é sempre uma categoria que o picker do frontend conhece.
+
+**Refactors de suporte (zero mudança de comportamento):**
+- O loop de retry do Gemini saiu do corpo do `chat` para `_gemini_generate(contents, system_instruction)` — mesmos 5 retries/sleeps/mensagens; `chat` o chama e aplica `_post_process` como antes. Sem timeout/singleton/rate-limit (Batch 9/T-21/F-04 cobrirão os dois endpoints juntos).
+- `_CATEGORIAS_PADRAO` movida de `routers/categories.py` para `app/services/categorias.py` (`CATEGORIAS_PADRAO`) — evita import router→router (anti-padrão do T-02).
+
+**Testes (`tests/routers/test_ai_router.py`, Gemini mockado, sem rede):** chamada ao suggest-category deixa `chat_messages` com **zero linhas** (logo nenhum `sessao_id` criado) e retorna a sugestão; categoria customizada aceita; resposta fora da lista → `"Outros"`; resposta com decoração normalizada; **guarda do refactor:** `/ai/chat` segue persistindo user+assistant com o `sessao_id` enviado (primeiro teste do chat — não existia).
+
+**Cross-repo:** o **Web-Batch 4** (hivvo-web) troca a chamada de sugestão de `/ai/chat` para este endpoint.
 
 ---
 
@@ -135,7 +154,7 @@ Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito 
 
 ## Testes — Estado Real
 
-✅ **Suíte automatizada (Batches 2, 3a e 3b):** `tests/` com pytest — **96 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
+✅ **Suíte automatizada (Batches 2, 3a, 3b e Fase 2):** `tests/` com pytest — **101 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
 
 | Bloco (manual E2E) | Escopo | Status |
 |---|---|---|
@@ -245,5 +264,5 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 12 de junho de 2026 — Batch 3 concluído por inteiro (3a: T-33, T-38, T-40, T-35-schema · 3b: T-36, T-34, T-35-endpoint, T-41, T-37, T-27 data de negócio; 96 testes verdes). Próximo: Batch 4 (config, higiene e versionamento).*
+*Última atualização: 12 de junho de 2026 — Batch 3 concluído por inteiro + Fase 2 cross-repo (`POST /ai/suggest-category`, stateless, raiz do FE-08; 101 testes verdes). Próximo: Batch 4 (config, higiene e versionamento) · Web-Batch 4 consome o novo endpoint.*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

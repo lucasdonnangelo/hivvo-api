@@ -18,19 +18,27 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent / ".env")
+# Script vive em scripts/ — a raiz do projeto (.env, pacote app/) está um nível acima
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
 
 import os
 from sqlmodel import create_engine, Session, select
 
-# sys.path garante importação dos models quando rodado da raiz do projeto
-sys.path.insert(0, str(Path(__file__).parent))
+# sys.path garante importação dos models quando rodado de qualquer diretório
+sys.path.insert(0, str(PROJECT_ROOT))
+
+# T-06: nunca rodar seed contra o banco de produção
+if os.environ.get("ENVIRONMENT") == "production":
+    sys.exit("Abortado: populate_db.py não roda com ENVIRONMENT=production (script de seed de desenvolvimento).")
 
 from app.models.user import Usuario
 from app.models.card import Cartao
 from app.models.transaction import Transacao
 from app.models.installment import Parcela
-from app.services.faturas import _add_months
+# T-06: helpers de fatura consolidados em app/services (eram cópias locais idênticas).
+# _criar_parcelas permanece local de propósito: diverge para marcar parcela passada como paga.
+from app.services.faturas import _add_months, _data_vencimento_parcela, _fatura_cartao_avulso
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
@@ -40,33 +48,6 @@ engine = create_engine(DATABASE_URL, echo=False)
 
 TARGET_EMAIL = "lucasjrdonnangelo@gmail.com"
 TODAY = dt.date(2026, 6, 5)
-
-# ── Helpers (espelham transactions.py) ────────────────────────────────────────
-
-def _data_vencimento_parcela(
-    transaction_date: dt.date, parcela_num: int, card: Cartao
-) -> dt.date:
-    if card and card.dia_vencimento:
-        if card.dia_fechamento and transaction_date.day > card.dia_fechamento:
-            base_fatura = _add_months(transaction_date.replace(day=1), 1)
-        else:
-            base_fatura = transaction_date.replace(day=1)
-        fatura_date = _add_months(base_fatura, parcela_num - 1)
-        due_base = _add_months(fatura_date, card.mes_offset_vencimento)
-        due_day = min(card.dia_vencimento, calendar.monthrange(due_base.year, due_base.month)[1])
-        return dt.date(due_base.year, due_base.month, due_day)
-    return _add_months(transaction_date, parcela_num)
-
-
-def _fatura_cartao_avulso(data: dt.date, card: Cartao) -> tuple[int, int]:
-    if card.dia_fechamento and data.day > card.dia_fechamento:
-        base = _add_months(data.replace(day=1), 1)
-    else:
-        base = data.replace(day=1)
-    due_base = _add_months(base, card.mes_offset_vencimento)
-    due_day = min(card.dia_vencimento, calendar.monthrange(due_base.year, due_base.month)[1])
-    due = dt.date(due_base.year, due_base.month, due_day)
-    return due.month, due.year
 
 
 def _criar_parcelas(session: Session, transacao: Transacao, card: Cartao | None) -> int:

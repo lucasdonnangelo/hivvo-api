@@ -186,3 +186,106 @@ class TestT41AtomicidadeDaCriacaoParcelada:
             Decimal("33.33"),
             Decimal("33.34"),
         ]
+
+
+# --- Round-trip do caminho de SUCESSO: criação parcelada → fatura ---
+# Fecha o gap apontado na investigação: havia teste de atomicidade/FALHA (T-41)
+# e da absorção da última parcela (acima), mas nenhum provava a compra parcelada
+# chegando às agregações de fatura (GET /cards e GET /cards/{id}/invoices).
+#
+# Compra 26/06 num cartão que fecha dia 3 (26 > 3 → ciclo seguinte) com offset 1:
+# a 1ª parcela cai na fatura (8, 2026) — que também é a fatura ABERTA em 26/06 —
+# e as demais avançam mês a mês até (5, 2027). `hoje` fixado (T-27): só a fatura
+# aberta de GET /cards usa o relógio; a derivação das parcelas vem de data+cartão.
+HOJE_FIXO = dt.date(2026, 6, 26)
+FATURA_ABERTA = (8, 2026)
+FATURAS_ESPERADAS = [
+    (8, 2026), (9, 2026), (10, 2026), (11, 2026), (12, 2026),
+    (1, 2027), (2, 2027), (3, 2027), (4, 2027), (5, 2027),
+]
+
+
+class TestCriacaoParceladaRoundTripAteFatura:
+    def test_round_trip_criacao_parcelada_ate_fatura(self, session, users, as_user, mocker):
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = make_card(session, user_a.id)
+        client = as_user(user_a)
+
+        # POST /transactions — crédito parcelado 10x de R$ 4.500
+        resp = post_parcelada(
+            client, valor="4500.00", n=10, cartao_id=card.id,
+            data="2026-06-26", descricao="Notebook Dell", categoria="Outros",
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["parcelas_criadas"] == 10
+        assert body["parcelado"] is True
+        # A fatura da transação-pai vem das parcelas — a linha-pai não a carrega
+        assert body["fatura_mes"] is None
+        assert body["fatura_ano"] is None
+
+        # 10 parcelas, numeradas 1..10, com usuario_id/cartao_id corretos
+        parcelas = session.exec(
+            select(Parcela)
+            .where(Parcela.transacao_id == body["id"])
+            .order_by(Parcela.numero_parcela)
+        ).all()
+        assert [p.numero_parcela for p in parcelas] == list(range(1, 11))
+        assert all(p.usuario_id == user_a.id for p in parcelas)
+        assert all(p.cartao_id == card.id for p in parcelas)
+        assert all(p.total_parcelas == 10 for p in parcelas)
+
+        # Soma das parcelas == total da compra (a absorção da última com resto
+        # está coberta em TestT41.../test_sucesso_persiste_transacao_e_parcelas)
+        soma = sum((Decimal(str(p.valor_parcela)) for p in parcelas), Decimal("0.00"))
+        assert soma == Decimal("4500.00")
+
+        # fatura_mes/ano avançam mês a mês a partir da fatura derivada
+        assert [(p.fatura_mes, p.fatura_ano) for p in parcelas] == FATURAS_ESPERADAS
+
+        # GET /cards: só a parcela da fatura aberta entra no "usado"
+        (card_body,) = client.get("/cards").json()
+        assert (card_body["fatura_aberta_mes"], card_body["fatura_aberta_ano"]) == FATURA_ABERTA
+        assert Decimal(str(card_body["fatura_aberta_total"])) == Decimal("450.00")
+
+        # GET /cards/{id}/invoices: 10 faturas, uma por mês, R$ 450 cada
+        invoices = client.get(f"/cards/{card.id}/invoices").json()
+        assert len(invoices) == 10
+        assert {(f["mes"], f["ano"]) for f in invoices} == set(FATURAS_ESPERADAS)
+        assert all(Decimal(str(f["total"])) == Decimal("450.00") for f in invoices)
+        assert all(f["total_itens"] == 1 for f in invoices)
+
+        # GET /cards/{id}/invoices/{ano}/{mes}: detalhe da fatura aberta
+        mes, ano = FATURA_ABERTA
+        detalhe = client.get(f"/cards/{card.id}/invoices/{ano}/{mes}").json()
+        assert Decimal(str(detalhe["total"])) == Decimal("450.00")
+        assert len(detalhe["parcelas"]) == 1
+        assert detalhe["parcelas"][0]["numero_parcela"] == 1
+        # A transação-pai parcelada não entra como avulsa
+        assert detalhe["avulsas"] == []
+
+    def test_transacao_pai_parcelada_fatura_none_e_ignorada_nas_avulsas(
+        self, session, users, as_user, mocker
+    ):
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = make_card(session, user_a.id)
+        client = as_user(user_a)
+
+        body = post_parcelada(
+            client, valor="4500.00", n=10, cartao_id=card.id, data="2026-06-26"
+        ).json()
+
+        # A linha-pai persistida tem fatura_mes/ano None (a fatura vem das parcelas)
+        pai = session.get(Transacao, body["id"])
+        assert pai.parcelado is True
+        assert pai.fatura_mes is None
+        assert pai.fatura_ano is None
+
+        # A agregação de avulsas filtra parcelado=False → ignora a transação-pai;
+        # o total da fatura aberta vem só da parcela, sem dupla contagem.
+        mes, ano = FATURA_ABERTA
+        detalhe = client.get(f"/cards/{card.id}/invoices/{ano}/{mes}").json()
+        assert detalhe["avulsas"] == []
+        assert Decimal(str(detalhe["total"])) == Decimal("450.00")

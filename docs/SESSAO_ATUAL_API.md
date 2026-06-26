@@ -14,7 +14,8 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Batch 2 concluído (11/06/2026, commitado):** primeira suíte automatizada — 44 testes (42 pass + 2 xfail), 100% de cobertura em `services/faturas.py` e `services/parcelas.py` — ver seção "Batch 2" abaixo.
 **Batch 3a concluído (12/06/2026, commitado `c315a3a`):** validação de entrada + fechamento dos 2 xfail (T-33, T-38, T-40, T-35 parte de schema) — ver seção "Batch 3a" abaixo.
 **Batch 3b concluído (12/06/2026, commitado `124086f`):** comportamento de endpoint (T-36, T-34, T-35-endpoint, T-41, T-37, T-27 data de negócio) — ver seção "Batch 3b" abaixo. **Fecha o Batch 3 inteiro.**
-**Fase 2 cross-repo concluída (12/06/2026, aguardando commit):** `POST /ai/suggest-category` — endpoint dedicado de sugestão de categoria, stateless (raiz do FE-08; o **Web-Batch 4** do hivvo-web vai consumi-lo) — suíte com **101 testes, todos verdes** — ver seção "Fase 2" abaixo.
+**Fase 2 cross-repo concluída (12/06/2026, commitado `2fc837f`):** `POST /ai/suggest-category` — endpoint dedicado de sugestão de categoria, stateless (raiz do FE-08; o **Web-Batch 4** do hivvo-web vai consumi-lo) — suíte com **101 testes, todos verdes** — ver seção "Fase 2" abaixo.
+**Teste de regressão round-trip parcelada→fatura concluído (26/06/2026, aguardando commit):** só testes — fecha o gap de cobertura do caminho de SUCESSO da criação parcelada (havia só atomicidade/FALHA do T-41). Suíte com **103 testes, todos verdes** — ver seção "Regressão round-trip" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
 
 ---
@@ -46,6 +47,24 @@ Resolve a **raiz do FE-08** no servidor: a sugestão de categoria por IA reusava
 **Testes (`tests/routers/test_ai_router.py`, Gemini mockado, sem rede):** chamada ao suggest-category deixa `chat_messages` com **zero linhas** (logo nenhum `sessao_id` criado) e retorna a sugestão; categoria customizada aceita; resposta fora da lista → `"Outros"`; resposta com decoração normalizada; **guarda do refactor:** `/ai/chat` segue persistindo user+assistant com o `sessao_id` enviado (primeiro teste do chat — não existia).
 
 **Cross-repo:** o **Web-Batch 4** (hivvo-web) troca a chamada de sugestão de `/ai/chat` para este endpoint.
+
+---
+
+## Regressão round-trip — criação parcelada → fatura (26/06/2026)
+
+**Só testes — nenhuma mudança em código de app.** Fecha o gap de cobertura confirmado na investigação cross-repo de fatura/parcela: o backend cria e agrega parcelas corretamente, mas só existia teste de **atomicidade/FALHA** do T-41 (falha na geração não persiste nada) e da absorção da última parcela — **nenhum** provava o caminho de **SUCESSO** ponta a ponta até a fatura. (A investigação descartou regressão de T-41/T-35/T-36: as 10 parcelas do caso real tinham `usuario_id`/`cartao_id`/`fatura_mes/ano` corretos; o sintoma de "não reflete" era de cache/refetch no frontend.)
+
+**Onde:** `tests/routers/test_transactions_router.py` — nova classe `TestCriacaoParceladaRoundTripAteFatura`, reusando os helpers existentes (`make_card`, `post_parcelada`) e a fixture de TestClient + SQLite + override de `get_session`/`get_current_user`.
+
+**Cenário determinístico:** cartão fech. 3 / venc. 10 / offset 1; `hoje` fixado em 26/06/2026 via `mocker.patch("app.routers.cards.hoje", ...)` (única dependência de relógio é a fatura aberta de `GET /cards`; a derivação das parcelas vem de `data`+cartão). Compra de crédito R$ 4.500 em 10x em 26/06 → 1ª parcela na fatura **(8, 2026)** (que também é a fatura aberta), demais avançando mês a mês até **(5, 2027)**.
+
+**Asserts:**
+- **Criação:** 201; `parcelas_criadas == 10`; transação-pai com `fatura_mes/ano = None` e `parcelado=True`.
+- **10 parcelas:** `numero_parcela == 1..10`; toda parcela com `usuario_id`/`cartao_id` corretos; soma == R$ 4.500,00; `fatura_mes/ano` na sequência `(8,2026)…(5,2027)`.
+- **Agregação:** `GET /cards` → fatura aberta `(8, 2026)`, `fatura_aberta_total == 450.00` (só a parcela 1 cai na aberta); `GET /cards/{id}/invoices` → 10 faturas, uma por mês, R$ 450 cada; `GET /cards/{id}/invoices/{ano}/{mes}` da aberta → total 450,00, 1 parcela, 0 avulsas.
+- **Caso extra** (`test_transacao_pai_parcelada_fatura_none_e_ignorada_nas_avulsas`): a linha-pai parcelada tem `fatura_mes/ano = None` e a agregação de avulsas (`parcelado=False`) a ignora — sem dupla contagem.
+
+**Resultado:** `103 passed` (101 anteriores + 2 novos). A absorção da última parcela com resto segue coberta em `TestT41.../test_sucesso_persiste_transacao_e_parcelas` (100/3 → 33,33/33,33/33,34).
 
 ---
 
@@ -154,7 +173,7 @@ Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito 
 
 ## Testes — Estado Real
 
-✅ **Suíte automatizada (Batches 2, 3a, 3b e Fase 2):** `tests/` com pytest — **101 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
+✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2 e regressão round-trip):** `tests/` com pytest — **103 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários e o round-trip de criação parcelada→fatura), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
 
 | Bloco (manual E2E) | Escopo | Status |
 |---|---|---|
@@ -264,5 +283,5 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 12 de junho de 2026 — Batch 3 concluído por inteiro + Fase 2 cross-repo (`POST /ai/suggest-category`, stateless, raiz do FE-08; 101 testes verdes). Próximo: Batch 4 (config, higiene e versionamento) · Web-Batch 4 consome o novo endpoint.*
+*Última atualização: 26 de junho de 2026 — teste de regressão round-trip de criação parcelada→fatura (só testes; fecha o gap do caminho de sucesso; 103 testes verdes). Próximo: Batch 4 (config, higiene e versionamento) · Web-Batch 4 consome o novo endpoint.*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

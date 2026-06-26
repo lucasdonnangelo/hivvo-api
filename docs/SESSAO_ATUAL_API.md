@@ -10,7 +10,7 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
 **Próximo passo imediato:** **T-28 (`/api/v1`)** — passo cross-repo próprio (API + Web no mesmo sentar). Restam ainda, fora dele, os itens pós-deploy e o Batch 11 (F-09 foi adiado para lá).
-**Batch 4b concluído (26/06/2026, aguardando commit):** hardening de entrada e hashing — F-16, F-22, F-23, F-06. Suíte com **128 testes, todos verdes** — ver seção "Batch 4b" abaixo. **F-06 exige validação runtime manual** (prompts financeiros reais) antes de considerar fechado.
+**Batch 4b concluído (26/06/2026, commitado `6f5e359`):** hardening de entrada e hashing — F-16, F-22, F-23, F-06. Suíte com **128 testes, todos verdes** — ver seção "Batch 4b" abaixo. **F-06 validado em runtime e APROVADO** (nenhuma recusa de safety); observações de system prompt/contexto do Assistente surgidas na validação foram para "Itens diferidos / Backlog".
 **Batch 4a concluído (26/06/2026, commitado `c7f84bf`):** robustez de config e higiene — F-01, T-07, F-13, F-14, F-11+T-08, T-06 e separação de dependências de dev. Suíte com **113 testes, todos verdes** — ver seção "Batch 4a" abaixo.
 **Batch 1 concluído (11/06/2026, commitado):** lógica de fatura/parcela/estatísticas consolidada em `app/services/`.
 **Batch 2 concluído (11/06/2026, commitado):** primeira suíte automatizada — 44 testes (42 pass + 2 xfail), 100% de cobertura em `services/faturas.py` e `services/parcelas.py` — ver seção "Batch 2" abaixo.
@@ -103,11 +103,11 @@ F-16, F-22, F-23, F-06. **Não** inclui T-28 (cross-repo separado) nem F-09 (adi
 
 **F-23 (bcrypt rounds):** `bcrypt.gensalt()` → `bcrypt.gensalt(rounds=12)` em [core/auth.py](../app/core/auth.py) (`hash_password`). Afeta só hashes **novos**; `verify_password` lê o custo do próprio hash, então senhas antigas (qualquer custo) seguem validando.
 
-**F-06 (Gemini safety):** `_SAFETY` em `routers/ai.py` passou de `BLOCK_NONE` para `BLOCK_ONLY_HIGH` nas 4 categorias — cobre **chat e suggest-category** (ambos usam `_SAFETY` via `_gemini_generate`). Objetivo: não recusar consulta financeira legítima sem desligar a moderação por completo. **⚠️ EXIGE VALIDAÇÃO RUNTIME MANUAL:** não há teste automatizável — o revisor deve testar prompts financeiros reais antes de aprovar este item.
+**F-06 (Gemini safety):** `_SAFETY` em `routers/ai.py` passou de `BLOCK_NONE` para `BLOCK_ONLY_HIGH` nas 4 categorias — cobre **chat e suggest-category** (ambos usam `_SAFETY` via `_gemini_generate`). Objetivo: não recusar consulta financeira legítima sem desligar a moderação por completo. **✅ VALIDADO EM RUNTIME E APROVADO:** prompts financeiros reais foram respondidos, nenhuma recusa de safety. As limitações observadas na validação são de system prompt/contexto do Assistente (não do filtro) — registradas em "Itens diferidos / Backlog".
 
 **Testes novos:** `tests/routers/test_ai_router.py` (`TestChatSessaoIdValidacao`: sessao_id inválido → 422 sem chamar o Gemini; uuid válido → 200); `tests/schemas/test_transacao_schemas.py` (`TestF22MaxLengthEntrada`: descrição/categoria no limite passam, acima → 422); `tests/schemas/test_ai_schemas.py` (novo: sessao_id uuid; suggest descricao 500/501; **não-regressão T-37** — `HistoricoResponseItem` com texto de 10k chars passa e não tem `max_length` no campo `text`); `tests/test_auth_hash.py` (novo: hash novo com custo `12`; login de hash custo `10` simulado ainda valida).
 
-**Pendência aberta para o revisor:** validar F-06 em runtime (prompts financeiros reais) — único item não coberto por teste automatizado.
+**F-06 — fechado:** validado em runtime e aprovado (ver acima). Observações de system prompt/contexto que surgiram na validação estão em "Itens diferidos / Backlog".
 
 ---
 
@@ -242,6 +242,22 @@ Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito 
 
 ---
 
+## Itens diferidos / Backlog de observações
+
+> Observações para passos **FUTUROS**, fora do escopo dos batches atuais. **Não agir agora** — registradas para não se perderem.
+
+### Observado na validação runtime do F-06 (Batch 4b) — system prompt/contexto do Assistente
+
+**Contexto de fechamento do F-06:** o F-06 (`BLOCK_NONE` → `BLOCK_ONLY_HIGH`) foi **validado em runtime e está APROVADO**. Nenhuma das observações abaixo foi recusa de safety do Gemini — **todas as mensagens foram respondidas**. As limitações são do **system prompt/contexto do Assistente** (`routers/ai.py`), **não** do filtro de safety.
+
+1. **[PRODUTO / pós-launch] Escopo e tom do system prompt do Assistente.** Hoje o assistente recusa orientação financeira legítima ("como quito uma dívida?", "vale a pena pegar empréstimo pra quitar o rotativo?") devolvendo "só analiso seus dados". Para o público-alvo (alto volume parcelado, que busca orientação), é UX ruim. **Decisão de produto:** definir quão "consultor" o assistente deve ser e com quais ressalvas (não é consultor financeiro certificado). Entra na **auditoria de produto pós-launch**.
+
+2. **[BUG — investigar em batch futuro] Assistente expõe lista de categorias interna e INCOMPLETA.** Ao responder sobre gastos, a IA listou "as categorias disponíveis são Outros, Alimentação, Roupas, Saúde e Transporte" — mostrando só as categorias **com gasto no mês** e vazando estrutura interna, além de incompleta (faltam Moradia, Lazer, etc.). **Provável causa:** o contexto/prompt montado para o Gemini confunde "categorias com gasto no período" com "categorias disponíveis". Candidato a **batch de correção**; investigar a montagem do contexto em `routers/ai.py`.
+
+3. **[PRODUTO] Reconciliação "no vermelho" vs. dados.** Ao prompt "estou no vermelho e não consigo pagar as contas", a IA respondeu que o saldo está **positivo** (R$ 21.327,50) e que não dá conselho — contradizendo o usuário secamente, sem reconciliar a percepção com os dados nem acolher o conteúdo emocional. **Decisão de produto/prompt:** como lidar com descasamento entre o que o usuário relata e o que os dados mostram.
+
+---
+
 ## Testes — Estado Real
 
 ✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2, regressão round-trip, T-29, Batch 4a e 4b):** `tests/` com pytest — **128 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura — incl. F-22 e a não-regressão T-37; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários, o round-trip de criação parcelada→fatura, a ordenação estável e a validação de sessao_id; `tests/test_config.py` carregamento de Settings — F-01/T-07; `tests/test_auth_hash.py` custo bcrypt — F-23), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
@@ -354,5 +370,5 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 26 de junho de 2026 — Batch 4b: hardening de entrada e hashing (F-16 sessao_id uuid.UUID→422, F-22 max_length só em schemas de entrada, F-23 bcrypt rounds=12, F-06 BLOCK_ONLY_HIGH; 128 testes verdes). F-06 pendente de validação runtime manual. Próximo: T-28 /api/v1 (passo cross-repo, API + Web juntos); F-09 adiado para o Batch 11 · Web-Batch 4 consome o novo endpoint.*
+*Última atualização: 26 de junho de 2026 — Batch 4b: hardening de entrada e hashing (F-16 sessao_id uuid.UUID→422, F-22 max_length só em schemas de entrada, F-23 bcrypt rounds=12, F-06 BLOCK_ONLY_HIGH; 128 testes verdes). F-06 validado em runtime e aprovado; 3 observações de system prompt/contexto do Assistente registradas em "Itens diferidos / Backlog". Próximo: T-28 /api/v1 (passo cross-repo, API + Web juntos); F-09 adiado para o Batch 11 · Web-Batch 4 consome o novo endpoint.*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

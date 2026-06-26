@@ -74,3 +74,26 @@ class TestChatSeguePersistindo:
         assert [m.role for m in mensagens] == ["user", "assistant"]
         assert [m.text for m in mensagens] == ["Como estão meus gastos?", "Sua análise."]
         assert all(str(m.sessao_id) == sessao for m in mensagens)
+
+
+class TestChatSessaoIdValidacao:
+    """F-16: sessao_id é uuid.UUID no schema — malformado vira 422, não 500."""
+
+    def _chat(self, client, sessao_id):
+        return client.post(
+            "/ai/chat",
+            json={"mensagem": "oi", "mes": 6, "ano": 2026, "sessao_id": sessao_id},
+        )
+
+    def test_sessao_id_invalido_retorna_422(self, session, users, as_user, mocker):
+        # Não deve nem chegar ao Gemini — falha na validação de entrada
+        spy = mocker.patch("app.routers.ai._gemini_generate", return_value="x")
+        response = self._chat(as_user(users[0]), "nao-e-um-uuid-valido-com-36-chars-aa")
+        assert response.status_code == 422
+        spy.assert_not_called()
+
+    def test_sessao_id_uuid_valido_ok(self, session, users, as_user, mocker):
+        mocker.patch("app.routers.ai._gemini_generate", return_value="Análise.")
+        response = self._chat(as_user(users[0]), str(uuid.uuid4()))
+        assert response.status_code == 200
+        assert response.json()["resposta"] == "Análise."

@@ -2,18 +2,19 @@ import datetime as dt
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class TransacaoCreate(BaseModel):
-    tipo: str
+    # F-22: max_length generoso por campo nos campos de texto de ENTRADA
+    tipo: str = Field(..., max_length=20)
     data: dt.date
-    descricao: str
+    descricao: str = Field(..., max_length=200)
     valor: Decimal
-    categoria: str
-    forma_pagamento: str = "Débito"
-    tipo_gasto: str = "Variável"
-    origem: str = "manual"
+    categoria: str = Field(..., max_length=200)
+    forma_pagamento: str = Field("Débito", max_length=50)
+    tipo_gasto: str = Field("Variável", max_length=50)
+    origem: str = Field("manual", max_length=50)
     cartao_id: Optional[int] = None
     parcelado: bool = False
     total_parcelas: Optional[int] = None
@@ -54,13 +55,13 @@ class TransacaoCreate(BaseModel):
 class TransacaoUpdate(BaseModel):
     # fatura_mes/fatura_ano são derivados da data de vencimento — o cliente
     # não os define (T-35/F-15); a rederivação no endpoint é o Batch 3b.
-    tipo: Optional[str] = None
+    tipo: Optional[str] = Field(None, max_length=20)
     data: Optional[dt.date] = None
-    descricao: Optional[str] = None
+    descricao: Optional[str] = Field(None, max_length=200)
     valor: Optional[Decimal] = None
-    categoria: Optional[str] = None
-    forma_pagamento: Optional[str] = None
-    tipo_gasto: Optional[str] = None
+    categoria: Optional[str] = Field(None, max_length=200)
+    forma_pagamento: Optional[str] = Field(None, max_length=50)
+    tipo_gasto: Optional[str] = Field(None, max_length=50)
     cartao_id: Optional[int] = None
 
     @field_validator("valor", mode="before")

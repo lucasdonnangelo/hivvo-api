@@ -9,8 +9,9 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
-**Próximo passo imediato:** Batch 4b — **só** hardening de auth/entrada (F-09, F-16, F-22, F-23, F-06), backend-local e testável isolado. **T-28 (`/api/v1`) saiu do 4b** — virou passo cross-repo próprio, coordenado API + Web no mesmo sentar (não vai junto do 4b).
-**Batch 4a concluído (26/06/2026, aguardando commit):** robustez de config e higiene — F-01, T-07, F-13, F-14, F-11+T-08, T-06 e separação de dependências de dev. Suíte com **113 testes, todos verdes** — ver seção "Batch 4a" abaixo.
+**Próximo passo imediato:** **T-28 (`/api/v1`)** — passo cross-repo próprio (API + Web no mesmo sentar). Restam ainda, fora dele, os itens pós-deploy e o Batch 11 (F-09 foi adiado para lá).
+**Batch 4b concluído (26/06/2026, aguardando commit):** hardening de entrada e hashing — F-16, F-22, F-23, F-06. Suíte com **128 testes, todos verdes** — ver seção "Batch 4b" abaixo. **F-06 exige validação runtime manual** (prompts financeiros reais) antes de considerar fechado.
+**Batch 4a concluído (26/06/2026, commitado `c7f84bf`):** robustez de config e higiene — F-01, T-07, F-13, F-14, F-11+T-08, T-06 e separação de dependências de dev. Suíte com **113 testes, todos verdes** — ver seção "Batch 4a" abaixo.
 **Batch 1 concluído (11/06/2026, commitado):** lógica de fatura/parcela/estatísticas consolidada em `app/services/`.
 **Batch 2 concluído (11/06/2026, commitado):** primeira suíte automatizada — 44 testes (42 pass + 2 xfail), 100% de cobertura em `services/faturas.py` e `services/parcelas.py` — ver seção "Batch 2" abaixo.
 **Batch 3a concluído (12/06/2026, commitado `c315a3a`):** validação de entrada + fechamento dos 2 xfail (T-33, T-38, T-40, T-35 parte de schema) — ver seção "Batch 3a" abaixo.
@@ -83,6 +84,30 @@ Outros `order_by` não foram tocados por não listarem `Transacao`: `installment
 **Testes (`tests/routers/test_transactions_router.py`, classe `TestOrdenacaoEstavel`, reusa `as_user`/`post_transacao`):** 3 transações no mesmo dia criadas em sequência → `GET /transactions` retorna maior id primeiro; caso com datas distintas intercaladas → entre dias manda `data DESC`, dentro do dia `id DESC` (ordem esperada explícita `[b2, b1, a2, a1]`); e 3 avulsas de crédito no mesmo dia → o detalhe de fatura (`GET /cards/{id}/invoices/{ano}/{mes}`) também devolve maior id primeiro (rede do segundo ponto tocado; direção inalterada — já era `data DESC`).
 
 **Resultado:** `106 passed` (103 + 3 novos). App importa OK.
+
+---
+
+## Batch 4b — Hardening de entrada e hashing (26/06/2026)
+
+F-16, F-22, F-23, F-06. **Não** inclui T-28 (cross-repo separado) nem F-09 (adiado para o Batch 11). Suíte: **128 testes** (113 + 15 novos), todos verdes. App sobe.
+
+**F-16 (sessao_id tipado):** `ChatRequest.sessao_id` passou de `str(min/max=36)` para `uuid.UUID` ([schemas/ai.py](../app/schemas/ai.py)) — entrada malformada vira **422** automático (antes era 500 no `uuid.UUID(...)` do router). Em `routers/ai.py`, `sessao_uuid = uuid.UUID(body.sessao_id)` → `sessao_uuid = body.sessao_id` (já é UUID). O resto do fluxo já operava em `uuid.UUID` (a coluna `ChatMessage.sessao_id` já era `uuid.UUID`).
+
+**F-22 (max_length só em schemas de ENTRADA):** limites generosos e por campo, nunca um número único apertado:
+- `TransacaoCreate`/`TransacaoUpdate`: `descricao`/`categoria`=200; `forma_pagamento`/`tipo_gasto`/`origem`=50; `tipo`=20.
+- `CategoriaCreate`: `nome`=200, `icone`=50, `tipo`=20.
+- `CartaoCreate`/`CartaoUpdate`: `nome`=200, `tipo`=20.
+- `SuggestCategoryRequest.descricao`: 200 → **500**.
+- **`ChatRequest.mensagem`:** já tinha `max_length=2000` — **deixado como está**. Não existe constante de char-length em Settings (só `CHAT_CONTEXT_MESSAGES=50`, que é nº de mensagens); para não criar um segundo número conflitante, não foi promovido nem alterado. **Decisão registrada:** se quiser o 2000 em Settings, é um passo à parte.
+- **Regra dura respeitada:** `max_length` **nunca** em schema de releitura. Confirmado que nenhum schema é bidirecional (`TransacaoResponse`, `CategoriaResponse`, `CartaoResponse`, `HistoricoResponseItem`, `ChatResponse`, `SuggestCategoryResponse` são todos separados dos `*Create`/`*Update`/`*Request`) — a regra de "parar e reportar" não disparou.
+
+**F-23 (bcrypt rounds):** `bcrypt.gensalt()` → `bcrypt.gensalt(rounds=12)` em [core/auth.py](../app/core/auth.py) (`hash_password`). Afeta só hashes **novos**; `verify_password` lê o custo do próprio hash, então senhas antigas (qualquer custo) seguem validando.
+
+**F-06 (Gemini safety):** `_SAFETY` em `routers/ai.py` passou de `BLOCK_NONE` para `BLOCK_ONLY_HIGH` nas 4 categorias — cobre **chat e suggest-category** (ambos usam `_SAFETY` via `_gemini_generate`). Objetivo: não recusar consulta financeira legítima sem desligar a moderação por completo. **⚠️ EXIGE VALIDAÇÃO RUNTIME MANUAL:** não há teste automatizável — o revisor deve testar prompts financeiros reais antes de aprovar este item.
+
+**Testes novos:** `tests/routers/test_ai_router.py` (`TestChatSessaoIdValidacao`: sessao_id inválido → 422 sem chamar o Gemini; uuid válido → 200); `tests/schemas/test_transacao_schemas.py` (`TestF22MaxLengthEntrada`: descrição/categoria no limite passam, acima → 422); `tests/schemas/test_ai_schemas.py` (novo: sessao_id uuid; suggest descricao 500/501; **não-regressão T-37** — `HistoricoResponseItem` com texto de 10k chars passa e não tem `max_length` no campo `text`); `tests/test_auth_hash.py` (novo: hash novo com custo `12`; login de hash custo `10` simulado ainda valida).
+
+**Pendência aberta para o revisor:** validar F-06 em runtime (prompts financeiros reais) — único item não coberto por teste automatizado.
 
 ---
 
@@ -219,7 +244,7 @@ Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito 
 
 ## Testes — Estado Real
 
-✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2, regressão round-trip, T-29 e Batch 4a):** `tests/` com pytest — **113 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários, o round-trip de criação parcelada→fatura e a ordenação estável de transações; `tests/test_config.py` carregamento de Settings — F-01/T-07), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
+✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2, regressão round-trip, T-29, Batch 4a e 4b):** `tests/` com pytest — **128 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura — incl. F-22 e a não-regressão T-37; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários, o round-trip de criação parcelada→fatura, a ordenação estável e a validação de sessao_id; `tests/test_config.py` carregamento de Settings — F-01/T-07; `tests/test_auth_hash.py` custo bcrypt — F-23), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
 
 | Bloco (manual E2E) | Escopo | Status |
 |---|---|---|
@@ -329,5 +354,5 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 26 de junho de 2026 — Batch 4a: robustez de config e higiene (F-01 SECRET_KEY obrigatória, T-07 CORS/constantes via Settings, F-13 docs off em prod, F-14 /health público genérico (200 ok / 503 unhealthy), F-11+T-08 logs, T-06 populate_db→scripts/, requirements-dev.txt; 113 testes verdes). Próximo: Batch 4b (só F-09, F-16, F-22, F-23, F-06 — auth/entrada backend-local); T-28 /api/v1 é passo cross-repo separado (API + Web juntos) · Web-Batch 4 consome o novo endpoint.*
+*Última atualização: 26 de junho de 2026 — Batch 4b: hardening de entrada e hashing (F-16 sessao_id uuid.UUID→422, F-22 max_length só em schemas de entrada, F-23 bcrypt rounds=12, F-06 BLOCK_ONLY_HIGH; 128 testes verdes). F-06 pendente de validação runtime manual. Próximo: T-28 /api/v1 (passo cross-repo, API + Web juntos); F-09 adiado para o Batch 11 · Web-Batch 4 consome o novo endpoint.*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

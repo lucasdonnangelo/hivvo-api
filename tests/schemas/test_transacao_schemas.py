@@ -79,3 +79,30 @@ class TestT33TransacaoCreateValorMinimoPorParcela:
 
     def test_valor_normal_continua_aceito(self):
         assert make_create("1200.00", 12).valor == Decimal("1200.00")
+
+
+class TestF22MaxLengthEntrada:
+    """F-22: descrição/categoria de entrada têm teto generoso (200)."""
+
+    def _create_base(self, **over):
+        base = dict(
+            tipo="despesa", data="2026-01-15", descricao="ok",
+            valor=Decimal("10.00"), categoria="Compras",
+        )
+        base.update(over)
+        return TransacaoCreate(**base)
+
+    def test_descricao_no_limite_passa(self):
+        assert self._create_base(descricao="d" * 200).descricao == "d" * 200
+
+    def test_descricao_acima_do_limite_rejeitada(self):
+        with pytest.raises(ValidationError):
+            self._create_base(descricao="d" * 201)
+
+    def test_categoria_acima_do_limite_rejeitada(self):
+        with pytest.raises(ValidationError):
+            self._create_base(categoria="c" * 201)
+
+    def test_update_descricao_acima_do_limite_rejeitada(self):
+        with pytest.raises(ValidationError):
+            TransacaoUpdate(descricao="d" * 201)

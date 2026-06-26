@@ -39,11 +39,13 @@ _MESES = {
     5: "Maio",    6: "Junho",     7: "Julho",     8: "Agosto",
     9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro",
 }
+# F-06: BLOCK_ONLY_HIGH (não o default pleno) — não recusa consulta financeira
+# legítima, mas mantém a barreira do provedor. Exige validação runtime manual.
 _SAFETY = [
-    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT",        threshold="BLOCK_NONE"),
-    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH",        threshold="BLOCK_NONE"),
-    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT",  threshold="BLOCK_NONE"),
-    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT",  threshold="BLOCK_NONE"),
+    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT",        threshold="BLOCK_ONLY_HIGH"),
+    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH",        threshold="BLOCK_ONLY_HIGH"),
+    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT",  threshold="BLOCK_ONLY_HIGH"),
+    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT",  threshold="BLOCK_ONLY_HIGH"),
 ]
 
 
@@ -309,7 +311,7 @@ def chat(
             detail="Serviço de IA indisponível: GEMINI_API_KEY não configurada.",
         )
 
-    sessao_uuid = uuid.UUID(body.sessao_id)
+    sessao_uuid = body.sessao_id  # F-16: já é uuid.UUID (validado no schema)
 
     # Busca as últimas 50 mensagens do banco (todas as sessões) para contexto da IA
     historico_db = session.exec(

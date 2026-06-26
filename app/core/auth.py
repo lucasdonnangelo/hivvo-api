@@ -12,7 +12,9 @@ from app.core.database import get_session
 
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    # F-23: custo bcrypt explícito (12). Afeta só hashes novos — verify lê o
+    # custo do próprio hash, então senhas antigas continuam validando.
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:

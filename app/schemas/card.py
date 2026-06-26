@@ -2,12 +2,12 @@ import datetime as dt
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class CartaoCreate(BaseModel):
-    nome: str
-    tipo: str
+    nome: str = Field(..., max_length=200)  # F-22
+    tipo: str = Field(..., max_length=20)
     limite: Optional[Decimal] = None
     dia_vencimento: Optional[int] = None
     dia_fechamento: Optional[int] = None
@@ -36,8 +36,8 @@ class CartaoCreate(BaseModel):
 
 
 class CartaoUpdate(BaseModel):
-    nome: Optional[str] = None
-    tipo: Optional[str] = None
+    nome: Optional[str] = Field(None, max_length=200)  # F-22
+    tipo: Optional[str] = Field(None, max_length=20)
     limite: Optional[Decimal] = None
     dia_vencimento: Optional[int] = None
     dia_fechamento: Optional[int] = None

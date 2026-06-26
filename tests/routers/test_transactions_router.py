@@ -289,3 +289,60 @@ class TestCriacaoParceladaRoundTripAteFatura:
         detalhe = client.get(f"/cards/{card.id}/invoices/{ano}/{mes}").json()
         assert detalhe["avulsas"] == []
         assert Decimal(str(detalhe["total"])) == Decimal("450.00")
+
+
+class TestOrdenacaoEstavel:
+    """T-29 — GET /transactions ordena por data DESC, id DESC (desempate
+    determinístico). Sem o tiebreak, transações do mesmo dia saíam em ordem
+    de heap do Postgres (a criada por último não vinha no topo)."""
+
+    def test_mesmo_dia_ordena_por_id_desc(self, session, users, as_user):
+        client = as_user(users[0])
+
+        # 3 transações no MESMO dia, criadas em sequência → ids crescentes
+        ids = [
+            post_transacao(client, data="2026-06-26", descricao=f"T{i}").json()["id"]
+            for i in range(3)
+        ]
+        assert ids == sorted(ids)  # criação em ordem crescente de id
+
+        returned = [t["id"] for t in client.get("/transactions").json()]
+        # mais recente (maior id) primeiro
+        assert returned == sorted(ids, reverse=True)
+
+    def test_datas_diferentes_data_desc_depois_id_desc(self, session, users, as_user):
+        client = as_user(users[0])
+
+        # Dia mais antigo (25) e dia mais recente (26), dois lançamentos cada,
+        # criados intercalando os dias para provar que a ordem final não é só id.
+        a1 = post_transacao(client, data="2026-06-25", descricao="A1").json()["id"]
+        b1 = post_transacao(client, data="2026-06-26", descricao="B1").json()["id"]
+        a2 = post_transacao(client, data="2026-06-25", descricao="A2").json()["id"]
+        b2 = post_transacao(client, data="2026-06-26", descricao="B2").json()["id"]
+
+        returned = [t["id"] for t in client.get("/transactions").json()]
+        # Entre dias: data DESC (26 antes de 25). Dentro do dia: id DESC.
+        assert returned == [b2, b1, a2, a1]
+
+    def test_avulsas_do_detalhe_de_fatura_mesmo_dia_ordena_por_id_desc(
+        self, session, users, as_user, mocker
+    ):
+        # O detalhe de fatura também lista Transacao (avulsas) com o mesmo
+        # desempate. Direção inalterada (já era data DESC); aqui a rede garante
+        # o id DESC entre avulsas do mesmo dia na mesma fatura.
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = make_card(session, user_a.id)
+        client = as_user(user_a)
+
+        # 3 avulsas de crédito no mesmo dia → mesma fatura (8/2026), ids crescentes
+        ids = [
+            post_transacao(
+                client, data="2026-06-26", descricao=f"Av{i}", cartao_id=card.id
+            ).json()["id"]
+            for i in range(3)
+        ]
+        mes, ano = FATURA_ABERTA
+        detalhe = client.get(f"/cards/{card.id}/invoices/{ano}/{mes}").json()
+        returned = [t["id"] for t in detalhe["avulsas"]]
+        assert returned == sorted(ids, reverse=True)

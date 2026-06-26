@@ -15,7 +15,8 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Batch 3a concluído (12/06/2026, commitado `c315a3a`):** validação de entrada + fechamento dos 2 xfail (T-33, T-38, T-40, T-35 parte de schema) — ver seção "Batch 3a" abaixo.
 **Batch 3b concluído (12/06/2026, commitado `124086f`):** comportamento de endpoint (T-36, T-34, T-35-endpoint, T-41, T-37, T-27 data de negócio) — ver seção "Batch 3b" abaixo. **Fecha o Batch 3 inteiro.**
 **Fase 2 cross-repo concluída (12/06/2026, commitado `2fc837f`):** `POST /ai/suggest-category` — endpoint dedicado de sugestão de categoria, stateless (raiz do FE-08; o **Web-Batch 4** do hivvo-web vai consumi-lo) — suíte com **101 testes, todos verdes** — ver seção "Fase 2" abaixo.
-**Teste de regressão round-trip parcelada→fatura concluído (26/06/2026, aguardando commit):** só testes — fecha o gap de cobertura do caminho de SUCESSO da criação parcelada (havia só atomicidade/FALHA do T-41). Suíte com **103 testes, todos verdes** — ver seção "Regressão round-trip" abaixo.
+**Teste de regressão round-trip parcelada→fatura concluído (26/06/2026, commitado `f3565c8`):** só testes — fecha o gap de cobertura do caminho de SUCESSO da criação parcelada (havia só atomicidade/FALHA do T-41). Suíte com **103 testes, todos verdes** — ver seção "Regressão round-trip" abaixo.
+**T-29 ordenação estável de transações concluído (26/06/2026, aguardando commit):** desempate determinístico `data DESC, id DESC` em `GET /transactions` e nas avulsas do detalhe de fatura. Suíte com **106 testes, todos verdes** — ver seção "T-29" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
 
 ---
@@ -65,6 +66,22 @@ Resolve a **raiz do FE-08** no servidor: a sugestão de categoria por IA reusava
 - **Caso extra** (`test_transacao_pai_parcelada_fatura_none_e_ignorada_nas_avulsas`): a linha-pai parcelada tem `fatura_mes/ano = None` e a agregação de avulsas (`parcelado=False`) a ignora — sem dupla contagem.
 
 **Resultado:** `103 passed` (101 anteriores + 2 novos). A absorção da última parcela com resto segue coberta em `TestT41.../test_sucesso_persiste_transacao_e_parcelas` (100/3 → 33,33/33,33/33,34).
+
+---
+
+## T-29 — Ordenação estável de transações (26/06/2026)
+
+**Confirmado por investigação:** `GET /transactions` ordenava por `data DESC` **sem desempate**, e `Transacao` **não tem coluna de criação** (só `data`, granularidade de dia). Para transações do mesmo dia a ordem era heap do Postgres (não-determinística) — a criada por último não vinha no topo. O Dashboard "últimas transações" consome o mesmo endpoint, então herdava o problema.
+
+**Correção (mínima, sem migration, sem coluna nova):** desempate por `id DESC` (`id` é PK autoincremento → id maior = criada depois = topo dentro do mesmo dia). Aplicado nos **dois** pontos que listam `Transacao` ordenado por `data DESC` (varredura completa de `order_by`):
+- `routers/transactions.py` (`GET /transactions`) → `order_by(data.desc(), id.desc())`.
+- `routers/invoices.py` (avulsas do detalhe de fatura, `GET /cards/{id}/invoices/{ano}/{mes}`) → mesmo desempate, por consistência.
+
+Outros `order_by` não foram tocados por não listarem `Transacao`: `installments.py`/`invoices.py:108` ordenam `Parcela.data_vencimento`; `ai.py` ordena `ChatMessage`; `statistics.py` não ordena. **Não** se mexeu em paginação (T-12).
+
+**Testes (`tests/routers/test_transactions_router.py`, classe `TestOrdenacaoEstavel`, reusa `as_user`/`post_transacao`):** 3 transações no mesmo dia criadas em sequência → `GET /transactions` retorna maior id primeiro; caso com datas distintas intercaladas → entre dias manda `data DESC`, dentro do dia `id DESC` (ordem esperada explícita `[b2, b1, a2, a1]`); e 3 avulsas de crédito no mesmo dia → o detalhe de fatura (`GET /cards/{id}/invoices/{ano}/{mes}`) também devolve maior id primeiro (rede do segundo ponto tocado; direção inalterada — já era `data DESC`).
+
+**Resultado:** `106 passed` (103 + 3 novos). App importa OK.
 
 ---
 
@@ -173,7 +190,7 @@ Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito 
 
 ## Testes — Estado Real
 
-✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2 e regressão round-trip):** `tests/` com pytest — **103 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários e o round-trip de criação parcelada→fatura), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
+✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2, regressão round-trip e T-29):** `tests/` com pytest — **106 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários, o round-trip de criação parcelada→fatura e a ordenação estável de transações), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
 
 | Bloco (manual E2E) | Escopo | Status |
 |---|---|---|
@@ -283,5 +300,5 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 26 de junho de 2026 — teste de regressão round-trip de criação parcelada→fatura (só testes; fecha o gap do caminho de sucesso; 103 testes verdes). Próximo: Batch 4 (config, higiene e versionamento) · Web-Batch 4 consome o novo endpoint.*
+*Última atualização: 26 de junho de 2026 — T-29 ordenação estável de transações (`data DESC, id DESC` em GET /transactions e avulsas de fatura; 106 testes verdes). Próximo: Batch 4 (config, higiene e versionamento) · Web-Batch 4 consome o novo endpoint.*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

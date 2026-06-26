@@ -118,7 +118,9 @@ def get_invoice(
             Transacao.parcelado == False,
             Transacao.tipo == "despesa",
         )
-        .order_by(Transacao.data.desc())
+        # Mesmo desempate determinístico do GET /transactions (T-29): data DESC,
+        # id DESC — mesmo dia ordena pela ordem de criação (id maior no topo).
+        .order_by(Transacao.data.desc(), Transacao.id.desc())
     ).all()
 
     total = sum((p.valor_parcela for p in parcelas), Decimal("0.00")) + sum(

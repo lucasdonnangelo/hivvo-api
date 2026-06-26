@@ -52,7 +52,11 @@ def list_transactions(
     if valor_max is not None:
         stmt = stmt.where(Transacao.valor <= valor_max)
 
-    stmt = stmt.order_by(Transacao.data.desc())
+    # Desempate determinístico (T-29): mesmo dia tem 'data' idêntica e Transacao
+    # não tem coluna de criação — sem tiebreak, a ordem entre as do mesmo dia é
+    # heap do Postgres (não-determinística). id é PK autoincremento: id maior =
+    # criada depois = topo dentro do mesmo dia.
+    stmt = stmt.order_by(Transacao.data.desc(), Transacao.id.desc())
     return session.exec(stmt).all()
 
 

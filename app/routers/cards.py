@@ -31,34 +31,60 @@ def list_cards(
         .where(Cartao.usuario_id == current_user.id, Cartao.ativo == True)
         .order_by(Cartao.criado_em)
     ).all()
+    if not cards:
+        return []
 
     today = hoje()
-    result = []
-    for card in cards:
-        fatura_mes, fatura_ano, venc = _current_open_fatura(card, today)
+    abertas = {card.id: _current_open_fatura(card, today) for card in cards}
+    card_ids = [card.id for card in cards]
 
-        parcelas_total = session.exec(
-            select(func.sum(Parcela.valor_parcela)).where(
+    # T-17: 2 queries GROUP BY cartao_id cobrindo TODOS os cartões de uma vez (em
+    # vez de 2 por cartão — N+1). Cada total por cartão é depois lido da tupla da
+    # fatura aberta daquele cartão — mesmo filtro do código anterior, valor idêntico.
+    parcelas_map = {
+        (cid, mes, ano): total
+        for cid, mes, ano, total in session.exec(
+            select(
+                Parcela.cartao_id,
+                Parcela.fatura_mes,
+                Parcela.fatura_ano,
+                func.sum(Parcela.valor_parcela),
+            )
+            .where(
                 Parcela.usuario_id == current_user.id,
-                Parcela.cartao_id == card.id,
-                Parcela.fatura_mes == fatura_mes,
-                Parcela.fatura_ano == fatura_ano,
+                Parcela.cartao_id.in_(card_ids),
                 Parcela.cancelado == False,
             )
-        ).one()
+            .group_by(Parcela.cartao_id, Parcela.fatura_mes, Parcela.fatura_ano)
+        ).all()
+    }
 
-        avulsas_total = session.exec(
-            select(func.sum(Transacao.valor)).where(
+    avulsas_map = {
+        (cid, mes, ano): total
+        for cid, mes, ano, total in session.exec(
+            select(
+                Transacao.cartao_id,
+                Transacao.fatura_mes,
+                Transacao.fatura_ano,
+                func.sum(Transacao.valor),
+            )
+            .where(
                 Transacao.usuario_id == current_user.id,
-                Transacao.cartao_id == card.id,
-                Transacao.fatura_mes == fatura_mes,
-                Transacao.fatura_ano == fatura_ano,
+                Transacao.cartao_id.in_(card_ids),
                 Transacao.parcelado == False,
                 Transacao.tipo == "despesa",
             )
-        ).one()
+            .group_by(Transacao.cartao_id, Transacao.fatura_mes, Transacao.fatura_ano)
+        ).all()
+    }
+
+    result = []
+    for card in cards:
+        fatura_mes, fatura_ano, venc = abertas[card.id]
 
         total = Decimal("0.00")
+        parcelas_total = parcelas_map.get((card.id, fatura_mes, fatura_ano))
+        avulsas_total = avulsas_map.get((card.id, fatura_mes, fatura_ano))
         if parcelas_total:
             total += parcelas_total
         if avulsas_total:

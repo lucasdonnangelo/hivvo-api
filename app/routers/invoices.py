@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import case, func
 from sqlmodel import Session, select
 
 from app.core.auth import get_current_user
@@ -35,43 +36,56 @@ def list_invoices(
 ):
     card = _get_card_for_user(session, card_id, current_user.id)
 
-    parcelas = session.exec(
-        select(Parcela).where(
+    # T-17: agrega no banco (SUM/COUNT GROUP BY fatura) em vez de carregar o
+    # histórico completo e somar em Python. Comportamento idêntico ao anterior.
+    parcelas_rows = session.exec(
+        select(
+            Parcela.fatura_mes,
+            Parcela.fatura_ano,
+            func.sum(Parcela.valor_parcela),
+            func.count(Parcela.id),
+            func.sum(case((Parcela.pago == True, 1), else_=0)),  # noqa: E712
+        )
+        .where(
             Parcela.cartao_id == card_id,
             Parcela.usuario_id == current_user.id,
             Parcela.cancelado == False,
+            Parcela.fatura_mes != None,  # noqa: E711
+            Parcela.fatura_ano != None,  # noqa: E711
         )
+        .group_by(Parcela.fatura_mes, Parcela.fatura_ano)
     ).all()
 
-    avulsas = session.exec(
-        select(Transacao).where(
+    avulsas_rows = session.exec(
+        select(
+            Transacao.fatura_mes,
+            Transacao.fatura_ano,
+            func.sum(Transacao.valor),
+            func.count(Transacao.id),
+        )
+        .where(
             Transacao.cartao_id == card_id,
             Transacao.usuario_id == current_user.id,
             Transacao.parcelado == False,
             Transacao.tipo == "despesa",
-            Transacao.fatura_mes != None,
+            Transacao.fatura_mes != None,  # noqa: E711
+            Transacao.fatura_ano != None,  # noqa: E711
         )
+        .group_by(Transacao.fatura_mes, Transacao.fatura_ano)
     ).all()
 
     faturas: dict[tuple[int, int], dict] = {}
 
-    for p in parcelas:
-        if p.fatura_mes and p.fatura_ano:
-            key = (p.fatura_mes, p.fatura_ano)
-            if key not in faturas:
-                faturas[key] = {"total": Decimal("0.00"), "pagas": 0, "itens": 0}
-            faturas[key]["total"] += p.valor_parcela
-            faturas[key]["itens"] += 1
-            if p.pago:
-                faturas[key]["pagas"] += 1
+    for mes, ano, total, itens, pagas in parcelas_rows:
+        f = faturas.setdefault((mes, ano), {"total": Decimal("0.00"), "pagas": 0, "itens": 0})
+        f["total"] += total or Decimal("0.00")
+        f["itens"] += itens
+        f["pagas"] += pagas or 0
 
-    for t in avulsas:
-        if t.fatura_mes and t.fatura_ano:
-            key = (t.fatura_mes, t.fatura_ano)
-            if key not in faturas:
-                faturas[key] = {"total": Decimal("0.00"), "pagas": 0, "itens": 0}
-            faturas[key]["total"] += t.valor
-            faturas[key]["itens"] += 1
+    for mes, ano, total, itens in avulsas_rows:
+        f = faturas.setdefault((mes, ano), {"total": Decimal("0.00"), "pagas": 0, "itens": 0})
+        f["total"] += total or Decimal("0.00")
+        f["itens"] += itens
 
     return [
         FaturaListItem(

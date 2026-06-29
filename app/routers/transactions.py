@@ -33,9 +33,15 @@ def list_transactions(
     forma_pagamento: Optional[str] = Query(None),
     valor_min: Optional[Decimal] = Query(None),
     valor_max: Optional[Decimal] = Query(None),
+    limit: int = Query(100, ge=1),
+    offset: int = Query(0, ge=0),
     current_user: Usuario = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    # T-12: teto inviolável de 500 por página (clampado, não 422) — "tudo" só pelo
+    # /transactions/export. Mantém array nu; envelope {items,total} é passo futuro.
+    limit = min(limit, 500)
+
     stmt = select(Transacao).where(Transacao.usuario_id == current_user.id)
 
     # T-10: quando dá pra formar um range de datas, usa range sargável (habilita o
@@ -68,6 +74,23 @@ def list_transactions(
     # heap do Postgres (não-determinística). id é PK autoincremento: id maior =
     # criada depois = topo dentro do mesmo dia.
     stmt = stmt.order_by(Transacao.data.desc(), Transacao.id.desc())
+    stmt = stmt.offset(offset).limit(limit)
+    return session.exec(stmt).all()
+
+
+@router.get("/export", response_model=list[TransacaoResponse])
+def export_transactions(
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # T-12: caminho dedicado de backup — TODAS as transações do usuário, sem teto,
+    # mesma ordenação estável (data DESC, id DESC). Separa "exportar tudo" da
+    # listagem paginada, que tem teto de 500 inviolável.
+    stmt = (
+        select(Transacao)
+        .where(Transacao.usuario_id == current_user.id)
+        .order_by(Transacao.data.desc(), Transacao.id.desc())
+    )
     return session.exec(stmt).all()
 
 

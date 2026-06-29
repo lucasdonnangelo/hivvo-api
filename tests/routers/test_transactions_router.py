@@ -385,3 +385,55 @@ class TestT10FiltroSargavel:
         client = as_user(users[0])
         self._seed(client)
         assert self._descrs(client, "?mes=12&ano=2025") == {"dez2025"}
+
+
+class TestT12Paginacao:
+    """T-12: limit (default 100, clamp 500), offset estável e /export sem teto.
+    Mantém array nu — sem envelope {items,total}."""
+
+    def _seed(self, session, usuario_id, n):
+        # Mesma data → ordenação cai no desempate id DESC (T-29). Insere via sessão
+        # (rápido) o suficiente para passar do teto de 500.
+        for _ in range(n):
+            session.add(
+                Transacao(
+                    usuario_id=usuario_id,
+                    tipo="despesa",
+                    data=dt.date(2026, 1, 1),
+                    descricao="x",
+                    valor=Decimal("10.00"),
+                    categoria="C",
+                )
+            )
+        session.commit()
+
+    def test_default_limita_em_100(self, session, users, as_user):
+        self._seed(session, users[0].id, 501)
+        assert len(as_user(users[0]).get("/transactions").json()) == 100
+
+    def test_limit_acima_de_500_clampa(self, session, users, as_user):
+        self._seed(session, users[0].id, 501)
+        # 1000 não dá 422 — é clampado a 500
+        assert len(as_user(users[0]).get("/transactions?limit=1000").json()) == 500
+
+    def test_offset_pagina_sem_overlap_e_estavel(self, session, users, as_user):
+        self._seed(session, users[0].id, 501)
+        client = as_user(users[0])
+        page1 = [t["id"] for t in client.get("/transactions?limit=5&offset=0").json()]
+        page2 = [t["id"] for t in client.get("/transactions?limit=5&offset=5").json()]
+        assert len(page1) == 5 and len(page2) == 5
+        assert set(page1).isdisjoint(page2)  # sem overlap entre páginas
+        # data DESC, id DESC: página 1 são os maiores ids; página 2 vem logo abaixo
+        assert min(page1) > max(page2)
+        assert page1 == sorted(page1, reverse=True)
+
+    def test_offset_alem_do_fim_retorna_vazio(self, session, users, as_user):
+        self._seed(session, users[0].id, 501)
+        assert as_user(users[0]).get("/transactions?limit=10&offset=600").json() == []
+
+    def test_export_retorna_tudo_sem_teto(self, session, users, as_user):
+        self._seed(session, users[0].id, 501)
+        export = as_user(users[0]).get("/transactions/export").json()
+        assert len(export) == 501  # mais que o limite da listagem
+        ids = [t["id"] for t in export]
+        assert ids == sorted(ids, reverse=True)  # mesma ordenação estável

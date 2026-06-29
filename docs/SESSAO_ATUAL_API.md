@@ -10,6 +10,7 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
 **Próximo passo imediato:** **T-28 (`/api/v1`)** — passo cross-repo próprio (API + Web no mesmo sentar). Restam ainda, fora dele, os itens pós-deploy e o Batch 11 (F-09 foi adiado para lá).
+**Batch 6 concluído (29/06/2026, aguardando commit):** banco — índices compostos (T-09), sargabilidade (T-10), constraints (T-11), cascades (T-14). Uma migration Alembic (`e7c9a1b2d3f4`) + ajuste de 2 funções de query + guarda no `create_category`. Suíte com **166 testes, todos verdes**. **Migration NÃO rodada — comandos abaixo para o Lucas rodar em dev** — ver seção "Batch 6" abaixo.
 **Batch 5 concluído (26/06/2026, aguardando commit):** tokens e sessão — F-24, F-10, F-18/T-31. Suíte com **139 testes, todos verdes** — ver seção "Batch 5" abaixo.
 **Batch 4b concluído (26/06/2026, commitado `6f5e359`):** hardening de entrada e hashing — F-16, F-22, F-23, F-06. Suíte com **128 testes, todos verdes** — ver seção "Batch 4b" abaixo. **F-06 validado em runtime e APROVADO** (nenhuma recusa de safety); observações de system prompt/contexto do Assistente surgidas na validação foram para "Itens diferidos / Backlog".
 **Batch 4a concluído (26/06/2026, commitado `c7f84bf`):** robustez de config e higiene — F-01, T-07, F-13, F-14, F-11+T-08, T-06 e separação de dependências de dev. Suíte com **113 testes, todos verdes** — ver seção "Batch 4a" abaixo.
@@ -85,6 +86,47 @@ Outros `order_by` não foram tocados por não listarem `Transacao`: `installment
 **Testes (`tests/routers/test_transactions_router.py`, classe `TestOrdenacaoEstavel`, reusa `as_user`/`post_transacao`):** 3 transações no mesmo dia criadas em sequência → `GET /transactions` retorna maior id primeiro; caso com datas distintas intercaladas → entre dias manda `data DESC`, dentro do dia `id DESC` (ordem esperada explícita `[b2, b1, a2, a1]`); e 3 avulsas de crédito no mesmo dia → o detalhe de fatura (`GET /cards/{id}/invoices/{ano}/{mes}`) também devolve maior id primeiro (rede do segundo ponto tocado; direção inalterada — já era `data DESC`).
 
 **Resultado:** `106 passed` (103 + 3 novos). App importa OK.
+
+---
+
+## Batch 6 — Banco: índices, sargabilidade, constraints, cascades (29/06/2026)
+
+T-09, T-10, T-11, T-14. Uma migration Alembic + 2 funções de query + guarda no `create_category`. Suíte: **166 testes** (139 + 27 novos), todos verdes. App sobe. **Não** inclui T-28, pooler (Batch 7), paginação (Batch 8) nem Gemini (Batch 9).
+
+**PASSO 0 — pré-checagem read-only (antes de escrever a migration):** rodada contra o Supabase de dev via MCP. Tudo limpo (0 violações) **exceto** 1 grupo duplicado em `categorias(usuario_id, nome)`: 3 linhas "Uber Eats" do usuário 1 (1 ativa + 2 inativas, 0 transações referenciando) — subproduto esperado do **soft delete**, não dado corrompido. PASSO 0b confirmou **0 duplicatas entre ATIVAS** normalizadas por `lower(trim(nome))`. Decisão do Lucas: **índice parcial** em vez de UNIQUE puro (ver T-11 abaixo); **não limpar** as 3 linhas (não violam o índice parcial).
+
+**T-09 (índices compostos, na migration):** `ix_transacoes_usuario_data(usuario_id, data)`, `ix_transacoes_cartao_fatura(cartao_id, fatura_ano, fatura_mes)`, `ix_parcelas_cartao_fatura(cartao_id, fatura_ano, fatura_mes)`, `ix_parcelas_usuario_fatura(usuario_id, fatura_ano, fatura_mes)`, `ix_chat_messages_sessao_id(sessao_id)`.
+
+**T-10 (sargabilidade, código — comportamento idêntico):**
+- [`_buscar_mes`](../app/services/estatisticas.py): `extract(month/year)` → range `data >= date(ano,mes,1) AND data < primeiro_dia_do_próximo_mês`. Borda dez→jan: `mes==12 → date(ano+1,1,1)`. Import `extract` removido (sem uso).
+- [`list_transactions`](../app/routers/transactions.py) (`GET /transactions`): `mes`/`ano` são opcionais e independentes — reescrito preservando as mesmas linhas em todos os combos: `mes`+`ano` → range sargável; só `ano` → `[date(ano,1,1), date(ano+1,1,1))`; **só `mes`** (sem ano) → **mantém `extract("month")`** (não há range sargável para "mês em qualquer ano"); nenhum → sem filtro.
+- **Fora de escopo (não tocado):** [`yearly_stats`](../app/routers/statistics.py) também usa `extract("year")`, mas o T-10/prompt nomeia só essas 2 funções. **Observação de backlog:** poderia virar range `[date(ano,1,1), date(ano+1,1,1))` num passo futuro.
+
+**T-14 (cascades, na migration):** as 8 FKs de `usuario_id` (`cartoes`, `categorias`, `transacoes`, `parcelas`, `chat_messages`, `refresh_tokens`, `password_reset_tokens`) e `parcelas.transacao_id` recriadas (drop + add) com `ON DELETE CASCADE`. Nomes confirmados em `pg_constraint`. As FKs de `cartao_id` ficam fora (soft delete de cartão, não cascade). O delete explícito de parcelas do T-34 em `transactions.py` foi **mantido** (defesa em profundidade).
+
+**T-11 (constraints, na migration + models):**
+- **NOT NULL** em `transacoes.valor`, `parcelas.valor_parcela/taxa_juros/valor_juros` (+ `nullable=False` nos models).
+- **CHECK:** `ck_transacoes_valor_positivo (valor>0)`, `ck_transacoes_tipo_valido (tipo IN ('receita','despesa'))`, `ck_transacoes_fatura_mes_valido`, `ck_parcelas_valor_positivo`, `ck_parcelas_fatura_mes_valido`, `ck_parcelas_numero_parcela_valido (numero_parcela<=total_parcelas)`. Os CHECKs de `fatura_mes` aceitam NULL (avulsa sem cartão).
+- **UNIQUE puro:** `uq_parcelas_transacao_numero (transacao_id, numero_parcela)`.
+- **Índice parcial UNIQUE:** `uq_categorias_usuario_nome_ativa` em `(usuario_id, lower(trim(nome))) WHERE ativa=true` — a regra real dado o soft delete é "não duas categorias **ATIVAS** com o mesmo nome". Render: `CREATE UNIQUE INDEX ... ON categorias (usuario_id, lower(trim(nome))) WHERE ativa = true`.
+- **Paridade metadata↔DB:** todos os CHECKs, o UNIQUE de parcelas e o índice parcial de categorias foram declarados também em `__table_args__` nos models (mesmos nomes) — sem drift e o SQLite de teste passa a enforçá-los (viabiliza os testes T-11). WHERE do índice parcial é por dialeto (`ativa = true` Postgres / `ativa = 1` SQLite).
+
+**Guarda no [`create_category`](../app/routers/categories.py) (acompanha o índice parcial):** antes do INSERT, busca por `lower(trim(nome))` do usuário — se existe **ativa** → `409` "Já existe uma categoria ativa com esse nome"; se existe só **inativa** → **reativa a MESMA linha** (`ativa=True`, atualiza `icone`/`tipo` com os do request), não insere 2ª; senão → INSERT. `commit` envolto em `try/except IntegrityError` → `rollback` + `409` (cobre corrida concorrente; nunca 500).
+
+**Migration `e7c9a1b2d3f4` (down_revision `1046109fa1a2`):** `downgrade()` completo e reversível (exato inverso do `upgrade()` — FKs voltam a NO ACTION, índice parcial/UNIQUE/CHECKs dropados, colunas voltam a nullable, índices dropados). Validada **offline** (`--sql`, sem tocar no banco); upgrade e downgrade rendem SQL válido.
+
+**⚠️ Comandos para o Lucas rodar em DEV (não rodei a migration — nem dev nem prod):**
+```
+venv\Scripts\python.exe -m alembic upgrade head
+# para reverter:
+venv\Scripts\python.exe -m alembic downgrade -1
+```
+
+**Testes novos (27):**
+- `tests/routers/test_categories_router.py` (novo): nome novo insere; nome já ativo → 409 (não insere 2ª); recriar nome inativo → reativa a MESMA linha (id igual, 1 linha no banco); reativação atualiza icone/tipo; case/espaço tratados (`Uber Eats` == `  uber eats `) → 409; mesmo nome entre usuários distintos coexiste.
+- `tests/services/test_estatisticas.py` (novo, T-10): `_buscar_mes` retorna só o mês pedido (limites inclusivo/exclusivo); borda dez→jan não vaza; fevereiro bissexto; isolamento por usuário.
+- `tests/routers/test_transactions_router.py` (`TestT10FiltroSargavel`): 4 combos de `mes`/`ano` (+ borda dez) retornam as mesmas linhas.
+- `tests/services/test_constraints.py` (novo, T-11): via ORM no SQLite — `valor<=0`/NULL, `tipo` inválido, `fatura_mes` fora de 1..12 (transacoes e parcelas), `numero_parcela>total_parcelas`, parcela duplicada `(transacao_id,numero_parcela)` → `IntegrityError`; casos válidos passam.
 
 ---
 
@@ -287,7 +329,7 @@ Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito 
 
 ## Testes — Estado Real
 
-✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2, regressão round-trip, T-29, Batch 4a, 4b e 5):** `tests/` com pytest — **139 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura — incl. F-22 e a não-regressão T-37; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários, o round-trip de criação parcelada→fatura, a ordenação estável, a validação de sessao_id e os fluxos de token/sessão — `test_auth_tokens.py`: hashing de refresh/reset, revogação de sessões e envio robusto do e-mail; `tests/test_config.py` carregamento de Settings — F-01/T-07; `tests/test_auth_hash.py` custo bcrypt — F-23), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
+✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2, regressão round-trip, T-29, Batch 4a, 4b, 5 e 6):** `tests/` com pytest — **166 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura — incl. F-22 e a não-regressão T-37; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários, o round-trip de criação parcelada→fatura, a ordenação estável, a validação de sessao_id e os fluxos de token/sessão — `test_auth_tokens.py`: hashing de refresh/reset, revogação de sessões e envio robusto do e-mail; `tests/test_config.py` carregamento de Settings — F-01/T-07; `tests/test_auth_hash.py` custo bcrypt — F-23), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
 
 | Bloco (manual E2E) | Escopo | Status |
 |---|---|---|
@@ -397,5 +439,5 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 26 de junho de 2026 — Batch 5: tokens e sessão (F-24 hash sha256 de refresh/reset na criação E lookup — incl. logout; F-10 revogação de sessões em change/reset password; F-18/T-31 envio robusto do e-mail — commit antes do envio, try/except com log, resposta genérica, api_key na inicialização; 139 testes verdes). Sem migration, sem rehash dos tokens antigos. Próximo: T-28 /api/v1 (passo cross-repo, API + Web juntos); F-09 adiado para o Batch 11 · Web-Batch 4 consome o endpoint de sugestão.*
+*Última atualização: 29 de junho de 2026 — Batch 6: banco (T-09 índices compostos; T-10 sargabilidade em `_buscar_mes` e `GET /transactions`; T-11 NOT NULL monetário + CHECKs + UNIQUE puro de parcelas + índice parcial UNIQUE de categorias `WHERE ativa` + guarda de reativação no create_category; T-14 cascades nas FKs de usuario_id e parcelas.transacao_id). Migration `e7c9a1b2d3f4`, downgrade reversível, validada offline — NÃO rodada (Lucas roda `alembic upgrade head` em dev). 166 testes verdes. Próximo: T-28 /api/v1 (passo cross-repo, API + Web juntos); Batch 7 (pooler + papel Postgres, tem passos manuais no Supabase).*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

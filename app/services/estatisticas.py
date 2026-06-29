@@ -1,7 +1,7 @@
+import datetime as dt
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
-from sqlalchemy import extract
 from sqlmodel import Session, select
 
 from app.models.transaction import Transacao
@@ -56,10 +56,15 @@ def _categorias(transacoes: list[Transacao]) -> list[CategoriaStats]:
 
 
 def _buscar_mes(session: Session, usuario_id: int, mes: int, ano: int) -> list[Transacao]:
+    # T-10: range de datas (sargável) em vez de extract(month/year) — habilita o
+    # índice (usuario_id, data). Mesmas linhas de antes: [1º dia do mês, 1º dia do
+    # mês seguinte). Dezembro avança para janeiro do ano seguinte.
+    inicio = dt.date(ano, mes, 1)
+    fim = dt.date(ano + 1, 1, 1) if mes == 12 else dt.date(ano, mes + 1, 1)
     return session.exec(
         select(Transacao).where(
             Transacao.usuario_id == usuario_id,
-            extract("month", Transacao.data) == mes,
-            extract("year", Transacao.data) == ano,
+            Transacao.data >= inicio,
+            Transacao.data < fim,
         )
     ).all()

@@ -1,3 +1,4 @@
+import datetime as dt
 from decimal import Decimal
 from typing import Optional
 
@@ -37,10 +38,20 @@ def list_transactions(
 ):
     stmt = select(Transacao).where(Transacao.usuario_id == current_user.id)
 
-    if mes is not None:
+    # T-10: quando dá pra formar um range de datas, usa range sargável (habilita o
+    # índice (usuario_id, data)) em vez de extract(). Comportamento idêntico ao
+    # anterior em todos os combos de mes/ano (mês isolado, sem range possível por
+    # cruzar anos, mantém o extract). Dezembro avança para janeiro do ano seguinte.
+    if mes is not None and ano is not None:
+        inicio = dt.date(ano, mes, 1)
+        fim = dt.date(ano + 1, 1, 1) if mes == 12 else dt.date(ano, mes + 1, 1)
+        stmt = stmt.where(Transacao.data >= inicio, Transacao.data < fim)
+    elif ano is not None:
+        stmt = stmt.where(
+            Transacao.data >= dt.date(ano, 1, 1), Transacao.data < dt.date(ano + 1, 1, 1)
+        )
+    elif mes is not None:
         stmt = stmt.where(extract("month", Transacao.data) == mes)
-    if ano is not None:
-        stmt = stmt.where(extract("year", Transacao.data) == ano)
     if tipo:
         stmt = stmt.where(Transacao.tipo == tipo)
     if categoria:

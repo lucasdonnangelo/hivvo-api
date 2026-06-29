@@ -346,3 +346,42 @@ class TestOrdenacaoEstavel:
         detalhe = client.get(f"/cards/{card.id}/invoices/{ano}/{mes}").json()
         returned = [t["id"] for t in detalhe["avulsas"]]
         assert returned == sorted(ids, reverse=True)
+
+
+class TestT10FiltroSargavel:
+    """T-10: GET /transactions com range de datas. As mesmas linhas de antes em
+    todos os combos de mes/ano (incluindo borda dez e mes isolado entre anos)."""
+
+    def _seed(self, client):
+        post_transacao(client, data="2025-12-31", descricao="dez2025")
+        post_transacao(client, data="2026-01-15", descricao="jan2026")
+        post_transacao(client, data="2026-02-15", descricao="fev2026")
+        post_transacao(client, data="2027-01-20", descricao="jan2027")
+
+    def _descrs(self, client, query=""):
+        return {t["descricao"] for t in client.get(f"/transactions{query}").json()}
+
+    def test_mes_e_ano(self, session, users, as_user):
+        client = as_user(users[0])
+        self._seed(client)
+        assert self._descrs(client, "?mes=1&ano=2026") == {"jan2026"}
+
+    def test_so_ano(self, session, users, as_user):
+        client = as_user(users[0])
+        self._seed(client)
+        assert self._descrs(client, "?ano=2026") == {"jan2026", "fev2026"}
+
+    def test_so_mes_qualquer_ano(self, session, users, as_user):
+        client = as_user(users[0])
+        self._seed(client)
+        assert self._descrs(client, "?mes=1") == {"jan2026", "jan2027"}
+
+    def test_sem_filtro_retorna_tudo(self, session, users, as_user):
+        client = as_user(users[0])
+        self._seed(client)
+        assert len(client.get("/transactions").json()) == 4
+
+    def test_borda_dezembro(self, session, users, as_user):
+        client = as_user(users[0])
+        self._seed(client)
+        assert self._descrs(client, "?mes=12&ano=2025") == {"dez2025"}

@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # ambiente de teste para a suíte não tomar 429.
     RATE_LIMIT_ENABLED: bool = True
 
+    # T-25: Sentry OPCIONAL — setado só no deploy (ops). Sem DSN, o Sentry fica
+    # inativo (no-op), inclusive em dev.
+    SENTRY_DSN: str | None = None
+
     model_config = {"env_file": ".env"}
 
     @model_validator(mode="after")

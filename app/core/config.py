@@ -21,7 +21,15 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.5-flash"
     CHAT_SESSION_WINDOW_HOURS: int = 24
     CHAT_CONTEXT_MESSAGES: int = 50
-    GEMINI_RETRY_WAITS: list[int] = [2, 4, 6, 8, 10]
+    # T-21: nº de tentativas no caminho da request = len(GEMINI_RETRY_WAITS) + 1.
+    # Orçamento reduzido (2 tentativas) — o usuário está esperando; retry longo é
+    # para job assíncrono. GEMINI_TIMEOUT_MS: timeout do client (ms, ~30s).
+    GEMINI_RETRY_WAITS: list[int] = [2]
+    GEMINI_TIMEOUT_MS: int = 30000
+
+    # F-04: rate limiting (slowapi). Ligado por padrão (produção); desligado no
+    # ambiente de teste para a suíte não tomar 429.
+    RATE_LIMIT_ENABLED: bool = True
 
     model_config = {"env_file": ".env"}
 

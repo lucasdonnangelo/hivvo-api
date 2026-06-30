@@ -3,10 +3,13 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse as _JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from sqlmodel import Session, text
 
 from app.core.config import settings
 from app.core.database import engine
+from app.core.rate_limit import limiter
 from app.routers import auth, transactions, categories, cards, invoices, installments, statistics, ai
 
 logger = logging.getLogger(__name__)
@@ -27,6 +30,11 @@ app = FastAPI(
     openapi_url=None if _IS_PRODUCTION else "/openapi.json",
     default_response_class=UTF8JSONResponse,
 )
+
+# F-04: limiter compartilhado + handler 429. Os limites por rota ficam nos
+# decorators @limiter.limit(...) nos routers.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,

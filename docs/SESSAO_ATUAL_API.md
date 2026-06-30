@@ -10,6 +10,7 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
 **Próximo passo imediato:** **Batch 7 (pooler + papel Postgres)** — parte código (`database.py`), parte ops manual no Supabase (papel sem superuser, URL do pooler 6543, rotacionar senha). E **T-28 (`/api/v1`)** segue pendente (cross-repo, API + Web juntos).
+**Batch 9 concluído (29/06/2026, aguardando commit):** resiliência da IA + rate limiting — T-21 (timeout no client, retry reduzido a 2 tentativas, client singleton) e F-04 (slowapi: limites por IP em login/register/forgot-password, e por IP + usuário + cota diária em /ai/chat). Suíte com **178 testes, todos verdes** — ver seção "Batch 9" abaixo.
 **Batch 8 concluído (29/06/2026, aguardando commit):** queries pesadas + teto de listagem — T-17 (invoices e cards agregam no banco, sem N+1/varredura) e T-12 (limit/offset no `GET /transactions`, clamp 500; novo `GET /transactions/export`). **Sem quebrar contrato** (array nu, sem envelope). Suíte com **173 testes, todos verdes** — ver seção "Batch 8" abaixo. **Feito fora de ordem** (antes do Batch 7, a pedido) — Batch 7 não bloqueia o 8.
 **Batch 6 concluído (29/06/2026, aguardando commit):** banco — índices compostos (T-09), sargabilidade (T-10), constraints (T-11), cascades (T-14). Uma migration Alembic (`e7c9a1b2d3f4`) + ajuste de 2 funções de query + guarda no `create_category`. Suíte com **166 testes, todos verdes**. **Migration NÃO rodada — comandos abaixo para o Lucas rodar em dev** — ver seção "Batch 6" abaixo.
 **Batch 5 concluído (26/06/2026, aguardando commit):** tokens e sessão — F-24, F-10, F-18/T-31. Suíte com **139 testes, todos verdes** — ver seção "Batch 5" abaixo.
@@ -87,6 +88,31 @@ Outros `order_by` não foram tocados por não listarem `Transacao`: `installment
 **Testes (`tests/routers/test_transactions_router.py`, classe `TestOrdenacaoEstavel`, reusa `as_user`/`post_transacao`):** 3 transações no mesmo dia criadas em sequência → `GET /transactions` retorna maior id primeiro; caso com datas distintas intercaladas → entre dias manda `data DESC`, dentro do dia `id DESC` (ordem esperada explícita `[b2, b1, a2, a1]`); e 3 avulsas de crédito no mesmo dia → o detalhe de fatura (`GET /cards/{id}/invoices/{ano}/{mes}`) também devolve maior id primeiro (rede do segundo ponto tocado; direção inalterada — já era `data DESC`).
 
 **Resultado:** `106 passed` (103 + 3 novos). App importa OK.
+
+---
+
+## Batch 9 — Resiliência da IA + rate limiting (29/06/2026)
+
+T-21 + F-04. Suíte: **178 testes** (173 + 5 novos), todos verdes. App sobe. **Não** inclui logging/Sentry (Batch 10), pooler (Batch 7), T-28.
+
+**T-21 ([ai.py](../app/routers/ai.py)):**
+- **Timeout explícito:** `genai.Client(..., http_options=types.HttpOptions(timeout=settings.GEMINI_TIMEOUT_MS))` — novo `GEMINI_TIMEOUT_MS=30000` (~30s) em Settings.
+- **Orçamento de retry reduzido:** `_gemini_generate` deriva `max_attempts = len(settings.GEMINI_RETRY_WAITS) + 1` (era `range(1,6)` fixo). Default `GEMINI_RETRY_WAITS` mudou de `[2,4,6,8,10]` → `[2]` (**2 tentativas**, 1 espera) — o usuário está esperando; retry longo é para job assíncrono. Vale para **chat e suggest-category** (ambos via `_gemini_generate`).
+- **Client singleton:** `_get_client()` cria a instância **uma vez** (módulo), reusada entre requests, em vez de `genai.Client(...)` por chamada. Se `GEMINI_API_KEY` faltar → `HTTPException(503)` com mensagem clara (não AttributeError). **Não** é o fail-fast de boot (isso é T-43/Batch 10).
+- Log do retry mudou de `[chat]` para `[gemini]` (cobre os dois endpoints).
+
+**F-04 (rate limiting, slowapi):**
+- Novo [app/core/rate_limit.py](../app/core/rate_limit.py): `limiter = Limiter(key_func=get_remote_address, enabled=settings.RATE_LIMIT_ENABLED, storage_uri="memory://")` + `_user_or_ip_key` (decodifica o JWT do cookie p/ chave por usuário; fallback IP). [main.py](../main.py) registra `app.state.limiter` + handler de `RateLimitExceeded` (429).
+- Limites: `/auth/login` **10/min por IP**, `/auth/register` **5/min por IP**, `/auth/forgot-password` **5/min por IP**; `/ai/chat` **30/min por IP + 15/min por usuário + 200/dia por usuário**. Endpoints ganharam `request: Request`.
+- **Lockout por conta MANTIDO** (`tentativas_login`/`bloqueado_ate` em auth.py) — o rate limit por IP é camada **complementar**, não substituição.
+- Novo `RATE_LIMIT_ENABLED: bool = True` em Settings. **Desligado na suíte** via `os.environ.setdefault("RATE_LIMIT_ENABLED","false")` no topo do `tests/conftest.py` raiz (antes de qualquer import de `main`) — sem isso os testes que repetem login/chat tomariam 429.
+- `slowapi>=0.1.9` adicionado ao `requirements.txt` (dep de produção).
+- **⚠️ LIMITAÇÃO CONHECIDA (registrada):** o store do slowapi é em **memória do processo** — NÃO sobrevive a múltiplas instâncias. Ao escalar horizontalmente em produção, **migrar para Redis** (`storage_uri="redis://..."`) para o limite ser global entre réplicas.
+- **Refinamento futuro (registrado):** `/ai/suggest-category` dispara no blur (sensível a latência) e hoje **herda** o timeout de 30s do chat; um timeout próprio menor para suggest-category é melhoria futura — não implementado agora.
+
+**Testes novos (5):**
+- `tests/routers/test_ai_resiliencia.py` (T-21): `_get_client()` reusa a mesma instância (singleton); chave ausente → 503 com mensagem clara; retry usa `len(GEMINI_RETRY_WAITS)+1` tentativas (mock de `ServerError`, `sleep` neutralizado, sem rede).
+- `tests/routers/test_rate_limit.py` (F-04): com o limiter religado no teste, `/auth/forgot-password` dá 200 nas 5 primeiras e **429** na 6ª; e guarda confirmando que o limiter está **off por padrão** na suíte.
 
 ---
 
@@ -349,7 +375,7 @@ Landing page · Product Hunt + LinkedIn · Posthog · limites do plano gratuito 
 
 ## Testes — Estado Real
 
-✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2, regressão round-trip, T-29, Batch 4a, 4b, 5, 6 e 8):** `tests/` com pytest — **173 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura — incl. F-22 e a não-regressão T-37; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários, o round-trip de criação parcelada→fatura, a ordenação estável, a validação de sessao_id e os fluxos de token/sessão — `test_auth_tokens.py`: hashing de refresh/reset, revogação de sessões e envio robusto do e-mail; `tests/test_config.py` carregamento de Settings — F-01/T-07; `tests/test_auth_hash.py` custo bcrypt — F-23), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
+✅ **Suíte automatizada (Batches 2, 3a, 3b, Fase 2, regressão round-trip, T-29, Batch 4a, 4b, 5, 6, 8 e 9):** `tests/` com pytest — **178 testes, todos verdes, zero xfail** (`tests/services/` domínio com SQLite in-memory; `tests/schemas/` validação pydantic pura — incl. F-22 e a não-regressão T-37; `tests/routers/` endpoints via TestClient com override de auth/sessão, incluindo isolamento entre usuários, o round-trip de criação parcelada→fatura, a ordenação estável, a validação de sessao_id e os fluxos de token/sessão — `test_auth_tokens.py`: hashing de refresh/reset, revogação de sessões e envio robusto do e-mail; `tests/test_config.py` carregamento de Settings — F-01/T-07; `tests/test_auth_hash.py` custo bcrypt — F-23), 100% de cobertura nas funções de fatura/parcela (`services/faturas.py`, `services/parcelas.py`). Datas de negócio nos testes: sempre fixadas via patch em `app.core.dates.hoje` — nenhum teste depende do relógio real. Rodar com `venv\Scripts\python.exe -m pytest tests`. Os "Blocos" abaixo foram **testes manuais end-to-end**, valiosos mas não regressivos.
 
 | Bloco (manual E2E) | Escopo | Status |
 |---|---|---|
@@ -459,6 +485,7 @@ hivvo-web/src/
 
 ---
 
-*Última atualização: 29 de junho de 2026 — Batch 8: queries pesadas + teto de listagem (T-17 invoices/cards agregam no banco com GROUP BY, sem N+1/varredura, valores idênticos; T-12 limit/offset no GET /transactions com clamp 500 + novo GET /transactions/export, mantendo array nu). 173 testes verdes. Feito fora de ordem (antes do Batch 7). Próximo: Batch 7 (pooler + papel Postgres, passos manuais no Supabase) e T-28 /api/v1 (cross-repo).*
+*Última atualização: 29 de junho de 2026 — Batch 9: resiliência da IA + rate limiting (T-21 timeout no genai.Client + retry reduzido a 2 tentativas + client singleton; F-04 slowapi com limites por IP em login/register/forgot-password e por IP+usuário+cota diária em /ai/chat, lockout por conta mantido). Rate limit OFF na suíte; store em memória → migrar p/ Redis ao escalar. 178 testes verdes. Próximo: Batch 7 (pooler + papel Postgres, passos manuais no Supabase) e T-28 /api/v1 (cross-repo).*
+*Penúltima: 29 de junho de 2026 — Batch 8: queries pesadas + teto de listagem (T-17 invoices/cards agregam no banco com GROUP BY, sem N+1/varredura, valores idênticos; T-12 limit/offset no GET /transactions com clamp 500 + novo GET /transactions/export, mantendo array nu). 173 testes verdes. Feito fora de ordem (antes do Batch 7). Próximo: Batch 7 (pooler + papel Postgres, passos manuais no Supabase) e T-28 /api/v1 (cross-repo).*
 *Penúltima: 29 de junho de 2026 — Batch 6: banco (T-09 índices compostos; T-10 sargabilidade em `_buscar_mes` e `GET /transactions`; T-11 NOT NULL monetário + CHECKs + UNIQUE puro de parcelas + índice parcial UNIQUE de categorias `WHERE ativa` + guarda de reativação no create_category; T-14 cascades nas FKs de usuario_id e parcelas.transacao_id). Migration `e7c9a1b2d3f4`, downgrade reversível, validada offline — NÃO rodada (Lucas roda `alembic upgrade head` em dev). 166 testes verdes. Próximo: T-28 /api/v1 (passo cross-repo, API + Web juntos); Batch 7 (pooler + papel Postgres, tem passos manuais no Supabase).*
 *Projeto: Hivvo — gestão financeira pessoal com IA · Repositório FinanceAI original: github.com/lucasdonnangelo/financeai*

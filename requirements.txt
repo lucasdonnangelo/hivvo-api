@@ -10,4 +10,5 @@ bcrypt>=4.0.0
 httpx>=0.28.0
 google-genai>=1.0.0
 resend>=2.0.0
+slowapi>=0.1.9  # F-04: rate limiting (store em memória; migrar p/ Redis ao escalar)
 tzdata>=2024.1  # base de fusos IANA — Windows e imagens slim não têm a do sistema (dependência de PRODUÇÃO do T-27/ZoneInfo)

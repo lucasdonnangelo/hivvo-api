@@ -5,8 +5,10 @@ import uuid
 from typing import Optional
 
 import resend
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from sqlmodel import Session, select
+
+from app.core.rate_limit import limiter
 
 from app.core.auth import (
     create_access_token,
@@ -80,7 +82,13 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(body: RegisterRequest, response: Response, session: Session = Depends(get_session)):
+@limiter.limit("5/minute")  # F-04: por IP — trava criação de contas em massa
+def register(
+    body: RegisterRequest,
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
     if session.exec(select(Usuario).where(Usuario.email == body.email)).first():
         raise HTTPException(status_code=400, detail="E-mail já cadastrado")
 
@@ -103,7 +111,13 @@ def register(body: RegisterRequest, response: Response, session: Session = Depen
 
 
 @router.post("/login", response_model=UserResponse)
-def login(body: LoginRequest, response: Response, session: Session = Depends(get_session)):
+@limiter.limit("10/minute")  # F-04: por IP — complementa o lockout por conta
+def login(
+    body: LoginRequest,
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
     user = session.exec(select(Usuario).where(Usuario.email == body.email)).first()
 
     if user is None:
@@ -220,7 +234,12 @@ def change_password(
 
 
 @router.post("/forgot-password", status_code=200)
-def forgot_password(body: ForgotPasswordRequest, session: Session = Depends(get_session)):
+@limiter.limit("5/minute")  # F-04: por IP — trava enumeração/spam de e-mail
+def forgot_password(
+    body: ForgotPasswordRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
     user = session.exec(select(Usuario).where(Usuario.email == body.email)).first()
 
     if user:

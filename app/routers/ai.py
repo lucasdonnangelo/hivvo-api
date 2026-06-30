@@ -8,13 +8,14 @@ from decimal import Decimal, InvalidOperation
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import func
 from sqlmodel import Session, delete, select
 
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.database import get_session
+from app.core.rate_limit import _user_or_ip_key, limiter
 from app.models.category import CategoriaCustomizada
 from app.models.chat import ChatMessage
 from app.models.installment import Parcela
@@ -200,11 +201,37 @@ def _build_contents(historico: list[tuple[str, str]], mensagem: str) -> list[typ
     ]
 
 
+# T-21: client singleton de módulo — instância única reutilizada, com timeout
+# explícito, em vez de reconstruir a cada request.
+_client: genai.Client | None = None
+
+
+def _get_client() -> genai.Client:
+    global _client
+    if _client is None:
+        if not settings.GEMINI_API_KEY:
+            # Mensagem clara — não um AttributeError obscuro. O fail-fast completo
+            # de boot é T-43/Batch 10; aqui é só a guarda do caminho da request.
+            raise HTTPException(
+                status_code=503,
+                detail="Serviço de IA indisponível: GEMINI_API_KEY não configurada.",
+            )
+        _client = genai.Client(
+            api_key=settings.GEMINI_API_KEY,
+            http_options=types.HttpOptions(timeout=settings.GEMINI_TIMEOUT_MS),
+        )
+    return _client
+
+
 def _gemini_generate(contents: list[types.Content], system_instruction: str) -> str:
-    """Chamada síncrona ao Gemini — retry/erros idênticos ao comportamento
-    original do /ai/chat (timeout/singleton ficam para o Batch 9/T-21)."""
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
-    for attempt in range(1, 6):  # até 5 tentativas
+    """Chamada síncrona ao Gemini — client singleton com timeout (T-21).
+
+    Orçamento de retry no caminho da request: max_attempts = len(GEMINI_RETRY_WAITS)
+    + 1 (default 2 tentativas). Vale para /ai/chat E /ai/suggest-category.
+    """
+    client = _get_client()
+    max_attempts = len(settings.GEMINI_RETRY_WAITS) + 1
+    for attempt in range(1, max_attempts + 1):
         try:
             response = client.models.generate_content(
                 model=settings.GEMINI_MODEL,
@@ -223,12 +250,14 @@ def _gemini_generate(contents: list[types.Content], system_instruction: str) -> 
         except HTTPException:
             raise
         except genai_errors.ServerError as e:
-            if attempt < 5:
+            if attempt < max_attempts:
                 wait = settings.GEMINI_RETRY_WAITS[attempt - 1]
-                logger.warning("[chat] Gemini 503, tentativa %d/5 — aguardando %ds", attempt, wait)
+                logger.warning(
+                    "[gemini] 503, tentativa %d/%d — aguardando %ds", attempt, max_attempts, wait
+                )
                 time.sleep(wait)
                 continue
-            logger.exception("Gemini 503 após 5 tentativas: %s", e)
+            logger.exception("Gemini 503 após %d tentativas: %s", max_attempts, e)
             raise HTTPException(
                 status_code=503,
                 detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",
@@ -300,8 +329,14 @@ def delete_historico(
 
 
 @router.post("/chat", response_model=ChatResponse)
+# F-04: IA tem custo — limita por IP + por usuário (N/min) + cota diária por
+# usuário. Complementa, não substitui, qualquer controle de conta.
+@limiter.limit("30/minute")
+@limiter.limit("15/minute", key_func=_user_or_ip_key)
+@limiter.limit("200/day", key_func=_user_or_ip_key)
 def chat(
     body: ChatRequest,
+    request: Request,
     current_user: Usuario = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):

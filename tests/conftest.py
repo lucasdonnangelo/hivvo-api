@@ -1,8 +1,16 @@
-import pytest
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+import os
 
-import app.models  # noqa: F401 — registra todas as tabelas no metadata
+# F-04: desliga o rate limiting na suíte ANTES de qualquer import de app/main —
+# settings lê esta env na criação do limiter. Sem isso, os testes que repetem
+# chamadas (login/chat) tomariam 429 e ficariam flaky. O teste específico de
+# rate limiting religa o limiter localmente.
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
+
+import pytest  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
+
+import app.models  # noqa: F401,E402 — registra todas as tabelas no metadata
 
 
 @pytest.fixture()

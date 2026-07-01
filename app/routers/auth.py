@@ -6,7 +6,7 @@ from typing import Optional
 
 import resend
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
-from sqlmodel import Session, select
+from sqlmodel import Session, delete, select
 
 from app.core.rate_limit import limiter
 
@@ -22,11 +22,17 @@ from app.core.auth import (
 )
 from app.core.config import settings
 from app.core.database import get_session
+from app.models.card import Cartao
+from app.models.category import CategoriaCustomizada
+from app.models.chat import ChatMessage
+from app.models.installment import Parcela
 from app.models.password_reset_token import PasswordResetToken
 from app.models.refresh_token import RefreshToken
+from app.models.transaction import Transacao
 from app.models.user import Usuario
 from app.schemas.auth import (
     ChangePasswordRequest,
+    DeleteMeRequest,
     ForgotPasswordRequest,
     LoginRequest,
     RegisterRequest,
@@ -215,6 +221,48 @@ def update_me(
     session.commit()
     session.refresh(current_user)
     return UserResponse.model_validate(current_user)
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_me(
+    body: DeleteMeRequest,
+    response: Response,
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """F-07 / LGPD — exclusão total da conta do próprio usuário autenticado.
+
+    Reautenticação obrigatória (senha atual): um cookie sozinho não pode
+    deletar a conta. Apaga TODOS os dados do usuário numa ÚNICA transação
+    (tudo ou nada). A ordem dos deletes respeita as FKs entre as filhas —
+    quem aponta é apagado antes de quem é apontado (parcelas → transacoes
+    → cartoes → demais → usuário) —, correto também no Postgres real, não
+    só no SQLite. Em produção os cascades do T-14 são defesa em profundidade.
+    """
+    # Reautenticação: senha errada não apaga nada.
+    if not verify_password(body.password, current_user.senha_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Senha incorreta.")
+
+    uid = current_user.id
+
+    # Ordem respeita FKs inter-tabelas (parcelas aponta p/ transacoes e cartoes;
+    # transacoes aponta p/ cartoes). categorias/tokens/chat só apontam p/ usuarios.
+    session.exec(delete(Parcela).where(Parcela.usuario_id == uid))
+    session.exec(delete(Transacao).where(Transacao.usuario_id == uid))
+    session.exec(delete(Cartao).where(Cartao.usuario_id == uid))
+    session.exec(delete(CategoriaCustomizada).where(CategoriaCustomizada.usuario_id == uid))
+    session.exec(delete(RefreshToken).where(RefreshToken.usuario_id == uid))
+    session.exec(delete(PasswordResetToken).where(PasswordResetToken.usuario_id == uid))
+    session.exec(delete(ChatMessage).where(ChatMessage.usuario_id == uid))
+    session.delete(current_user)
+    session.commit()
+
+    # Log de auditoria SEM PII — só id + evento (o timestamp vem do formatter).
+    logger.info("conta_excluida usuario_id=%s", uid)
+
+    # Sessão do próprio usuário já cai nos deletes; limpa os cookies na resposta.
+    response.delete_cookie(_COOKIE_ACCESS)
+    response.delete_cookie(_COOKIE_REFRESH)
 
 
 @router.put("/password", status_code=204)

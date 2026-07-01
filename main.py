@@ -1,11 +1,12 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse as _JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlmodel import Session, text
 
 from app.core.config import settings
@@ -58,6 +59,26 @@ app.middleware("http")(request_log_middleware)
 # decorators @limiter.limit(...) nos routers.
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+def db_unavailable_handler(request: Request, exc: Exception) -> _JSONResponse:
+    # Fase 5: banco fora (conexão) → 503 limpo, nunca 500 cru. Tratado pelo
+    # ExceptionMiddleware, que fica DENTRO do CORSMiddleware no stack do
+    # Starlette — então a resposta volta COM os headers de CORS, e o browser
+    # não a lê como falso erro de CORS (o que mascarou o diagnóstico 2x).
+    # Erro real só no log, sem str(exc) (pode conter host/string de conexão).
+    logger.error("Falha de conexão com o banco: %s", exc.__class__.__name__)
+    return UTF8JSONResponse(
+        status_code=503,
+        content={"detail": "Serviço temporariamente indisponível"},
+    )
+
+
+# OperationalError/InterfaceError são as classes de falha de conexão do
+# SQLAlchemy. pool_pre_ping (database.py) cobre a conexão reciclada/transitória;
+# este handler cobre o banco totalmente fora (pausado, IPv6 inalcançável).
+app.add_exception_handler(OperationalError, db_unavailable_handler)
+app.add_exception_handler(InterfaceError, db_unavailable_handler)
 
 app.add_middleware(
     CORSMiddleware,

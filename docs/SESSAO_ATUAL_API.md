@@ -9,7 +9,8 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
-**Próximo passo imediato:** **Batch 7 (pooler + papel Postgres)** — parte código (`database.py`), parte ops manual no Supabase (papel sem superuser, URL do pooler 6543, rotacionar senha). E **T-28 (`/api/v1`)** segue pendente (cross-repo, API + Web juntos).
+**Próximo passo imediato:** **Batch 7 (pooler + papel Postgres)** — parte código (`database.py`), parte ops manual no Supabase (papel sem superuser, URL do pooler 6543, rotacionar senha). **T-28 (`/api/v1`) — lado API concluído (aguardando commit); falta o lado Web (mudar `VITE_API_URL`) — passo coordenado, ver abaixo.**
+**T-28 lado API concluído (01/07/2026, aguardando commit):** todos os routers de NEGÓCIO montados sob `/api/v1` (hard switch, sem dual-mount); `/health` permanece na RAIZ. Suíte com **191 testes, todos verdes** (188 + 3 do hard switch) — ver seção "T-28 (lado API)" abaixo. **⚠️ Cross-repo: NÃO deployar API e Web separados** — produção precisa subir com `/api/v1` casado dos dois lados. **Não** toca cookies/topologia (Batch 11), pooler (Batch 7) nem outros batches.
 **Batch 10 concluído (30/06/2026, aguardando commit):** observabilidade e deploy — T-25 (logging via dictConfig + Sentry opcional com scrub LGPD em 2 níveis + middleware de request-id), T-43 (lifespan + fail-fast de boot + engine.dispose), T-42 (Procfile: release `alembic upgrade head` + web uvicorn). Suíte com **188 testes, todos verdes** — ver seção "Batch 10" abaixo. **Não** toca pooler (Batch 7), T-28 nem Batch 11.
 **Batch 9 concluído (29/06/2026, aguardando commit):** resiliência da IA + rate limiting — T-21 (timeout no client, retry reduzido a 2 tentativas, client singleton) e F-04 (slowapi: limites por IP em login/register/forgot-password, e por IP + usuário + cota diária em /ai/chat). Suíte com **178 testes, todos verdes** — ver seção "Batch 9" abaixo.
 **Batch 8 concluído (29/06/2026, aguardando commit):** queries pesadas + teto de listagem — T-17 (invoices e cards agregam no banco, sem N+1/varredura) e T-12 (limit/offset no `GET /transactions`, clamp 500; novo `GET /transactions/export`). **Sem quebrar contrato** (array nu, sem envelope). Suíte com **173 testes, todos verdes** — ver seção "Batch 8" abaixo. **Feito fora de ordem** (antes do Batch 7, a pedido) — Batch 7 não bloqueia o 8.
@@ -25,6 +26,24 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Teste de regressão round-trip parcelada→fatura concluído (26/06/2026, commitado `f3565c8`):** só testes — fecha o gap de cobertura do caminho de SUCESSO da criação parcelada (havia só atomicidade/FALHA do T-41). Suíte com **103 testes, todos verdes** — ver seção "Regressão round-trip" abaixo.
 **T-29 ordenação estável de transações concluído (26/06/2026, aguardando commit):** desempate determinístico `data DESC, id DESC` em `GET /transactions` e nas avulsas do detalhe de fatura. Suíte com **106 testes, todos verdes** — ver seção "T-29" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
+
+---
+
+## T-28 (lado API) — Routers de negócio sob /api/v1, hard switch (01/07/2026)
+
+Lado **API** do T-28 (cross-repo). Suíte: **191 testes** (188 + 3 novos), todos verdes. App sobe. **Não** inclui pooler (Batch 7), cookies/topologia (Batch 11) nem outros batches.
+
+**Mount ([main.py](../main.py)):** os 8 `app.include_router(x.router)` passaram a `app.include_router(x.router, prefix="/api/v1")` — auth, transactions, categories, cards, invoices, installments, statistics, ai. Cada router mantém seu prefixo interno → `/api/v1/auth/...`, `/api/v1/transactions/...`, etc. **Hard switch:** sem dual-mount (não se serve em `/` e `/api/v1` ao mesmo tempo).
+
+**Exceção obrigatória — `/health` na RAIZ:** `@app.get("/health")` **intocado**. O health check do Railway/load balancer bate em `/health` na raiz; movê-lo quebraria o deploy em crash-loop.
+
+**CORS — sem mudança:** `allow_origins=[settings.FRONTEND_URL]` é por **origem**, não por path. Confirmado — nada a alterar. Nenhuma referência interna a path de API (o link do e-mail de reset aponta para o **frontend**, `FRONTEND_URL`, não para a API).
+
+**Testes — prefixo via `base_url` do TestClient:** em vez de reescrever ~50 strings, o prefixo entrou no `base_url` dos 3 pontos que criam TestClient para rotas de negócio — [tests/routers/conftest.py](../tests/routers/conftest.py) (fixture `as_user`, cobre transactions/cards/invoices/ai/categories/installments), [tests/routers/test_auth_tokens.py](../tests/routers/test_auth_tokens.py) (fluxos de auth) e [tests/routers/test_rate_limit.py](../tests/routers/test_rate_limit.py) (forgot-password): `TestClient(app, base_url="http://testserver/api/v1")`. O httpx concatena o path do `base_url` (com barra final imposta) ao path relativo → `client.get("/transactions")` resolve para `/api/v1/transactions`. Os paths dentro dos testes ficam legíveis e todos batem em `/api/v1`. `test_request_log.py` **não muda** — bate em `/rota-inexistente-batch10` (não é rota de negócio; testa o middleware, que roda na raiz).
+
+**Teste novo do hard switch ([tests/routers/test_api_v1_prefix.py](../tests/routers/test_api_v1_prefix.py), 3):** toda rota de negócio em `app.routes` começa com `/api/v1`; `/health` está na raiz e **não** sob `/api/v1`; `TestClient(app)` (sem prefixo) em `GET /auth/me` → **404** (raiz antiga não montada), e `GET /api/v1/auth/me` → **401** (rota existe, sem token — não 404). Utilitárias do FastAPI (`/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json`) e `/health` são exceções conhecidas na varredura.
+
+**⚠️ Coordenação cross-repo (obrigatória):** o frontend muda `VITE_API_URL` para incluir `/api/v1` em seguida (passo coordenado). **Backend e frontend de produção DEVEM subir com `/api/v1` casado — não deployar um sem o outro.**
 
 ---
 

@@ -67,14 +67,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router)
-app.include_router(transactions.router)
-app.include_router(categories.router)
-app.include_router(cards.router)
-app.include_router(invoices.router)
-app.include_router(installments.router)
-app.include_router(statistics.router)
-app.include_router(ai.router)
+# T-28: todos os routers de NEGÓCIO sob /api/v1 (hard switch — sem dual-mount).
+# /health permanece na RAIZ (health check do load balancer) — ver abaixo.
+app.include_router(auth.router, prefix="/api/v1")
+app.include_router(transactions.router, prefix="/api/v1")
+app.include_router(categories.router, prefix="/api/v1")
+app.include_router(cards.router, prefix="/api/v1")
+app.include_router(invoices.router, prefix="/api/v1")
+app.include_router(installments.router, prefix="/api/v1")
+app.include_router(statistics.router, prefix="/api/v1")
+app.include_router(ai.router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["health"])

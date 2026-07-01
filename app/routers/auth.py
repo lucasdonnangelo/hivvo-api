@@ -63,16 +63,28 @@ _MAX_TENTATIVAS = 5
 _BLOQUEIO_MINUTOS = 15
 _COOKIE_ACCESS = "access_token"
 _COOKIE_REFRESH = "refresh_token"
+_COOKIE_DOMAIN = ".hivvo.app"
+
+
+def _cookie_kwargs() -> dict:
+    # F-03: atributos de cookie condicionados por ambiente, centralizados para
+    # set e clear não divergirem (senão o browser não casa o cookie na limpeza).
+    # PRODUÇÃO: Domain=.hivvo.app (o same-site vale entre app. e api.) + Secure
+    # (HTTPS). DEV (localhost/http): sem Domain e sem Secure. SameSite=Lax +
+    # HttpOnly em ambos — Lax preserva a defesa CSRF.
+    is_prod = settings.ENVIRONMENT == "production"
+    kwargs: dict = {"httponly": True, "secure": is_prod, "samesite": "lax", "path": "/"}
+    if is_prod:
+        kwargs["domain"] = _COOKIE_DOMAIN
+    return kwargs
 
 
 def _set_auth_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key=_COOKIE_ACCESS,
         value=token,
-        httponly=True,
-        secure=settings.ENVIRONMENT == "production",
-        samesite="lax",
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        **_cookie_kwargs(),
     )
 
 
@@ -80,11 +92,16 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key=_COOKIE_REFRESH,
         value=token,
-        httponly=True,
-        secure=settings.ENVIRONMENT == "production",
-        samesite="lax",
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        **_cookie_kwargs(),
     )
+
+
+def _clear_auth_cookies(response: Response) -> None:
+    # Mesmos atributos do set (domínio/path/samesite/secure) — senão o browser
+    # não casa o cookie para removê-lo.
+    response.delete_cookie(_COOKIE_ACCESS, **_cookie_kwargs())
+    response.delete_cookie(_COOKIE_REFRESH, **_cookie_kwargs())
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -192,8 +209,7 @@ def logout(
             session.add(token_record)
             session.commit()
 
-    response.delete_cookie(_COOKIE_ACCESS)
-    response.delete_cookie(_COOKIE_REFRESH)
+    _clear_auth_cookies(response)
 
 
 @router.get("/me", response_model=UserResponse)
@@ -261,8 +277,7 @@ def delete_me(
     logger.info("conta_excluida usuario_id=%s", uid)
 
     # Sessão do próprio usuário já cai nos deletes; limpa os cookies na resposta.
-    response.delete_cookie(_COOKIE_ACCESS)
-    response.delete_cookie(_COOKIE_REFRESH)
+    _clear_auth_cookies(response)
 
 
 @router.put("/password", status_code=204)

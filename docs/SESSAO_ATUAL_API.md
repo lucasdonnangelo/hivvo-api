@@ -10,6 +10,7 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
 **Próximo passo imediato:** **Batch 7 (pooler + papel Postgres)** — parte código (`database.py`), parte ops manual no Supabase (papel sem superuser, URL do pooler 6543, rotacionar senha). **T-28 (`/api/v1`) — lado API concluído (aguardando commit); falta o lado Web (mudar `VITE_API_URL`) — passo coordenado, ver abaixo.**
+**Batch 11a concluído (01/07/2026, aguardando commit):** LGPD — exclusão de conta (F-07). `DELETE /auth/me` (sob `/api/v1`), autenticado + reautenticação por senha, apaga TODOS os dados do usuário numa transação única. Suíte com **194 testes, todos verdes** (191 + 3) — ver seção "Batch 11a" abaixo. **⚠️ Política de Privacidade precisa ser atualizada** mencionando o direito de exclusão (conteúdo, fora do código). **F-03 (cookies same-site) e F-09 (token 30min) ficam para o deploy (11b)** — são deploy-coupled. **Não** toca esses nem outros batches.
 **T-28 lado API concluído (01/07/2026, aguardando commit):** todos os routers de NEGÓCIO montados sob `/api/v1` (hard switch, sem dual-mount); `/health` permanece na RAIZ. Suíte com **191 testes, todos verdes** (188 + 3 do hard switch) — ver seção "T-28 (lado API)" abaixo. **⚠️ Cross-repo: NÃO deployar API e Web separados** — produção precisa subir com `/api/v1` casado dos dois lados. **Não** toca cookies/topologia (Batch 11), pooler (Batch 7) nem outros batches.
 **Batch 10 concluído (30/06/2026, aguardando commit):** observabilidade e deploy — T-25 (logging via dictConfig + Sentry opcional com scrub LGPD em 2 níveis + middleware de request-id), T-43 (lifespan + fail-fast de boot + engine.dispose), T-42 (Procfile: release `alembic upgrade head` + web uvicorn). Suíte com **188 testes, todos verdes** — ver seção "Batch 10" abaixo. **Não** toca pooler (Batch 7), T-28 nem Batch 11.
 **Batch 9 concluído (29/06/2026, aguardando commit):** resiliência da IA + rate limiting — T-21 (timeout no client, retry reduzido a 2 tentativas, client singleton) e F-04 (slowapi: limites por IP em login/register/forgot-password, e por IP + usuário + cota diária em /ai/chat). Suíte com **178 testes, todos verdes** — ver seção "Batch 9" abaixo.
@@ -26,6 +27,28 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Teste de regressão round-trip parcelada→fatura concluído (26/06/2026, commitado `f3565c8`):** só testes — fecha o gap de cobertura do caminho de SUCESSO da criação parcelada (havia só atomicidade/FALHA do T-41). Suíte com **103 testes, todos verdes** — ver seção "Regressão round-trip" abaixo.
 **T-29 ordenação estável de transações concluído (26/06/2026, aguardando commit):** desempate determinístico `data DESC, id DESC` em `GET /transactions` e nas avulsas do detalhe de fatura. Suíte com **106 testes, todos verdes** — ver seção "T-29" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
+
+---
+
+## Batch 11a — LGPD: exclusão de conta (F-07) (01/07/2026)
+
+Só **F-07**. **Não** inclui F-03 (cookies same-site) nem F-09 (token 30min) — esses são **deploy-coupled** e ficam para o **passo de deploy (11b)**. Suíte: **194 testes** (191 + 3 novos), todos verdes. App sobe.
+
+**Endpoint `DELETE /auth/me` ([auth.py](../app/routers/auth.py), sob `/api/v1` pelo mount do T-28), autenticado:**
+- **Reautenticação obrigatória:** recebe a senha atual no corpo (`DeleteMeRequest{password}`) e valida com `verify_password` **antes** de apagar. Senha errada → **401**, não apaga nada. Um cookie sozinho não deleta a conta.
+- **Só o próprio usuário:** opera sobre `current_user.id` — nunca aceita id de outro usuário no path/corpo.
+- **Transação única (tudo ou nada):** deletes explícitos por `usuario_id` em cada tabela filha + o usuário, num único `commit`; erro → rollback.
+- **Ordem dos deletes respeita as FKs inter-tabelas** (não só filha→`usuarios`): `parcelas` (aponta p/ `transacoes` e `cartoes`) → `transacoes` (aponta p/ `cartoes`) → `cartoes` → `categorias`/`refresh_tokens`/`password_reset_tokens`/`chat_messages` (independentes) → `usuarios`. Correto no **Postgres real** (FKs do T-14), não só no SQLite que não força FK. `categoria` em transações/parcelas é **string desnormalizada**, não FK — por isso `categorias` é independente.
+- **Decisão — deletes explícitos, não `DELETE FROM usuarios` puro:** os models declaram `foreign_key="usuarios.id"` **sem `ondelete="CASCADE"`** — o cascade do T-14 vive só no Postgres (migration), não no metadata do SQLModel; o SQLite dos testes não força FK. Deletes explícitos tornam a garantia **DB-agnóstica e provável** no teste, sem tocar nos 8 models/conftest (fora do escopo de 11a). Em produção os cascades do T-14 seguem como **defesa em profundidade**.
+- **Log de auditoria SEM PII:** `logger.info("conta_excluida usuario_id=%s", uid)` — só id + evento; o timestamp vem do formatter (Batch 10). Nunca email/nome.
+- **Limpa os cookies** (`access_token`/`refresh_token`) na resposta; o refresh do próprio usuário já cai nos deletes. Retorna **204**.
+
+**Testes (`tests/routers/test_account_deletion.py`, TestClient + SQLite, `get_current_user` trocado, base_url `/api/v1`):**
+- Usuário com senha real + 1 linha em **cada** tabela ligada (cartão, transação, parcela, categoria, refresh token, reset token, chat message); `DELETE /auth/me` com senha correta → **204** e **zero linhas** do usuário em cada uma das 7 tabelas + o próprio usuário some (varredura `_rows_do_usuario`).
+- Senha errada → **401**, nada apagado (todas as tabelas seguem com ≥1 linha).
+- Sem autenticação (sem override de `get_current_user`, sem cookie) → **401**.
+
+**⚠️ Tarefa de conteúdo (fora do código):** a **Política de Privacidade** precisa ser atualizada mencionando o direito de exclusão (LGPD art. 18).
 
 ---
 

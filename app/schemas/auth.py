@@ -52,6 +52,11 @@ class ChangePasswordRequest(BaseModel):
     nova_senha: str = Field(min_length=8)
 
 
+class DeleteMeRequest(BaseModel):
+    # F-07: reautenticação — um cookie sozinho não pode excluir a conta.
+    password: str
+
+
 class ForgotPasswordRequest(BaseModel):
     email: str
 

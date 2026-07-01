@@ -18,7 +18,8 @@ def test_forgot_password_retorna_429_ao_exceder(session):
     limiter.enabled = True
     limiter.reset()
     try:
-        client = TestClient(app)
+        # T-28: forgot-password vive sob /api/v1 — prefixo no base_url.
+        client = TestClient(app, base_url="http://testserver/api/v1")
         payload = {"email": "naoexiste@hivvo.test"}
         for _ in range(5):
             assert client.post("/auth/forgot-password", json=payload).status_code == 200

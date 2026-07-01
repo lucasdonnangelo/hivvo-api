@@ -30,7 +30,8 @@ def client(session):
     emitidos pelos próprios endpoints (register/login).
     """
     app.dependency_overrides[get_session] = lambda: session
-    c = TestClient(app)
+    # T-28: auth vive sob /api/v1 — prefixo no base_url (ver conftest de routers).
+    c = TestClient(app, base_url="http://testserver/api/v1")
     yield c
     app.dependency_overrides.clear()
 

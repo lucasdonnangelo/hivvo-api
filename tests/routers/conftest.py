@@ -39,7 +39,10 @@ def as_user(session, users):
     holder = {"user": users[0]}
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[get_current_user] = lambda: holder["user"]
-    client = TestClient(app)
+    # T-28: rotas de negócio vivem sob /api/v1 (hard switch). O prefixo no
+    # base_url faz cada chamada relativa (ex. client.get("/transactions"))
+    # resolver para /api/v1/transactions.
+    client = TestClient(app, base_url="http://testserver/api/v1")
 
     def _as(user: Usuario) -> TestClient:
         holder["user"] = user

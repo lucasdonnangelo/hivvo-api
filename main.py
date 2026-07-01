@@ -1,7 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse as _JSONResponse
 from slowapi import _rate_limit_exceeded_handler
@@ -17,6 +17,7 @@ from app.core.observability import (
     request_log_middleware,
     validate_startup_config,
 )
+from app.core.csrf import verify_origin
 from app.core.rate_limit import limiter
 from app.routers import auth, transactions, categories, cards, invoices, installments, statistics, ai
 
@@ -82,22 +83,27 @@ app.add_exception_handler(InterfaceError, db_unavailable_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL],  # T-07: dirigido por config (default Vite dev server)
+    # F-03: origem EXPLÍCITA (nunca "*" — incompatível com credentials); métodos
+    # e headers restritos ao que a API usa (JWT vai no cookie, não em header).
+    allow_origins=[settings.FRONTEND_URL],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 
 # T-28: todos os routers de NEGÓCIO sob /api/v1 (hard switch — sem dual-mount).
 # /health permanece na RAIZ (health check do load balancer) — ver abaixo.
-app.include_router(auth.router, prefix="/api/v1")
-app.include_router(transactions.router, prefix="/api/v1")
-app.include_router(categories.router, prefix="/api/v1")
-app.include_router(cards.router, prefix="/api/v1")
-app.include_router(invoices.router, prefix="/api/v1")
-app.include_router(installments.router, prefix="/api/v1")
-app.include_router(statistics.router, prefix="/api/v1")
-app.include_router(ai.router, prefix="/api/v1")
+# F-03: verify_origin (reforço CSRF) em todos os routers de negócio — só age em
+# métodos mutáveis com Origin presente e não permitido.
+_csrf = [Depends(verify_origin)]
+app.include_router(auth.router, prefix="/api/v1", dependencies=_csrf)
+app.include_router(transactions.router, prefix="/api/v1", dependencies=_csrf)
+app.include_router(categories.router, prefix="/api/v1", dependencies=_csrf)
+app.include_router(cards.router, prefix="/api/v1", dependencies=_csrf)
+app.include_router(invoices.router, prefix="/api/v1", dependencies=_csrf)
+app.include_router(installments.router, prefix="/api/v1", dependencies=_csrf)
+app.include_router(statistics.router, prefix="/api/v1", dependencies=_csrf)
+app.include_router(ai.router, prefix="/api/v1", dependencies=_csrf)
 
 
 @app.get("/health", tags=["health"])

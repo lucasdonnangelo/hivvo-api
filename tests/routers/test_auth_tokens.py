@@ -224,6 +224,23 @@ class TestEnvioRobustoDeEmail:
         send.assert_called_once()
         assert len(session.exec(select(PasswordResetToken)).all()) == 1
 
+    def test_from_vem_de_settings_email_from(self, client, session, mocker):
+        # Deploy: o remetente é parametrizável via settings.EMAIL_FROM (sandbox→domínio).
+        from app.core.config import settings
+
+        _register(client)
+        send = mocker.patch(
+            "app.routers.auth.resend.Emails.send", return_value={"id": "ok"}
+        )
+
+        resp = client.post(
+            "/auth/forgot-password", json={"email": "alice@hivvo.test"}
+        )
+        assert resp.status_code == 200
+        send.assert_called_once()
+        payload = send.call_args.args[0]
+        assert payload["from"] == settings.EMAIL_FROM
+
     def test_email_inexistente_resposta_generica_sem_token(
         self, client, session, mocker
     ):

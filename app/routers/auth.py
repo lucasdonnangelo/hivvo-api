@@ -319,7 +319,7 @@ def forgot_password(
 
         try:
             resend.Emails.send({
-                "from": "Hivvo <onboarding@resend.dev>",
+                "from": settings.EMAIL_FROM,
                 "to": [user.email],
                 "subject": "Recuperação de senha — Hivvo",
                 "html": (

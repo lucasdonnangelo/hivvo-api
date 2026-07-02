@@ -9,6 +9,7 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
+**Deploy — remetente do e-mail parametrizado (02/07/2026, aguardando commit):** novo `EMAIL_FROM` em Settings (default sandbox `Hivvo <onboarding@resend.dev>`) usado no `forgot_password` no lugar do `from` hardcoded. Único ponto de envio de e-mail (confirmado por varredura de `resend.Emails.send`). Suíte com **213 testes, todos verdes** (212 + 1) — ver seção "Deploy — remetente do e-mail" abaixo. **⚠️ PRODUÇÃO (Railway): setar `EMAIL_FROM="Hivvo <noreply@hivvo.app>"`** (domínio verificado no Resend). **Não** toca F-24/F-18/Batch 16 nem outros batches.
 **Batch 11b concluído — CÓDIGO (01/07/2026, aguardando commit):** cookies same-site + token 30min (F-03, F-09), env-conditional (dev em localhost intacto). Cookies com `Domain=.hivvo.app`/`Secure`/`SameSite=Lax` em produção (sem Domain/Secure em dev), CORS com origem explícita + métodos/headers restritos, reforço CSRF por `Origin` nos endpoints mutáveis, access token 30min (refresh segue 7 dias). Suíte com **212 testes, todos verdes** (196 + 16) — ver seção "Batch 11b" abaixo. **⚠️ F-03/F-09 só se validam DE FATO no deploy** (domínio real). **Não** toca outros batches nem papel Postgres (ops).
 **Fase 5 — resiliência de banco concluída (01/07/2026, aguardando commit):** Batch 7 (parte CÓDIGO) — `pool_pre_ping`/`pool_recycle=1800`/`pool_size=5`/`max_overflow=10` no `database.py` (pool modesto p/ o pooler) — + **exception handler global**: falha de conexão (`OperationalError`/`InterfaceError`) → **503 limpo COM headers de CORS** (não mais falso-CORS). Suíte com **196 testes, todos verdes** (194 + 2) — ver seção "Fase 5 — resiliência de banco" abaixo. **Parte OPS do Batch 7 (papel Postgres restrito, sem superuser) fica para o passo de infra.** **Não** toca 11b, T-28 nem outros batches.
 **Próximo passo imediato:** **Fase 5 — DEPLOY.** O hardening pré-deploy relevante está feito; o **T-28 (`/api/v1`) está CONCLUÍDO e verificado** (login + escrita + leitura testados sob `/api/v1`, os dois repos casados). O próximo passo **não** é mais o T-28 nem o Batch 7 formal (a troca para o pooler já foi antecipada nesta sessão — ver "Migração de conexão do banco" abaixo). Seguir a **seção "CHECKLIST DE DEPLOY (Fase 5)"** no fim deste doc. O que resta de código antes/durante o deploy: Batch 11b (F-03 cookies same-site + F-09 token 30min, deploy-coupled) e o Batch 7 formal (pool_pre_ping/recycle/size + papel Postgres restrito).
@@ -30,6 +31,19 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Teste de regressão round-trip parcelada→fatura concluído (26/06/2026, commitado `f3565c8`):** só testes — fecha o gap de cobertura do caminho de SUCESSO da criação parcelada (havia só atomicidade/FALHA do T-41). Suíte com **103 testes, todos verdes** — ver seção "Regressão round-trip" abaixo.
 **T-29 ordenação estável de transações concluído (26/06/2026, aguardando commit):** desempate determinístico `data DESC, id DESC` em `GET /transactions` e nas avulsas do detalhe de fatura. Suíte com **106 testes, todos verdes** — ver seção "T-29" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
+
+---
+
+## Deploy — remetente do e-mail parametrizado (EMAIL_FROM) (02/07/2026)
+
+O domínio `hivvo.app` foi verificado no Resend. O `forgot_password` enviava de `Hivvo <onboarding@resend.dev>` (remetente de **sandbox**), que o Resend recusa para destinatários que não sejam o dono da conta. Agora o remetente é parametrizável. Suíte: **213 testes** (212 + 1 novo), todos verdes.
+
+- **[config.py](../app/core/config.py):** novo `EMAIL_FROM: str = "Hivvo <onboarding@resend.dev>"`. O default mantém o sandbox → **dev e testes seguem funcionando sem env**.
+- **[auth.py](../app/routers/auth.py) `forgot_password`:** o `"from"` hardcoded do `resend.Emails.send` virou `settings.EMAIL_FROM`. **Nada mais tocado** neste arquivo: `hash_token` (F-24), commit-antes-do-envio + try/except (F-18) e `dt.datetime.utcnow()` (Batch 16) **intactos**.
+- **Único ponto de envio:** varredura por `resend.Emails.send` / `"from"` confirmou que **só existe este** ponto de e-mail no código.
+- **Teste (`tests/routers/test_auth_tokens.py`, `TestEnvioRobustoDeEmail`):** mocka `resend.Emails.send`, dispara `forgot-password` e afirma `payload["from"] == settings.EMAIL_FROM`. Os testes de forgot-password existentes (F-18) não mudaram (o default é o mesmo valor de antes).
+
+**⚠️ PRODUÇÃO (Railway):** setar como env var **`EMAIL_FROM="Hivvo <noreply@hivvo.app>"`** (o domínio `hivvo.app` está verificado no Resend). Sem essa env, o app usa o sandbox e o Resend recusa destinatários que não sejam o dono da conta.
 
 ---
 

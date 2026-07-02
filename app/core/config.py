@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     RESEND_API_KEY: str = ""
     FRONTEND_URL: str = "http://localhost:5173"
+    # Remetente do e-mail (Resend). Default = sandbox (dev/testes funcionam sem env).
+    # PRODUÇÃO: setar EMAIL_FROM="Hivvo <noreply@hivvo.app>" (domínio verificado).
+    EMAIL_FROM: str = "Hivvo <onboarding@resend.dev>"
 
     # T-07: parâmetros operacionais da IA promovidos para config (apenas movidos —
     # valores e comportamento idênticos ao que estava hardcoded em routers/ai.py)

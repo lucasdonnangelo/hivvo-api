@@ -399,12 +399,19 @@ class TestRecorrenciaNaProjecao:
         assert _q(rec_jul) == Decimal("10000.00")
         assert _q(rec_ago) == Decimal("12000.00")
 
-    def test_inativa_nao_aparece(self, session):
-        _add_recorrencia(session, tipo="despesa", categoria="Moradia", ativa=False)
+    def test_encerrada_passado_aparece_futuro_some(self, session):
+        # Fase 2c: encerrada = vigência FECHADA (jun/2026) + ativa=False (flag
+        # de listagem). O passado permanece na projeção; o futuro para.
+        _add_recorrencia(
+            session, tipo="despesa", categoria="Moradia", valor="2000.00",
+            mes_fim=6, ano_fim=2026, ativa=False,
+        )
 
-        lancamentos = _lancamentos_mes(session, 1, 6, 2026)
-        assert lancamentos == []
-        assert _categorias(lancamentos) == []
+        _, desp_mai = _agregar(_lancamentos_mes(session, 1, 5, 2026))
+        _, desp_jul = _agregar(_lancamentos_mes(session, 1, 7, 2026))
+        assert _q(desp_mai) == Decimal("2000.00")  # passado preservado
+        assert desp_jul == _ZERO  # nenhuma vigência cobre — futuro parou
+        assert _categorias(_lancamentos_mes(session, 1, 7, 2026)) == []
 
     def test_isolamento_por_usuario(self, session):
         _add_recorrencia(session, uid=2)

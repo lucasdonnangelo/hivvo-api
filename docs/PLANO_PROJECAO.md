@@ -188,9 +188,15 @@ distinguir visualmente na Fase 3).
   versionado. Campos do cabeçalho (descrição, categoria, dia, forma de pagamento) aplicam
   **retroativo** a todas as vigências — são metadados, não afetam o histórico financeiro (ex.:
   renomear "Salário" → "Salário CLT" não versiona).
-- Excluir. ✅ DECIDIDO: **soft delete** (`ativa = False`) — para de gerar ocorrências FUTURAS,
-  mas as ocorrências de meses PASSADOS continuam aparecendo na projeção histórica (ex.: saiu do
-  emprego → dezembro passado ainda mostra o salário recebido; o futuro para).
+- Excluir. ✅ DECIDIDO (opção A — preservar o passado): a exclusão **fecha a última vigência
+  aberta** no mês da exclusão (`mes_fim`/`ano_fim` = mês corrente, ou anterior — definir no 2c),
+  em vez de apenas `ativa = False`. Assim as ocorrências de meses PASSADOS continuam na projeção
+  histórica (o algoritmo do 2a as encontra, porque a vigência ainda cobre o passado), e as FUTURAS
+  param (nenhuma vigência cobre o futuro). O campo `ativa` pode ser marcado `False` como flag
+  adicional de "recorrência encerrada" (para a listagem não mostrá-la como ativa), MAS a
+  preservação do passado vem do fechamento da vigência, NÃO do `ativa`. (Resolve a tensão
+  registrada no 2a: `ativa=False → None sempre` continua válido no algoritmo; a exclusão não
+  depende dele para preservar o passado.)
 - Listar recorrências ativas do usuário.
 
 **✅ DECIDIDO — recorrência NÃO passa por cartão/fatura:** recorrências são sempre à vista /

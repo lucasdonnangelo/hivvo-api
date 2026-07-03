@@ -9,6 +9,7 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
+**Fase 1 (projeção) — estatísticas por competência de fatura (02/07/2026, aguardando commit):** resolve o **T-39** (visão FLUXO). `getMonthlyStats` (`/statistics/monthly` + `/categories`), **`yearly_stats` (`/statistics/yearly`)** e o contexto da IA passam a agregar por **competência de fatura**, somando 3 fontes sem dupla contagem: parcelas por `fatura_mes/ano`, avulsas de cartão faturadas, e à vista/receitas por `data`. A transação-pai parcelada **deixa de somar** o valor cheio — mês da compra mostra a parcela daquele mês, meses futuros deixam de ser zero. O gráfico "Evolução mensal" (anual) fica **coerente com o card mensal** (adendo). Suíte: **221 testes, todos verdes** (213 + 8). **Shape das respostas inalterado — só os números mudam.** **Não** inclui recorrência (Fase 2), toggle consumo (Fase 3), otimização SUM/GROUP BY, nem remoção do campo `pago`. Ver seção "Fase 1 (projeção)" abaixo.
 **Deploy — remetente do e-mail parametrizado (02/07/2026, aguardando commit):** novo `EMAIL_FROM` em Settings (default sandbox `Hivvo <onboarding@resend.dev>`) usado no `forgot_password` no lugar do `from` hardcoded. Único ponto de envio de e-mail (confirmado por varredura de `resend.Emails.send`). Suíte com **213 testes, todos verdes** (212 + 1) — ver seção "Deploy — remetente do e-mail" abaixo. **⚠️ PRODUÇÃO (Railway): setar `EMAIL_FROM="Hivvo <noreply@hivvo.app>"`** (domínio verificado no Resend). **Não** toca F-24/F-18/Batch 16 nem outros batches.
 **Batch 11b concluído — CÓDIGO (01/07/2026, aguardando commit):** cookies same-site + token 30min (F-03, F-09), env-conditional (dev em localhost intacto). Cookies com `Domain=.hivvo.app`/`Secure`/`SameSite=Lax` em produção (sem Domain/Secure em dev), CORS com origem explícita + métodos/headers restritos, reforço CSRF por `Origin` nos endpoints mutáveis, access token 30min (refresh segue 7 dias). Suíte com **212 testes, todos verdes** (196 + 16) — ver seção "Batch 11b" abaixo. **⚠️ F-03/F-09 só se validam DE FATO no deploy** (domínio real). **Não** toca outros batches nem papel Postgres (ops).
 **Fase 5 — resiliência de banco concluída (01/07/2026, aguardando commit):** Batch 7 (parte CÓDIGO) — `pool_pre_ping`/`pool_recycle=1800`/`pool_size=5`/`max_overflow=10` no `database.py` (pool modesto p/ o pooler) — + **exception handler global**: falha de conexão (`OperationalError`/`InterfaceError`) → **503 limpo COM headers de CORS** (não mais falso-CORS). Suíte com **196 testes, todos verdes** (194 + 2) — ver seção "Fase 5 — resiliência de banco" abaixo. **Parte OPS do Batch 7 (papel Postgres restrito, sem superuser) fica para o passo de infra.** **Não** toca 11b, T-28 nem outros batches.
@@ -31,6 +32,37 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Teste de regressão round-trip parcelada→fatura concluído (26/06/2026, commitado `f3565c8`):** só testes — fecha o gap de cobertura do caminho de SUCESSO da criação parcelada (havia só atomicidade/FALHA do T-41). Suíte com **103 testes, todos verdes** — ver seção "Regressão round-trip" abaixo.
 **T-29 ordenação estável de transações concluído (26/06/2026, aguardando commit):** desempate determinístico `data DESC, id DESC` em `GET /transactions` e nas avulsas do detalhe de fatura. Suíte com **106 testes, todos verdes** — ver seção "T-29" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
+
+---
+
+## Fase 1 (projeção) — Estatísticas por competência de fatura (T-39) (02/07/2026)
+
+Implementa a **Fase 1** do `docs/PLANO_PROJECAO.md` (visão FLUXO). Antes, `_buscar_mes` somava **só** `transacoes` pela `data` da compra, ignorando `parcelas` e as colunas `fatura_mes/fatura_ano` — por isso mês futuro = zero e mês da compra parcelada = inflado (valor cheio). Agora as estatísticas mensais, **o anual** e o contexto da IA agregam por **competência de fatura**. Suíte: **221 testes** (213 + 8), todos verdes. **Shape das respostas inalterado — só os números mudam.**
+
+**[estatisticas.py](../app/services/estatisticas.py) — novo núcleo de fluxo:**
+- Novo dataclass `LancamentoFluxo(tipo, valor, categoria)` — normaliza as 3 fontes num objeto que `_agregar`/`_categorias` já somam por duck typing. Type hint de `_agregar`/`_categorias` relaxado para `Union[Transacao, LancamentoFluxo]` (yearly ainda passa `Transacao`).
+- `_buscar_mes` **intacto** (segue retornando `Transacao` por `data`, sargável — T-10 verde) e reusado como **Fonte 3**.
+- `_parcelas_competencia(session, uid, mes, ano)`: parcelas com `fatura_mes/ano==(mes,ano)`, `cancelado==False` — **NÃO olha `pago`** (PLANO §1.3).
+- `_avulsas_cartao_competencia(...)`: `Transacao` `parcelado==False`, `tipo=='despesa'`, faturadas em `(mes,ano)` — espelha o filtro de avulsas de `invoices.py`.
+- `_lancamentos_mes(...)`: une **Fonte 3** (`_buscar_mes` filtrando só `not parcelado and fatura_mes is None`) + **Fonte 1** (parcelas) + **Fonte 2** (avulsas faturadas). **Anti-dupla-contagem (§2.1):** a pai parcelada (`parcelado=True`, `fatura_mes=None`) e a avulsa já faturada são puladas na Fonte 3 — quem soma são as parcelas/avulsa na sua competência.
+
+**Consumidores trocados de `_buscar_mes` → `_lancamentos_mes`:**
+- **[statistics.py](../app/routers/statistics.py):** `monthly_stats` (mês atual + anterior) e `categories_stats`. `MensalResponse`/`CategoriasResponse` inalterados.
+- **[ai.py](../app/routers/ai.py):** `chat` (contexto + `num_transacoes` agora conta lançamentos de fluxo), `_variacao_saldo_pct`, `_build_historico_anual`. `_total_parcelas_proximo_mes` passou a usar `_parcelas_competencia` (deriva de competência, **removido o filtro `pago==False`**; campo `pago` **não** removido — vira código morto, cleanup posterior). Import de `Parcela` (agora sem uso) removido de ai.py.
+
+**Testes ([tests/services/test_estatisticas.py](../tests/services/test_estatisticas.py), classe `TestFluxoPorCompetencia`, 6 novos):**
+- **Invariante (§7):** R$1200 em 12x → soma das despesas de fluxo nos 12 meses de competência == R$1200 (fluxo distribui, não perde/cria dinheiro).
+- Mês da compra parcelada → parcela daquele mês (R$100), **não** o valor cheio.
+- Mês futuro com parcela agendada → valor da parcela (não zero).
+- Avulsa de crédito (compra jan, fatura fev) → conta em **fev** (competência), zero em jan (data).
+- À vista + receita (sem cartão) → contam por `data`.
+- `_total_parcelas_proximo_mes` conta parcela `pago=True` que vence no próximo mês e **ignora** `cancelado` (prova o desacoplamento de `pago`).
+- **Rede preservada:** as 4 classes T-10 de `_buscar_mes` e os testes de fatura/round-trip/invoices/isolamento (Batch 8) seguem verdes — só os NÚMEROS das estatísticas mudaram, valores de fatura não.
+
+**Adendo — `yearly_stats` estendido para FLUXO (mesmo commit):** o gráfico "Evolução mensal" (`/statistics/yearly`) agregava por `data.month` (consumo), fazendo o card "Saldo do mês" (fluxo) discordar do gráfico na MESMA tela. Agora agrega por **competência**, coerente com o mensal.
+- **Novo `_lancamentos_ano(session, uid, ano) → dict[int, list[LancamentoFluxo]]`** em estatisticas.py: mesma semântica das 3 fontes / anti-dupla-contagem, escopada ao ano e resolvida em **3 queries** (uma por fonte) agrupadas por mês em Python — **preserva a ausência de N+1** do yearly (não virou 12× `_lancamentos_mes`). Fonte 1/2 filtram por `fatura_ano==ano` (bucket por `fatura_mes`); Fonte 3 por `data` no ano (bucket por `data.month`). Compra que atravessa anos distribui as parcelas por competência entre os anos.
+- **[statistics.py](../app/routers/statistics.py) `yearly_stats`** monta `meses` a partir de `_lancamentos_ano`. `AnualResponse`/`MesEvolucao` **inalterados**. Imports órfãos removidos (`extract`, `select`, `Transacao`).
+- **Testes (`TestFluxoAnual`, 2):** coerência card×gráfico — para cada mês do ano, `_agregar(_lancamentos_ano[m]) == _agregar(_lancamentos_mes(m))` (prova que não discordam mais); compra R$1200/12x começando ago/2026 distribui R$500 em 2026 + R$700 em 2027 == valor cheio (invariante atravessando anos).
 
 ---
 

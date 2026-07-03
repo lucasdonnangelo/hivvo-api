@@ -1,13 +1,36 @@
 import datetime as dt
+from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Optional
+from typing import Optional, Union
 
 from sqlmodel import Session, select
 
+from app.models.installment import Parcela
 from app.models.transaction import Transacao
 from app.schemas.statistics import CategoriaStats
 
 _ZERO = Decimal("0.00")
+
+
+@dataclass(frozen=True)
+class LancamentoFluxo:
+    """Lançamento normalizado da visão FLUXO (a pagar por competência de fatura).
+
+    Unifica as três fontes de :func:`_lancamentos_mes` (parcelas, avulsas de
+    cartão faturadas e transações à vista/receitas) num objeto simples com os
+    campos que ``_agregar``/``_categorias`` consomem — sem expor se veio de uma
+    Parcela ou de uma Transacao.
+    """
+
+    tipo: str
+    valor: Decimal
+    categoria: str
+
+
+# _agregar/_categorias operam por duck typing em .tipo/.valor/.categoria — servem
+# tanto LancamentoFluxo (fluxo mensal por competência) quanto Transacao cru
+# (ainda usado por yearly_stats, que agrega por data da compra).
+_Somavel = Union[Transacao, LancamentoFluxo]
 
 
 def _variacao(atual: Decimal, anterior: Decimal) -> Optional[Decimal]:
@@ -23,16 +46,16 @@ def _variacao(atual: Decimal, anterior: Decimal) -> Optional[Decimal]:
     )
 
 
-def _agregar(transacoes: list[Transacao]) -> tuple[Decimal, Decimal]:
-    """Retorna (receitas, despesas) para uma lista de transações."""
-    receitas = sum((t.valor for t in transacoes if t.tipo == "receita"), _ZERO)
-    despesas = sum((t.valor for t in transacoes if t.tipo == "despesa"), _ZERO)
+def _agregar(itens: list[_Somavel]) -> tuple[Decimal, Decimal]:
+    """Retorna (receitas, despesas) para uma lista de lançamentos."""
+    receitas = sum((t.valor for t in itens if t.tipo == "receita"), _ZERO)
+    despesas = sum((t.valor for t in itens if t.tipo == "despesa"), _ZERO)
     return receitas, despesas
 
 
-def _categorias(transacoes: list[Transacao]) -> list[CategoriaStats]:
+def _categorias(itens: list[_Somavel]) -> list[CategoriaStats]:
     """Agrupa despesas por categoria com percentual do total."""
-    despesas = [t for t in transacoes if t.tipo == "despesa"]
+    despesas = [t for t in itens if t.tipo == "despesa"]
     total = sum((t.valor for t in despesas), _ZERO)
     if not total:
         return []
@@ -68,3 +91,133 @@ def _buscar_mes(session: Session, usuario_id: int, mes: int, ano: int) -> list[T
             Transacao.data < fim,
         )
     ).all()
+
+
+def _parcelas_competencia(
+    session: Session, usuario_id: int, mes: int, ano: int
+) -> list[Parcela]:
+    """Parcelas cuja fatura vence na competência (mes, ano).
+
+    Competência = fatura_mes/fatura_ano (materializados por VENCIMENTO). NÃO
+    depende do campo `pago` (PLANO_PROJECAO §1.3: pago deixou de ser fonte de
+    verdade) — só `cancelado`.
+    """
+    return session.exec(
+        select(Parcela).where(
+            Parcela.usuario_id == usuario_id,
+            Parcela.fatura_mes == mes,
+            Parcela.fatura_ano == ano,
+            Parcela.cancelado == False,  # noqa: E712
+        )
+    ).all()
+
+
+def _avulsas_cartao_competencia(
+    session: Session, usuario_id: int, mes: int, ano: int
+) -> list[Transacao]:
+    """Despesas avulsas de cartão (não parceladas) faturadas na competência.
+
+    Mesmo filtro das avulsas em invoices.py: parcelado=False, tipo='despesa',
+    faturadas em (mes, ano) pela data de vencimento da compra.
+    """
+    return session.exec(
+        select(Transacao).where(
+            Transacao.usuario_id == usuario_id,
+            Transacao.parcelado == False,  # noqa: E712
+            Transacao.tipo == "despesa",
+            Transacao.fatura_mes == mes,
+            Transacao.fatura_ano == ano,
+        )
+    ).all()
+
+
+def _lancamentos_mes(
+    session: Session, usuario_id: int, mes: int, ano: int
+) -> list[LancamentoFluxo]:
+    """Lançamentos da visão FLUXO ("a pagar neste mês") por competência de fatura.
+
+    Une três fontes SEM dupla contagem (PLANO_PROJECAO §2), corrigindo o T-39:
+      1. Parcelas com fatura em (mes, ano) — soma valor_parcela.
+      2. Transações avulsas de cartão faturadas em (mes, ano).
+      3. Transações à vista e receitas (não faturadas, não parceladas) por `data`.
+
+    Anti-dupla-contagem (§2.1): a transação-PAI de uma compra parcelada
+    (parcelado=True, fatura_mes=None) e a avulsa já faturada NÃO somam na Fonte 3
+    — quem soma são as parcelas (Fonte 1) e a avulsa na sua competência (Fonte 2).
+    Resultado: o mês da compra deixa de mostrar o valor cheio (mostra a parcela
+    daquele mês) e meses futuros deixam de ser zero.
+    """
+    lancamentos: list[LancamentoFluxo] = []
+
+    # Fonte 3: à vista + receitas — não faturadas e não parceladas, pela data.
+    for t in _buscar_mes(session, usuario_id, mes, ano):
+        if t.parcelado or t.fatura_mes is not None:
+            continue  # pai parcelada → Fonte 1; avulsa faturada → Fonte 2
+        lancamentos.append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
+
+    # Fonte 1: parcelas na competência.
+    for p in _parcelas_competencia(session, usuario_id, mes, ano):
+        lancamentos.append(LancamentoFluxo("despesa", p.valor_parcela, p.categoria))
+
+    # Fonte 2: avulsas de cartão faturadas na competência.
+    for t in _avulsas_cartao_competencia(session, usuario_id, mes, ano):
+        lancamentos.append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
+
+    return lancamentos
+
+
+def _lancamentos_ano(
+    session: Session, usuario_id: int, ano: int
+) -> dict[int, list[LancamentoFluxo]]:
+    """Lançamentos da visão FLUXO do ano inteiro, agrupados por mês de competência.
+
+    Mesma semântica de 3 fontes e anti-dupla-contagem de :func:`_lancamentos_mes`,
+    mas escopada ao ano e resolvida em **3 queries** (uma por fonte) agrupadas em
+    Python — evita o N+1 de chamar _lancamentos_mes 12 vezes (usado por
+    yearly_stats, o gráfico "Evolução mensal").
+
+    Uma compra parcelada que atravessa anos distribui corretamente: só as parcelas
+    cuja fatura cai NESTE ano entram aqui (fatura_ano == ano).
+    """
+    por_mes: dict[int, list[LancamentoFluxo]] = {m: [] for m in range(1, 13)}
+
+    # Fonte 3: à vista + receitas (não faturadas, não parceladas), pela data.
+    inicio = dt.date(ano, 1, 1)
+    fim = dt.date(ano + 1, 1, 1)
+    for t in session.exec(
+        select(Transacao).where(
+            Transacao.usuario_id == usuario_id,
+            Transacao.parcelado == False,  # noqa: E712
+            Transacao.fatura_mes == None,  # noqa: E711
+            Transacao.data >= inicio,
+            Transacao.data < fim,
+        )
+    ).all():
+        por_mes[t.data.month].append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
+
+    # Fonte 1: parcelas com fatura no ano, agrupadas por fatura_mes.
+    for p in session.exec(
+        select(Parcela).where(
+            Parcela.usuario_id == usuario_id,
+            Parcela.fatura_ano == ano,
+            Parcela.fatura_mes != None,  # noqa: E711
+            Parcela.cancelado == False,  # noqa: E712
+        )
+    ).all():
+        por_mes[p.fatura_mes].append(
+            LancamentoFluxo("despesa", p.valor_parcela, p.categoria)
+        )
+
+    # Fonte 2: avulsas de cartão faturadas no ano, agrupadas por fatura_mes.
+    for t in session.exec(
+        select(Transacao).where(
+            Transacao.usuario_id == usuario_id,
+            Transacao.parcelado == False,  # noqa: E712
+            Transacao.tipo == "despesa",
+            Transacao.fatura_ano == ano,
+            Transacao.fatura_mes != None,  # noqa: E711
+        )
+    ).all():
+        por_mes[t.fatura_mes].append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
+
+    return por_mes

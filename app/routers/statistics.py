@@ -1,12 +1,10 @@
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import extract
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_session
-from app.models.transaction import Transacao
 from app.models.user import Usuario
 from app.schemas.statistics import (
     AnualResponse,
@@ -14,7 +12,13 @@ from app.schemas.statistics import (
     MensalResponse,
     MesEvolucao,
 )
-from app.services.estatisticas import _agregar, _buscar_mes, _categorias, _variacao
+from app.services.estatisticas import (
+    _agregar,
+    _categorias,
+    _lancamentos_ano,
+    _lancamentos_mes,
+    _variacao,
+)
 
 router = APIRouter(prefix="/statistics", tags=["statistics"])
 
@@ -34,13 +38,15 @@ def monthly_stats(
     current_user: Usuario = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    transacoes = _buscar_mes(session, current_user.id, mes, ano)
-    receitas, despesas = _agregar(transacoes)
+    # Visão FLUXO: lançamentos por competência de fatura (parcelas + avulsas
+    # faturadas + à vista/receitas por data), sem dupla contagem — T-39.
+    lancamentos = _lancamentos_mes(session, current_user.id, mes, ano)
+    receitas, despesas = _agregar(lancamentos)
     saldo = receitas - despesas
 
     mes_ant, ano_ant = _mes_anterior(mes, ano)
-    transacoes_ant = _buscar_mes(session, current_user.id, mes_ant, ano_ant)
-    rec_ant, desp_ant = _agregar(transacoes_ant)
+    lancamentos_ant = _lancamentos_mes(session, current_user.id, mes_ant, ano_ant)
+    rec_ant, desp_ant = _agregar(lancamentos_ant)
     saldo_ant = rec_ant - desp_ant
 
     return MensalResponse(
@@ -49,7 +55,7 @@ def monthly_stats(
         receitas=receitas,
         despesas=despesas,
         saldo=saldo,
-        categorias=_categorias(transacoes),
+        categorias=_categorias(lancamentos),
         variacao_receitas=_variacao(receitas, rec_ant),
         variacao_despesas=_variacao(despesas, desp_ant),
         variacao_saldo=_variacao(saldo, saldo_ant),
@@ -62,18 +68,11 @@ def yearly_stats(
     current_user: Usuario = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    # Busca todas as transações do ano de uma vez
-    transacoes_ano = session.exec(
-        select(Transacao).where(
-            Transacao.usuario_id == current_user.id,
-            extract("year", Transacao.data) == ano,
-        )
-    ).all()
-
-    # Agrupa por mês em Python
-    por_mes: dict[int, list[Transacao]] = {m: [] for m in range(1, 13)}
-    for t in transacoes_ano:
-        por_mes[t.data.month].append(t)
+    # Visão FLUXO por competência (coerente com monthly_stats): o gráfico
+    # "Evolução mensal" mostra o desembolso mês a mês, não o consumo por data.
+    # _lancamentos_ano resolve o ano em 3 queries (uma por fonte) agrupadas por
+    # mês — sem N+1, sem 12x _lancamentos_mes.
+    por_mes = _lancamentos_ano(session, current_user.id, ano)
 
     meses = []
     for m in range(1, 13):
@@ -99,8 +98,8 @@ def categories_stats(
     current_user: Usuario = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    transacoes = _buscar_mes(session, current_user.id, mes, ano)
-    cats = _categorias(transacoes)
+    lancamentos = _lancamentos_mes(session, current_user.id, mes, ano)
+    cats = _categorias(lancamentos)
     total = sum((c.total for c in cats), _ZERO)
 
     return CategoriasResponse(

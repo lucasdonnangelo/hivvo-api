@@ -18,10 +18,15 @@ from app.core.database import get_session
 from app.core.rate_limit import _user_or_ip_key, limiter
 from app.models.category import CategoriaCustomizada
 from app.models.chat import ChatMessage
-from app.models.installment import Parcela
 from app.models.user import Usuario
 from app.services.categorias import CATEGORIAS_PADRAO
-from app.services.estatisticas import _agregar, _buscar_mes, _categorias, _variacao
+from app.services.estatisticas import (
+    _agregar,
+    _categorias,
+    _lancamentos_mes,
+    _parcelas_competencia,
+    _variacao,
+)
 from app.schemas.ai import (
     ChatRequest,
     ChatResponse,
@@ -51,25 +56,19 @@ _SAFETY = [
 
 
 def _total_parcelas_proximo_mes(session: Session, usuario_id: int, mes: int, ano: int) -> Decimal:
+    # Deriva de competência de fatura, não de `pago` (PLANO_PROJECAO §1.3: pago
+    # deixou de ser fonte de verdade). Parcelas que vencem no próximo mês.
     prox_mes = mes % 12 + 1
     prox_ano = ano + 1 if mes == 12 else ano
-    parcelas = session.exec(
-        select(Parcela).where(
-            Parcela.usuario_id == usuario_id,
-            Parcela.fatura_mes == prox_mes,
-            Parcela.fatura_ano == prox_ano,
-            Parcela.pago == False,   # noqa: E712
-            Parcela.cancelado == False,  # noqa: E712
-        )
-    ).all()
+    parcelas = _parcelas_competencia(session, usuario_id, prox_mes, prox_ano)
     return sum((p.valor_parcela for p in parcelas), _ZERO)
 
 
 def _variacao_saldo_pct(session: Session, usuario_id: int, mes: int, ano: int, saldo_atual: Decimal) -> float | None:
     mes_ant = 12 if mes == 1 else mes - 1
     ano_ant = ano - 1 if mes == 1 else ano
-    transacoes_ant = _buscar_mes(session, usuario_id, mes_ant, ano_ant)
-    rec_ant, desp_ant = _agregar(transacoes_ant)
+    lancamentos_ant = _lancamentos_mes(session, usuario_id, mes_ant, ano_ant)
+    rec_ant, desp_ant = _agregar(lancamentos_ant)
     saldo_ant = rec_ant - desp_ant
     try:
         pct = _variacao(saldo_atual, saldo_ant)
@@ -86,12 +85,12 @@ def _build_historico_anual(session: Session, usuario_id: int, mes: int, ano: int
         if m == 0:
             m = 12
             a -= 1
-        transacoes = _buscar_mes(session, usuario_id, m, a)
-        if not transacoes:
+        lancamentos = _lancamentos_mes(session, usuario_id, m, a)
+        if not lancamentos:
             continue
-        rec, desp = _agregar(transacoes)
+        rec, desp = _agregar(lancamentos)
         saldo = rec - desp
-        cats = _categorias(transacoes)[:3]
+        cats = _categorias(lancamentos)[:3]
         top = ", ".join(f"{c.categoria} {c.percentual:.0f}%" for c in cats) or "—"
         linhas.append(
             f"- {_MESES[m][:3]}/{a}: "
@@ -366,8 +365,8 @@ def chat(
     ).scalar()
     primeira_vez = count_sessao == 0
 
-    transacoes = _buscar_mes(session, current_user.id, body.mes, body.ano)
-    receitas, despesas = _agregar(transacoes)
+    lancamentos = _lancamentos_mes(session, current_user.id, body.mes, body.ano)
+    receitas, despesas = _agregar(lancamentos)
 
     saldo = receitas - despesas
     ctx = {
@@ -375,8 +374,8 @@ def chat(
         "despesas": despesas,
         "saldo": saldo,
         "saldo_negativo": saldo < _ZERO,
-        "num_transacoes": len(transacoes),
-        "categorias": _categorias(transacoes),
+        "num_transacoes": len(lancamentos),
+        "categorias": _categorias(lancamentos),
         "parcelas_proximo_mes": _total_parcelas_proximo_mes(
             session, current_user.id, body.mes, body.ano
         ),

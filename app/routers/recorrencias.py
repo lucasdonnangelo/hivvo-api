@@ -6,6 +6,7 @@ SEM sobreposição e SEM gap. `ativa` é flag de estado/listagem — quem govern
 projeção são as vigências (encerrar = FECHAR a vigência, preservando o passado).
 """
 
+import datetime as dt
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -30,6 +31,27 @@ router = APIRouter(prefix="/recorrencias", tags=["recorrencias"])
 
 def _mes_anterior(mes: int, ano: int) -> tuple[int, int]:
     return (12, ano - 1) if mes == 1 else (mes - 1, ano)
+
+
+def _default_mes_inicio(dia_do_mes: int, h: dt.date) -> tuple[int, int]:
+    """Mês de início DEFAULT pela regra do dia (Fase 3a-backend) — lógica de
+    negócio, não do frontend.
+
+    O default depende do dia da ocorrência vs. hoje:
+    - dia_do_mes >= dia de hoje → MÊS CORRENTE (a ocorrência ainda acontece este
+      mês; inclui a borda dia == hoje).
+    - dia_do_mes  < dia de hoje → MÊS SEGUINTE (o dia já passou; a primeira
+      ocorrência é no próximo mês). Virada de ano natural (dez → jan/ano+1).
+
+    Só se aplica quando o cliente NÃO envia mes_inicio/ano_inicio — o override
+    explícito preserva a escolha do usuário (ex.: "esse salário só começa em
+    setembro"). Sem relação com ciclo de fatura (recorrência não passa por cartão).
+    """
+    if dia_do_mes >= h.day:
+        return (h.month, h.year)
+    if h.month == 12:
+        return (1, h.year + 1)
+    return (h.month + 1, h.year)
 
 
 def _get_propria(
@@ -84,8 +106,13 @@ def create_recorrencia(
 ):
     """Cria o cabeçalho + a PRIMEIRA vigência (aberta) num único commit."""
     h = hoje()
-    mes_inicio = body.mes_inicio if body.mes_inicio is not None else h.month
-    ano_inicio = body.ano_inicio if body.ano_inicio is not None else h.year
+    if body.mes_inicio is not None:
+        # Override explícito (o "ajustar" da UI): mes_inicio/ano_inicio vêm
+        # pareados do schema — usar o que o cliente escolheu.
+        mes_inicio, ano_inicio = body.mes_inicio, body.ano_inicio
+    else:
+        # Default: regra do dia (dia da ocorrência vs. hoje).
+        mes_inicio, ano_inicio = _default_mes_inicio(body.dia_do_mes, h)
 
     rec = Recorrencia(
         usuario_id=current_user.id,

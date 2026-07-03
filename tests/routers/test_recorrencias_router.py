@@ -34,7 +34,10 @@ def _payload(**over):
         valor="10000.00",
         categoria="Salário",
         forma_pagamento="Pix",
-        dia_do_mes=5,
+        # dia 20 > dia de hoje (15) → default início = mês corrente (regra do
+        # dia, Fase 3a-backend). Mantém a intenção "começa no mês corrente" dos
+        # testes de CRUD sem eles precisarem enviar mes_inicio explícito.
+        dia_do_mes=20,
         descricao="Salário CLT",
     )
     base.update(over)
@@ -113,6 +116,47 @@ class TestCriar:
     def test_validacoes_422(self, users, as_user, campos):
         resp = as_user(users[0]).post("/recorrencias", json=_payload(**campos))
         assert resp.status_code == 422
+
+
+class TestRegraDiaDefaultInicio:
+    """Fase 3a-backend: o mês de início DEFAULT depende do dia da recorrência
+    vs. hoje (lógica de negócio). hoje congelado em 15/07/2026 (fixture clock);
+    a regra só vale quando o cliente NÃO envia mes_inicio/ano_inicio."""
+
+    def _inicio(self, client, **over):
+        vig = client.post("/recorrencias", json=_payload(**over)).json()["vigencias"][0]
+        return (vig["mes_inicio"], vig["ano_inicio"])
+
+    def test_dia_futuro_comeca_no_mes_corrente(self, users, as_user):
+        # dia 20 > hoje 15 → a ocorrência ainda acontece este mês
+        assert self._inicio(as_user(users[0]), dia_do_mes=20) == (7, 2026)
+
+    def test_dia_passado_comeca_no_mes_seguinte(self, users, as_user):
+        # dia 10 < hoje 15 → o dia já passou; primeira ocorrência no próximo mês
+        assert self._inicio(as_user(users[0]), dia_do_mes=10) == (8, 2026)
+
+    def test_dia_igual_hoje_comeca_no_mes_corrente(self, users, as_user):
+        # borda: dia == hoje → a ocorrência ainda ocorre hoje
+        assert self._inicio(as_user(users[0]), dia_do_mes=15) == (7, 2026)
+
+    def test_virada_de_ano(self, mocker, users, as_user):
+        # dezembro, dia 10 já passou → janeiro do ANO SEGUINTE
+        mocker.patch("app.routers.recorrencias.hoje", return_value=dt.date(2026, 12, 15))
+        assert self._inicio(as_user(users[0]), dia_do_mes=10) == (1, 2027)
+
+    def test_override_explicito_ignora_regra_do_dia(self, users, as_user):
+        # cliente envia início → usa o enviado, mesmo com dia passado (10 < 15)
+        inicio = self._inicio(
+            as_user(users[0]), dia_do_mes=10, mes_inicio=9, ano_inicio=2026
+        )
+        assert inicio == (9, 2026)
+
+    def test_regra_reflete_na_projecao(self, session, users, as_user):
+        # dia 10 (passado) → começa agosto: julho (corrente) fica zero, agosto gera
+        as_user(users[0]).post("/recorrencias", json=_payload(dia_do_mes=10))
+        uid = users[0].id
+        assert _receitas(session, uid, 7, 2026) == _ZERO
+        assert _q(_receitas(session, uid, 8, 2026)) == Decimal("10000.00")
 
 
 class TestEditarValor:

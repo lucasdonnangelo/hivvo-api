@@ -11,14 +11,17 @@
 import datetime as dt
 from decimal import Decimal
 
+from sqlalchemy import event
 from sqlmodel import select
 
 from app.models.installment import Parcela
+from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.transaction import Transacao
 from app.routers.ai import _total_parcelas_proximo_mes
 from app.services.estatisticas import (
     _agregar,
     _buscar_mes,
+    _categorias,
     _lancamentos_ano,
     _lancamentos_mes,
 )
@@ -297,3 +300,175 @@ class TestFluxoAnual:
         assert _q(d2026) == Decimal("500.00")  # 5 × R$100
         assert _q(d2027) == Decimal("700.00")  # 7 × R$100
         assert _q(d2026 + d2027) == Decimal("1200.00")  # invariante
+
+
+def _add_recorrencia(
+    session,
+    tipo="receita",
+    categoria="Salário",
+    valor="10000.00",
+    mes_inicio=1,
+    ano_inicio=2026,
+    mes_fim=None,
+    ano_fim=None,
+    uid=1,
+    ativa=True,
+):
+    """Cria recorrência + primeira vigência. Retorna a Recorrencia (para
+    adicionar mais vigências no teste de edição versionada)."""
+    rec = Recorrencia(
+        usuario_id=uid,
+        tipo=tipo,
+        categoria=categoria,
+        forma_pagamento="Pix",
+        dia_do_mes=5,
+        descricao=categoria,
+        ativa=ativa,
+    )
+    session.add(rec)
+    session.flush()
+    session.add(
+        RecorrenciaVigencia(
+            recorrencia_id=rec.id,
+            valor=Decimal(valor),
+            mes_inicio=mes_inicio,
+            ano_inicio=ano_inicio,
+            mes_fim=mes_fim,
+            ano_fim=ano_fim,
+        )
+    )
+    session.commit()
+    return rec
+
+
+class TestRecorrenciaNaProjecao:
+    """Fase 2b — a recorrência como QUARTA fonte da agregação de fluxo.
+
+    As 3 fontes da Fase 1 permanecem idênticas; a recorrência soma por cima,
+    por competência do MÊS (sem fatura/cartão — PLANO §3.4)."""
+
+    def test_salario_aberto_soma_nas_receitas_do_mes_atual_e_futuros(self, session):
+        _add_recorrencia(session)  # R$10000, aberta desde jan/2026
+
+        for mes, ano in [(1, 2026), (7, 2026), (12, 2027), (1, 2031)]:
+            receitas, despesas = _agregar(_lancamentos_mes(session, 1, mes, ano))
+            assert _q(receitas) == Decimal("10000.00"), (mes, ano)
+            assert despesas == _ZERO
+        # antes do início não gera
+        receitas, _ = _agregar(_lancamentos_mes(session, 1, 12, 2025))
+        assert receitas == _ZERO
+
+    def test_lancamento_de_recorrencia_marcado_e_demais_nao(self, session):
+        _add_recorrencia(session)
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 3, 10),
+                descricao="mercado", valor=Decimal("50.00"), categoria="Mercado",
+                forma_pagamento="Débito", parcelado=False,
+            )
+        )
+        session.commit()
+
+        lancamentos = _lancamentos_mes(session, 1, 3, 2026)
+        flags = {(l.categoria, l.recorrente) for l in lancamentos}
+        assert flags == {("Salário", True), ("Mercado", False)}
+
+    def test_despesa_recorrente_soma_nas_despesas_e_no_donut(self, session):
+        _add_recorrencia(session, tipo="despesa", categoria="Moradia", valor="2000.00")
+
+        lancamentos = _lancamentos_mes(session, 1, 5, 2026)
+        _, despesas = _agregar(lancamentos)
+        assert _q(despesas) == Decimal("2000.00")
+
+        donut = _categorias(lancamentos)
+        assert [(c.categoria, _q(c.total)) for c in donut] == [("Moradia", Decimal("2000.00"))]
+
+    def test_edicao_versionada_reflete_na_agregacao(self, session):
+        # 10000 jan–jul/2026 + 12000 ago/2026–aberto (§3.1.1)
+        rec = _add_recorrencia(session, mes_fim=7, ano_fim=2026)
+        session.add(
+            RecorrenciaVigencia(
+                recorrencia_id=rec.id, valor=Decimal("12000.00"),
+                mes_inicio=8, ano_inicio=2026,
+            )
+        )
+        session.commit()
+
+        rec_jul, _ = _agregar(_lancamentos_mes(session, 1, 7, 2026))
+        rec_ago, _ = _agregar(_lancamentos_mes(session, 1, 8, 2026))
+        assert _q(rec_jul) == Decimal("10000.00")
+        assert _q(rec_ago) == Decimal("12000.00")
+
+    def test_inativa_nao_aparece(self, session):
+        _add_recorrencia(session, tipo="despesa", categoria="Moradia", ativa=False)
+
+        lancamentos = _lancamentos_mes(session, 1, 6, 2026)
+        assert lancamentos == []
+        assert _categorias(lancamentos) == []
+
+    def test_isolamento_por_usuario(self, session):
+        _add_recorrencia(session, uid=2)
+
+        receitas, _ = _agregar(_lancamentos_mes(session, 1, 6, 2026))
+        assert receitas == _ZERO
+
+    def test_anual_bate_com_mensal_com_recorrencia_no_cenario(self, session):
+        # As 4 fontes juntas: parcelas + avulsa faturada + à vista + recorrências
+        # (receita versionada no meio do ano + despesa recorrente com fim).
+        _add_parcelada(session, "1200.00", 12, 1, 2026)
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 2, 25),
+                descricao="avulsa", valor=Decimal("300.00"), categoria="Eletrônicos",
+                forma_pagamento="Crédito", cartao_id=1, parcelado=False,
+                fatura_mes=3, fatura_ano=2026,
+            )
+        )
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 5, 10),
+                descricao="mercado", valor=Decimal("80.00"), categoria="Mercado",
+                forma_pagamento="Débito", parcelado=False,
+            )
+        )
+        session.commit()
+        rec = _add_recorrencia(session, mes_fim=7, ano_fim=2026)  # 10000 jan–jul
+        session.add(
+            RecorrenciaVigencia(
+                recorrencia_id=rec.id, valor=Decimal("12000.00"),
+                mes_inicio=8, ano_inicio=2026,
+            )
+        )
+        session.commit()
+        _add_recorrencia(
+            session, tipo="despesa", categoria="Moradia", valor="2000.00",
+            mes_inicio=3, ano_inicio=2026, mes_fim=10, ano_fim=2026,
+        )
+
+        por_mes = _lancamentos_ano(session, 1, 2026)
+        for m in range(1, 13):
+            anual_rec, anual_desp = _agregar(por_mes[m])
+            mensal_rec, mensal_desp = _agregar(_lancamentos_mes(session, 1, m, 2026))
+            assert _q(anual_rec) == _q(mensal_rec), f"receitas divergem no mês {m}"
+            assert _q(anual_desp) == _q(mensal_desp), f"despesas divergem no mês {m}"
+
+    def test_lancamentos_ano_faz_numero_fixo_de_queries(self, session):
+        # Sem N+1: o anual resolve em 5 SELECTs fixos (3 fontes + 2 da
+        # recorrência), independente de quantos meses têm ocorrência.
+        _add_recorrencia(session)
+        _add_recorrencia(session, tipo="despesa", categoria="Moradia", valor="2000.00")
+
+        selects: list[str] = []
+
+        def _conta(conn, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith("SELECT"):
+                selects.append(statement)
+
+        engine = session.get_bind()
+        event.listen(engine, "before_cursor_execute", _conta)
+        try:
+            _lancamentos_ano(session, 1, 2026)
+        finally:
+            event.remove(engine, "before_cursor_execute", _conta)
+
+        assert len(selects) == 5, selects

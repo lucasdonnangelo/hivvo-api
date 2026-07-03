@@ -5,7 +5,9 @@
 > Fases 1–3. Deve ser revisado e aprovado por Lucas antes de qualquer código,
 > e mantido como referência entre sessões (igual aos PLANO_EXECUCAO_*).
 >
-> Status: RASCUNHO para revisão. Nada implementado.
+> Status: **APROVADO.** Fase 1 (estatísticas por competência / fluxo) CONCLUÍDA e deployada
+> (commit `de1f1eb`). Fase 2 (recorrência) — design fechado (§3.4), pronta para implementar,
+> fatiada em 2a (fundação: modelos + migration + algoritmo), 2b (integração na projeção), 2c (CRUD).
 
 ---
 
@@ -142,10 +144,73 @@ Para o usuário, a UX é simples ("editar minha receita"): ele não vê a mecân
 Modelo interno: uma recorrência é uma **linha do tempo de vigências** (cada versão com seu
 período de validade), não um único registro mutável. Detalhar estrutura exata na Fase 2.
 
-### 3.2 Como entra na projeção
+### 3.4 Design detalhado da entidade (para a Fase 2)
 
-As ocorrências recorrentes de um mês somam-se à agregação de fluxo daquele mês (§2),
-marcadas como recorrentes/projetadas. Reusa a mesma projeção — não é um caminho paralelo.
+> Esta seção fecha os detalhes de implementação da recorrência, para a Fase 2 ser executada
+> com o modelo definido (não descoberto durante o código). Revisar antes de implementar.
+
+**Estrutura — recorrência como cabeçalho + vigências:**
+
+- **Recorrencia** (o "cabeçalho" estável): `id`, `usuario_id`, `tipo` (receita/despesa),
+  `categoria`, `forma_pagamento`, `frequencia` (só `mensal` hoje), `dia_do_mes` (1–31),
+  `descricao`, `ativa` (bool — soft delete), `data_criacao`. É a identidade da recorrência
+  ("meu salário"). NÃO guarda o valor diretamente.
+- **RecorrenciaVigencia** (as versões ao longo do tempo): `id`, `recorrencia_id`, `valor`,
+  `mes_inicio`/`ano_inicio` (competência a partir da qual vale), `mes_fim`/`ano_fim` (opcional;
+  NULL = "sem fim"). Uma recorrência tem 1+ vigências, sem sobreposição de períodos.
+
+Exemplo: salário R$10.000 desde jan/2026, aumentado para R$12.000 em ago/2026 →
+- Vigência 1: valor 10000, início jan/2026, fim jul/2026.
+- Vigência 2: valor 12000, início ago/2026, fim NULL (sem fim).
+
+**Por que separar cabeçalho e vigência:** permite editar o valor preservando o passado (§3.1.1)
+sem duplicar a identidade. "Editar o salário" = fechar a vigência atual (pôr `mes_fim`/`ano_fim`
+= mês anterior ao corrente) e criar nova vigência (início = mês corrente). O usuário vê só
+"editei"; o modelo mantém a linha do tempo.
+
+**Algoritmo — "esta recorrência gera ocorrência no mês (m, a)?":**
+1. A recorrência está `ativa`? Se não, não gera.
+2. Existe uma vigência cujo período [início, fim] contém (m, a)? (fim NULL = aberto). Se sim,
+   usa o `valor` dessa vigência; senão, não gera.
+3. O `dia_do_mes` é clampado ao último dia do mês (dia 31 em fevereiro → 28/29) — reusar a mesma
+   lógica de clamp de `faturas.py` (`calendar.monthrange`), NÃO reimplementar.
+4. A ocorrência é uma projeção — NÃO é materializada em `transacoes` nem `parcelas`. É calculada
+   e retornada pela projeção do mês.
+
+**Integração na projeção de fluxo (§2):** as ocorrências recorrentes de um mês entram como uma
+QUARTA fonte na agregação de fluxo — receitas recorrentes somam nas receitas, despesas
+recorrentes nas despesas, do mês de competência. Marcadas como `recorrente` (para o frontend
+distinguir visualmente na Fase 3).
+
+**CRUD (endpoints da Fase 2):**
+- Criar recorrência (cria cabeçalho + primeira vigência).
+- Editar VALOR (fecha vigência atual + abre nova — versionado). ✅ DECIDIDO: apenas o **valor** é
+  versionado. Campos do cabeçalho (descrição, categoria, dia, forma de pagamento) aplicam
+  **retroativo** a todas as vigências — são metadados, não afetam o histórico financeiro (ex.:
+  renomear "Salário" → "Salário CLT" não versiona).
+- Excluir. ✅ DECIDIDO: **soft delete** (`ativa = False`) — para de gerar ocorrências FUTURAS,
+  mas as ocorrências de meses PASSADOS continuam aparecendo na projeção histórica (ex.: saiu do
+  emprego → dezembro passado ainda mostra o salário recebido; o futuro para).
+- Listar recorrências ativas do usuário.
+
+**✅ DECIDIDO — recorrência NÃO passa por cartão/fatura:** recorrências são sempre à vista /
+PIX / transferência (salário, aluguel), contam por competência do MÊS (por `data`/mês, não por
+ciclo de fatura). Coerente com "receita nunca passa por cartão" (§6.4) e estendido às despesas
+recorrentes. Despesa recorrente no cartão (ex.: Netflix no crédito) fica FORA do escopo inicial —
+adicionar depois se o uso pedir (exigiria a ocorrência virar linha de fatura).
+
+**Edge cases a cobrir em teste (Fase 2):**
+- Dia 31 em mês de 30/28 dias (clamp).
+- Vigência única sem fim (salário padrão) projeta corretamente até o horizonte (60 meses).
+- Edição versionada: mês anterior mantém valor antigo, mês corrente em diante usa o novo, sem gap
+  nem sobreposição.
+- Recorrência que começa no meio do ano (não gera antes do início).
+- Recorrência com fim: não gera após o fim.
+- Soft delete: para de gerar futuro.
+
+**Fora do escopo da Fase 2 (registrar):** frequência semanal/quinzenal; overrides de ocorrência
+individual ("neste mês foi diferente"); despesa recorrente atrelada a cartão/fatura (ver decisão
+acima — recorrências são sempre por competência do mês, não por ciclo de fatura no escopo inicial).
 
 ### 3.3 Materializar vs. calcular — DECIDIDO: **calcular** on-the-fly
 

@@ -9,6 +9,7 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 
 **Fase atual:** Hardening pré-deploy (correções de segurança e técnicas)
 **Status:** As fases de construção (backend + frontend + telas) estão concluídas e o app é funcional/instalável. Em 10/06/2026 o backend passou por **duas auditorias** (segurança e técnica) que revelaram **bloqueadores de lançamento**. O trabalho ativo agora é executar o plano de correção (`docs/PLANO_EXECUCAO_API.md`) **antes** do deploy.
+**Fase 2b (projeção) — recorrência integrada na projeção de fluxo (03/07/2026, aguardando commit):** as ocorrências de recorrência ATIVAS entram como **QUARTA fonte** em `_lancamentos_mes` e `_lancamentos_ano` (`estatisticas.py`) — receita recorrente soma nas receitas, despesa nas despesas E no donut, por competência do MÊS (sem fatura/cartão, §3.4). `LancamentoFluxo` ganhou **`recorrente: bool = False`** (marcação para a Fase 3). **Sem N+1:** busca em 2 queries fixas (`_recorrencias_com_vigencias`) e o anual aplica `valor_no_mes` aos 12 meses em memória — **5 SELECTs fixos no anual, afirmado em teste por contagem de queries**. Fontes 1–3 intocadas; statistics e IA herdam automaticamente (consomem `_lancamentos_*`). Suíte: **256 testes, todos verdes** (248 + 8). **SEM CRUD (2c), SEM frontend (Fase 3).** Ver seção "Fase 2b" abaixo.
 **Fase 2a (projeção) — fundação da recorrência (03/07/2026, aguardando commit):** modelos `Recorrencia` (cabeçalho estável, UUID PK, soft delete `ativa`) + `RecorrenciaVigencia` (versões de valor por período de competência; fim NULL = aberta), migration `f2a7c9d1e8b3` (FKs ON DELETE CASCADE, 7 CHECKs, índice composto de período — **upgrade E downgrade testados de verdade no Postgres dev; aplicada ao fim**) e o algoritmo puro (`valor_no_mes`/`data_ocorrencia` em `app/services/recorrencias.py`, sem I/O de banco). Helpers novos: `agora()` (datetime SP em `dates.py`) e `clamp_dia_no_mes` extraído de `faturas.py` (4 call sites refatorados, comportamento idêntico). Suíte: **248 testes, todos verdes** (221 + 27). **SEM CRUD (2c), SEM integração na projeção (2b), SEM frontend (Fase 3).** Ver seção "Fase 2a" abaixo.
 **Fase 1 (projeção) — estatísticas por competência de fatura (02/07/2026, commitado `de1f1eb`):** resolve o **T-39** (visão FLUXO). `getMonthlyStats` (`/statistics/monthly` + `/categories`), **`yearly_stats` (`/statistics/yearly`)** e o contexto da IA passam a agregar por **competência de fatura**, somando 3 fontes sem dupla contagem: parcelas por `fatura_mes/ano`, avulsas de cartão faturadas, e à vista/receitas por `data`. A transação-pai parcelada **deixa de somar** o valor cheio — mês da compra mostra a parcela daquele mês, meses futuros deixam de ser zero. O gráfico "Evolução mensal" (anual) fica **coerente com o card mensal** (adendo). Suíte: **221 testes, todos verdes** (213 + 8). **Shape das respostas inalterado — só os números mudam.** **Não** inclui recorrência (Fase 2), toggle consumo (Fase 3), otimização SUM/GROUP BY, nem remoção do campo `pago`. Ver seção "Fase 1 (projeção)" abaixo.
 **Deploy — remetente do e-mail parametrizado (02/07/2026, aguardando commit):** novo `EMAIL_FROM` em Settings (default sandbox `Hivvo <onboarding@resend.dev>`) usado no `forgot_password` no lugar do `from` hardcoded. Único ponto de envio de e-mail (confirmado por varredura de `resend.Emails.send`). Suíte com **213 testes, todos verdes** (212 + 1) — ver seção "Deploy — remetente do e-mail" abaixo. **⚠️ PRODUÇÃO (Railway): setar `EMAIL_FROM="Hivvo <noreply@hivvo.app>"`** (domínio verificado no Resend). **Não** toca F-24/F-18/Batch 16 nem outros batches.
@@ -33,6 +34,35 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Teste de regressão round-trip parcelada→fatura concluído (26/06/2026, commitado `f3565c8`):** só testes — fecha o gap de cobertura do caminho de SUCESSO da criação parcelada (havia só atomicidade/FALHA do T-41). Suíte com **103 testes, todos verdes** — ver seção "Regressão round-trip" abaixo.
 **T-29 ordenação estável de transações concluído (26/06/2026, aguardando commit):** desempate determinístico `data DESC, id DESC` em `GET /transactions` e nas avulsas do detalhe de fatura. Suíte com **106 testes, todos verdes** — ver seção "T-29" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
+
+---
+
+## Fase 2b (projeção) — Recorrência na projeção de fluxo (quarta fonte) (03/07/2026)
+
+Implementa a **Fase 2b** do `docs/PLANO_PROJECAO.md` (§3.4, "Integração na projeção de fluxo"): as ocorrências de recorrência ATIVAS do usuário entram na agregação de fluxo da Fase 1 como **quarta fonte**. Tudo em [estatisticas.py](../app/services/estatisticas.py) + testes — **nenhum router mudou** (statistics e o contexto da IA consomem `_lancamentos_mes`/`_lancamentos_ano` e herdam a fonte automaticamente; o contexto da IA passa a enxergar recorrências — consequência natural e intencional). Suíte: **256 testes** (248 + 8), todos verdes.
+
+**`LancamentoFluxo` — novo campo `recorrente: bool = False`:** ocorrências de recorrência nascem com `recorrente=True`; as 3 fontes existentes ficam com o default (nenhuma construção mudou — campo com default em dataclass frozen). `_agregar`/`_categorias` **não mudaram** (duck typing em tipo/valor/categoria) — a flag existe para a Fase 3 distinguir visualmente.
+
+**Busca sem N+1 (2 queries fixas) — `_recorrencias_com_vigencias(session, uid)`:** (a) `Recorrencia` com `ativa == True` do usuário; (b) `RecorrenciaVigencia` com `recorrencia_id IN (ids)` (guarda de lista vazia → retorna cedo, padrão Batch 8), agrupadas por recorrência em Python. Retorna `list[tuple[Recorrencia, list[RecorrenciaVigencia]]]`. O filtro `ativa` na query evita carregar soft-deletadas; `valor_no_mes` segue como dupla guarda.
+
+**Fonte 4 pura — `_ocorrencias_recorrentes(recs_com_vigs, mes, ano)`:** aplica `valor_no_mes` (Fase 2a) a cada recorrência; não-None vira `LancamentoFluxo(rec.tipo, valor, rec.categoria, recorrente=True)`. Receita recorrente soma nas receitas, despesa nas despesas e no donut — automático via tipo/categoria. Recorrência **não passa por fatura** (§3.4): competência do MÊS direto, como a Fonte 3. Sem tratamento de horizonte (60 meses é limite de EXIBIÇÃO — Fase 3; o backend calcula o mês pedido).
+
+**Integração:**
+- `_lancamentos_mes`: após as 3 fontes (intocadas), `extend` com a Fonte 4 (2 queries + cálculo).
+- `_lancamentos_ano`: `_recorrencias_com_vigencias` chamada **UMA vez**; `for m in 1..12` aplica `_ocorrencias_recorrentes` **em memória** — zero query por mês. Total do anual: **5 SELECTs fixos** (3 fontes + 2 recorrência).
+
+**Testes (`TestRecorrenciaNaProjecao` em [test_estatisticas.py](../tests/services/test_estatisticas.py), 8):**
+- Salário R$10.000 vigência aberta → receitas de jan/2026, jul/2026, dez/2027 e jan/2031 == 10.000; antes do início == 0.
+- Marcação: lançamento de recorrência com `recorrente=True`, transação comum com `False`.
+- Despesa recorrente soma nas despesas **e** aparece no donut (`_categorias`) com a categoria certa.
+- Edição versionada na agregação real: 10.000 jan–jul + 12.000 ago–aberto → julho=10.000, agosto=12.000.
+- `ativa=False` → lista vazia (nem donut).
+- Isolamento por usuário (recorrência do uid=2 não vaza para uid=1).
+- **Coerência mensal×anual COM recorrência** no cenário completo das 4 fontes (parcelas 12x + avulsa faturada + à vista + receita versionada + despesa recorrente com fim): `_agregar(_lancamentos_ano[m]) == _agregar(_lancamentos_mes(m))` para os 12 meses.
+- **Eficiência afirmada em teste:** listener `before_cursor_execute` conta SELECTs durante `_lancamentos_ano` → **exatamente 5** (trava N+1 de recorrência E regressão nas fontes 1–3).
+- Rede da Fase 1 intacta: invariante 12x, coerência sem recorrência e os 248 anteriores seguem verdes.
+
+**Não incluído:** endpoints CRUD (2c), frontend (Fase 3), overrides, recorrência em cartão. Shape das respostas inalterado — só os números passam a incluir recorrência.
 
 ---
 

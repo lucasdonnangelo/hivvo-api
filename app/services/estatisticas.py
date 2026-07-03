@@ -6,8 +6,10 @@ from typing import Optional, Union
 from sqlmodel import Session, select
 
 from app.models.installment import Parcela
+from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.transaction import Transacao
 from app.schemas.statistics import CategoriaStats
+from app.services.recorrencias import valor_no_mes
 
 _ZERO = Decimal("0.00")
 
@@ -16,15 +18,19 @@ _ZERO = Decimal("0.00")
 class LancamentoFluxo:
     """Lançamento normalizado da visão FLUXO (a pagar por competência de fatura).
 
-    Unifica as três fontes de :func:`_lancamentos_mes` (parcelas, avulsas de
-    cartão faturadas e transações à vista/receitas) num objeto simples com os
-    campos que ``_agregar``/``_categorias`` consomem — sem expor se veio de uma
-    Parcela ou de uma Transacao.
+    Unifica as quatro fontes de :func:`_lancamentos_mes` (parcelas, avulsas de
+    cartão faturadas, transações à vista/receitas e ocorrências de recorrência)
+    num objeto simples com os campos que ``_agregar``/``_categorias`` consomem
+    — sem expor se veio de uma Parcela, de uma Transacao ou de uma regra.
+
+    ``recorrente=True`` marca ocorrência calculada de recorrência (Fase 2b) —
+    a Fase 3 usa a flag para distinguir visualmente; a agregação a ignora.
     """
 
     tipo: str
     valor: Decimal
     categoria: str
+    recorrente: bool = False
 
 
 # _agregar/_categorias operam por duck typing em .tipo/.valor/.categoria — servem
@@ -131,15 +137,69 @@ def _avulsas_cartao_competencia(
     ).all()
 
 
+def _recorrencias_com_vigencias(
+    session: Session, usuario_id: int
+) -> list[tuple[Recorrencia, list[RecorrenciaVigencia]]]:
+    """Recorrências ATIVAS do usuário com suas vigências, em 2 queries fixas.
+
+    Uma query para os cabeçalhos e uma para TODAS as vigências (IN sobre os
+    ids), agrupadas em Python — sem N+1, reusável tanto pelo mensal quanto
+    pelo anual (que aplica os 12 meses em memória). O filtro `ativa` evita
+    carregar recorrências soft-deletadas; valor_no_mes segue como dupla guarda.
+    """
+    recorrencias = session.exec(
+        select(Recorrencia).where(
+            Recorrencia.usuario_id == usuario_id,
+            Recorrencia.ativa == True,  # noqa: E712
+        )
+    ).all()
+    if not recorrencias:
+        return []  # evita IN () na query de vigências
+
+    vigencias_por_rec: dict = {r.id: [] for r in recorrencias}
+    for v in session.exec(
+        select(RecorrenciaVigencia).where(
+            RecorrenciaVigencia.recorrencia_id.in_(list(vigencias_por_rec))  # type: ignore[attr-defined]
+        )
+    ).all():
+        vigencias_por_rec[v.recorrencia_id].append(v)
+
+    return [(r, vigencias_por_rec[r.id]) for r in recorrencias]
+
+
+def _ocorrencias_recorrentes(
+    recs_com_vigencias: list[tuple[Recorrencia, list[RecorrenciaVigencia]]],
+    mes: int,
+    ano: int,
+) -> list[LancamentoFluxo]:
+    """Fonte 4 (pura, sem I/O): ocorrências de recorrência na competência (mes, ano).
+
+    Recorrência não passa por fatura (PLANO §3.4) — conta por competência do
+    MÊS direto, como a Fonte 3. Receita recorrente soma nas receitas, despesa
+    nas despesas e no donut (via tipo/categoria); recorrente=True marca para a
+    Fase 3.
+    """
+    lancamentos: list[LancamentoFluxo] = []
+    for recorrencia, vigencias in recs_com_vigencias:
+        valor = valor_no_mes(recorrencia, vigencias, mes, ano)
+        if valor is not None:
+            lancamentos.append(
+                LancamentoFluxo(recorrencia.tipo, valor, recorrencia.categoria, recorrente=True)
+            )
+    return lancamentos
+
+
 def _lancamentos_mes(
     session: Session, usuario_id: int, mes: int, ano: int
 ) -> list[LancamentoFluxo]:
     """Lançamentos da visão FLUXO ("a pagar neste mês") por competência de fatura.
 
-    Une três fontes SEM dupla contagem (PLANO_PROJECAO §2), corrigindo o T-39:
+    Une quatro fontes SEM dupla contagem (PLANO_PROJECAO §2 e §3.4):
       1. Parcelas com fatura em (mes, ano) — soma valor_parcela.
       2. Transações avulsas de cartão faturadas em (mes, ano).
       3. Transações à vista e receitas (não faturadas, não parceladas) por `data`.
+      4. Ocorrências de recorrência ATIVA na competência (Fase 2b) — calculadas
+         da regra (valor_no_mes), não materializadas; marcadas recorrente=True.
 
     Anti-dupla-contagem (§2.1): a transação-PAI de uma compra parcelada
     (parcelado=True, fatura_mes=None) e a avulsa já faturada NÃO somam na Fonte 3
@@ -163,6 +223,11 @@ def _lancamentos_mes(
     for t in _avulsas_cartao_competencia(session, usuario_id, mes, ano):
         lancamentos.append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
 
+    # Fonte 4: ocorrências de recorrência na competência (Fase 2b).
+    lancamentos.extend(
+        _ocorrencias_recorrentes(_recorrencias_com_vigencias(session, usuario_id), mes, ano)
+    )
+
     return lancamentos
 
 
@@ -171,10 +236,11 @@ def _lancamentos_ano(
 ) -> dict[int, list[LancamentoFluxo]]:
     """Lançamentos da visão FLUXO do ano inteiro, agrupados por mês de competência.
 
-    Mesma semântica de 3 fontes e anti-dupla-contagem de :func:`_lancamentos_mes`,
-    mas escopada ao ano e resolvida em **3 queries** (uma por fonte) agrupadas em
-    Python — evita o N+1 de chamar _lancamentos_mes 12 vezes (usado por
-    yearly_stats, o gráfico "Evolução mensal").
+    Mesma semântica de 4 fontes e anti-dupla-contagem de :func:`_lancamentos_mes`,
+    mas escopada ao ano e resolvida em **5 queries fixas** (3 das fontes 1–3 + 2
+    da recorrência) agrupadas em Python — evita o N+1 de chamar _lancamentos_mes
+    12 vezes (usado por yearly_stats, o gráfico "Evolução mensal"). A recorrência
+    é buscada UMA vez e valor_no_mes é aplicado aos 12 meses em memória.
 
     Uma compra parcelada que atravessa anos distribui corretamente: só as parcelas
     cuja fatura cai NESTE ano entram aqui (fatura_ano == ano).
@@ -219,5 +285,10 @@ def _lancamentos_ano(
         )
     ).all():
         por_mes[t.fatura_mes].append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
+
+    # Fonte 4: recorrências buscadas UMA vez; os 12 meses aplicados em memória.
+    recs_com_vigencias = _recorrencias_com_vigencias(session, usuario_id)
+    for m in range(1, 13):
+        por_mes[m].extend(_ocorrencias_recorrentes(recs_com_vigencias, m, ano))
 
     return por_mes

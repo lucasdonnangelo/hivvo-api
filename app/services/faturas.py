@@ -5,14 +5,22 @@ from typing import Optional
 from app.models.card import Cartao
 
 
+def clamp_dia_no_mes(dia: int, ano: int, mes: int) -> int:
+    """Clampa um dia ao último dia do mês (dia 31 em fevereiro → 28/29).
+
+    Único ponto do clamp de dia do produto — reusado pelas faturas (vencimento)
+    e pela recorrência (data da ocorrência, PLANO_PROJECAO §3.4).
+    """
+    return min(dia, calendar.monthrange(ano, mes)[1])
+
+
 def _add_months(d: dt.date, months: int) -> dt.date:
     month = d.month + months
     year = d.year
     while month > 12:
         month -= 12
         year += 1
-    day = min(d.day, calendar.monthrange(year, month)[1])
-    return dt.date(year, month, day)
+    return dt.date(year, month, clamp_dia_no_mes(d.day, year, month))
 
 
 def _data_vencimento_parcela(
@@ -33,7 +41,7 @@ def _data_vencimento_parcela(
 
         # Vencimento = mês de fatura + mes_offset_vencimento, no dia_vencimento do cartão
         due_base = _add_months(fatura_date, card.mes_offset_vencimento)
-        due_day = min(card.dia_vencimento, calendar.monthrange(due_base.year, due_base.month)[1])
+        due_day = clamp_dia_no_mes(card.dia_vencimento, due_base.year, due_base.month)
         return dt.date(due_base.year, due_base.month, due_day)
     else:
         # Sem cartão: i meses a partir da data da compra
@@ -47,7 +55,7 @@ def _fatura_cartao_avulso(data: dt.date, card: Cartao) -> tuple[int, int]:
     else:
         base = data.replace(day=1)
     due_base = _add_months(base, card.mes_offset_vencimento)
-    due_day = min(card.dia_vencimento, calendar.monthrange(due_base.year, due_base.month)[1])
+    due_day = clamp_dia_no_mes(card.dia_vencimento, due_base.year, due_base.month)
     due = dt.date(due_base.year, due_base.month, due_day)
     return due.month, due.year
 
@@ -55,7 +63,7 @@ def _fatura_cartao_avulso(data: dt.date, card: Cartao) -> tuple[int, int]:
 def _fatura_vencimento(card: Cartao, fatura_mes: int, fatura_ano: int) -> Optional[dt.date]:
     if not card.dia_vencimento:
         return None
-    day = min(card.dia_vencimento, calendar.monthrange(fatura_ano, fatura_mes)[1])
+    day = clamp_dia_no_mes(card.dia_vencimento, fatura_ano, fatura_mes)
     return dt.date(fatura_ano, fatura_mes, day)
 
 

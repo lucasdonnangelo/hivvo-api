@@ -18,3 +18,8 @@ TZ_PRODUTO = ZoneInfo("America/Sao_Paulo")
 def hoje() -> dt.date:
     """Data 'hoje' no fuso do produto (America/Sao_Paulo)."""
     return dt.datetime.now(TZ_PRODUTO).date()
+
+
+def agora() -> dt.datetime:
+    """Datetime 'agora' no fuso do produto (America/Sao_Paulo)."""
+    return dt.datetime.now(TZ_PRODUTO)

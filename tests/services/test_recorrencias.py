@@ -135,13 +135,25 @@ class TestEdicaoVersionada:
         assert valor_no_mes(rec, invertidas, 8, 2026) == DOZE_MIL
 
 
-class TestSoftDelete:
-    def test_inativa_nao_gera_em_nenhum_mes(self):
+class TestRecorrenciaEncerrada:
+    """Fase 2c: encerrar = FECHAR a vigência no mês do encerramento. O passado
+    continua gerando (histórico fiel), o futuro para. `ativa` é flag de
+    estado/listagem — NÃO afeta o algoritmo (a projeção lê só vigências)."""
+
+    def test_encerrada_gera_no_passado_e_nao_no_futuro(self):
+        rec = _rec(ativa=False)  # encerrada (flag de listagem)
+        # vigência fechada no mês do encerramento (jul/2026) — como o DELETE faz
+        vigencias = [_vig(mes_inicio=1, ano_inicio=2026, mes_fim=7, ano_fim=2026)]
+        assert valor_no_mes(rec, vigencias, 3, 2026) == DEZ_MIL  # passado preservado
+        assert valor_no_mes(rec, vigencias, 7, 2026) == DEZ_MIL  # mês do encerramento
+        assert valor_no_mes(rec, vigencias, 8, 2026) is None  # futuro para
+        assert valor_no_mes(rec, vigencias, 7, 2030) is None
+
+    def test_ativa_false_sozinho_nao_esconde_a_projecao(self):
+        # Estado inconstruível via API (DELETE sempre fecha a vigência junto),
+        # mas fixa a semântica: quem para o futuro é a vigência, não a flag.
         rec = _rec(ativa=False)
-        vigencias = [_vig(mes_inicio=1, ano_inicio=2026)]  # aberta, cobriria tudo
-        assert valor_no_mes(rec, vigencias, 1, 2026) is None  # passado
-        assert valor_no_mes(rec, vigencias, 7, 2026) is None  # corrente
-        assert valor_no_mes(rec, vigencias, 7, 2030) is None  # futuro
+        assert valor_no_mes(rec, [_vig()], 1, 2027) == DEZ_MIL
 
 
 class TestViradaDeAno:

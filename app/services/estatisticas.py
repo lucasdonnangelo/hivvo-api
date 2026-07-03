@@ -140,18 +140,19 @@ def _avulsas_cartao_competencia(
 def _recorrencias_com_vigencias(
     session: Session, usuario_id: int
 ) -> list[tuple[Recorrencia, list[RecorrenciaVigencia]]]:
-    """Recorrências ATIVAS do usuário com suas vigências, em 2 queries fixas.
+    """Recorrências do usuário com suas vigências, em 2 queries fixas.
 
     Uma query para os cabeçalhos e uma para TODAS as vigências (IN sobre os
     ids), agrupadas em Python — sem N+1, reusável tanto pelo mensal quanto
-    pelo anual (que aplica os 12 meses em memória). O filtro `ativa` evita
-    carregar recorrências soft-deletadas; valor_no_mes segue como dupla guarda.
+    pelo anual (que aplica os 12 meses em memória).
+
+    NÃO filtra `ativa` (Fase 2c): a projeção depende só das vigências —
+    recorrência encerrada tem a vigência fechada no encerramento, então o
+    passado continua gerando e o futuro para sozinho. `ativa` é flag de
+    estado/listagem (routers), não de projeção.
     """
     recorrencias = session.exec(
-        select(Recorrencia).where(
-            Recorrencia.usuario_id == usuario_id,
-            Recorrencia.ativa == True,  # noqa: E712
-        )
+        select(Recorrencia).where(Recorrencia.usuario_id == usuario_id)
     ).all()
     if not recorrencias:
         return []  # evita IN () na query de vigências
@@ -198,8 +199,9 @@ def _lancamentos_mes(
       1. Parcelas com fatura em (mes, ano) — soma valor_parcela.
       2. Transações avulsas de cartão faturadas em (mes, ano).
       3. Transações à vista e receitas (não faturadas, não parceladas) por `data`.
-      4. Ocorrências de recorrência ATIVA na competência (Fase 2b) — calculadas
-         da regra (valor_no_mes), não materializadas; marcadas recorrente=True.
+      4. Ocorrências de recorrência na competência (Fase 2b) — calculadas da
+         regra (valor_no_mes, só vigências), não materializadas; marcadas
+         recorrente=True.
 
     Anti-dupla-contagem (§2.1): a transação-PAI de uma compra parcelada
     (parcelado=True, fatura_mes=None) e a avulsa já faturada NÃO somam na Fonte 3

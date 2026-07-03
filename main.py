@@ -19,7 +19,7 @@ from app.core.observability import (
 )
 from app.core.csrf import verify_origin
 from app.core.rate_limit import limiter
-from app.routers import auth, transactions, categories, cards, invoices, installments, statistics, ai
+from app.routers import auth, transactions, categories, cards, invoices, installments, statistics, ai, recorrencias
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,8 @@ app.add_middleware(
     # e headers restritos ao que a API usa (JWT vai no cookie, não em header).
     allow_origins=[settings.FRONTEND_URL],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    # PATCH: usado pelo PATCH /recorrencias (Fase 2c); verify_origin já o cobre.
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
 
@@ -104,6 +105,7 @@ app.include_router(invoices.router, prefix="/api/v1", dependencies=_csrf)
 app.include_router(installments.router, prefix="/api/v1", dependencies=_csrf)
 app.include_router(statistics.router, prefix="/api/v1", dependencies=_csrf)
 app.include_router(ai.router, prefix="/api/v1", dependencies=_csrf)
+app.include_router(recorrencias.router, prefix="/api/v1", dependencies=_csrf)
 
 
 @app.get("/health", tags=["health"])

@@ -189,14 +189,16 @@ distinguir visualmente na Fase 3).
   **retroativo** a todas as vigências — são metadados, não afetam o histórico financeiro (ex.:
   renomear "Salário" → "Salário CLT" não versiona).
 - Excluir. ✅ DECIDIDO (opção A — preservar o passado): a exclusão **fecha a última vigência
-  aberta** no mês da exclusão (`mes_fim`/`ano_fim` = mês corrente, ou anterior — definir no 2c),
-  em vez de apenas `ativa = False`. Assim as ocorrências de meses PASSADOS continuam na projeção
-  histórica (o algoritmo do 2a as encontra, porque a vigência ainda cobre o passado), e as FUTURAS
-  param (nenhuma vigência cobre o futuro). O campo `ativa` pode ser marcado `False` como flag
-  adicional de "recorrência encerrada" (para a listagem não mostrá-la como ativa), MAS a
-  preservação do passado vem do fechamento da vigência, NÃO do `ativa`. (Resolve a tensão
-  registrada no 2a: `ativa=False → None sempre` continua válido no algoritmo; a exclusão não
-  depende dele para preservar o passado.)
+  aberta** no mês da exclusão (`mes_fim`/`ano_fim` = mês corrente), e marca `ativa = False` como
+  flag de "encerrada" (para a listagem). Assim as ocorrências de meses PASSADOS continuam na
+  projeção histórica, e as FUTURAS param. **A preservação do passado vem do fechamento da
+  vigência, não do `ativa`.**
+  **IMPORTANTE (resolução da tensão do 2a): `ativa` NÃO governa mais a projeção.** A projeção
+  depende SÓ das vigências (a fonte de verdade financeira): `valor_no_mes` deixa de checar `ativa`
+  e a busca da Fonte 4 deixa de filtrar `ativa == True`. O `ativa` vira exclusivamente flag de
+  estado/listagem (mostrar como ativa vs. encerrada). Isso desacopla as duas responsabilidades
+  que o `ativa` acumulava (governar projeção + listagem) e elimina a contradição. Via API, o
+  estado "inativa com vigência aberta" é inconstruível (o DELETE sempre fecha a vigência junto).
 - Listar recorrências ativas do usuário.
 
 **✅ DECIDIDO — recorrência NÃO passa por cartão/fatura:** recorrências são sempre à vista /

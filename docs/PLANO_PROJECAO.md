@@ -66,6 +66,57 @@ Decisão de produto: **o tempo/ciclo de fatura é a fonte de verdade**. NÃO exi
 Consequência aceita: se o usuário não pagar uma fatura de fato, o Hivvo ainda a
 considera realizada (é um planejador, não um controle de contas a pagar).
 
+### 1.3.1 Granularidade de DIA no mês corrente (realizado / a-vir / projeção)
+
+> Evolução do modelo (motivada por bug real: uma recorrência/parcela do mês corrente cujo
+> dia ainda não chegou era contada no saldo como se já tivesse ocorrido).
+
+O "mês" é granularidade grossa demais para o **mês corrente**: dentro dele, o dia de hoje
+divide o que **já ocorreu** do que **ainda vai ocorrer**. Portanto:
+
+- **Mês passado:** tudo já ocorreu → conta integral.
+- **Mês futuro:** nada ocorreu, mas é **projeção** (planejamento) → conta integral (o mês
+  inteiro; "como estarei em dezembro" mostra dezembro fechado).
+- **Mês corrente (o especial):** o dia importa. Cada ocorrência conta como **realizada** só se
+  `dia_da_ocorrência/vencimento <= hoje`; senão é **a vir**.
+
+Fronteira: `<=` (o próprio dia conta — dia 10, hoje 10 → já ocorreu).
+
+**Três leituras do mês corrente, todas expostas pelo backend:**
+- **Projeção do mês** = o mês inteiro (realizado + a vir). É o número PRINCIPAL do Dashboard
+  (estável, não oscila com o dia; é a visão de planejamento).
+- **Já realizado** = só o que tem dia <= hoje (o que já mexeu na conta).
+- **A vir este mês** = o que ainda vai ocorrer (dia > hoje).
+- Invariante: `projeção = realizado + a vir`.
+
+Para meses não-correntes, "realizado" == "projeção" (não há "a vir"): passado tudo ocorreu,
+futuro tudo é projeção. A distinção só é significativa no mês corrente.
+
+**Variação vs. mês anterior:** usa a **projeção** do mês corrente (integral) vs. o anterior
+(integral) — NÃO o realizado parcial (senão a % fica enganosa no começo do mês, ex. "-90%" no
+dia 3). Comparar projeção com projeção.
+
+**UX (clareza pela linguagem, não por tooltip):** Dashboard mostra a projeção como número
+PRINCIPAL, com a decomposição realizado/a-vir logo abaixo, rótulos que se explicam sozinhos
+("Já realizado" / "A vir este mês" / "Projeção de [mês]"). A distinção tem mais destaque no
+começo do mês (quando realizado e a-vir divergem) e naturalmente colapsa perto do fim (quando
+quase tudo já ocorreu). SEM tooltips explicativos: os rótulos SÃO a explicação. Público (alta
+renda, multi-cartão) entende "já paguei" vs "vou pagar" — rótulos honestos bastam.
+
+### 1.3.2 Escopo do corte por dia (por fonte)
+
+- **Fonte 1 (parcelas):** ✅ corta por dia no mês corrente. `Parcela.data_vencimento` (dia exato)
+  <= hoje. Usar o vencimento real, não o `fatura_mes`.
+- **Fonte 4 (recorrência):** ✅ corta por dia no mês corrente. Gerar `data_ocorrencia`
+  (dia_do_mes clampado) e descartar se > hoje.
+- **Fonte 3 (à vista/receitas):** fica como está (à vista = já ocorreu por definição). Item
+  separado a avaliar: **impedir data futura no cadastro** de transação à vista (validação), em vez
+  de tratar na projeção.
+- **Fonte 2 (avulsas de cartão):** fica como está (registrado para futuro). Falta o dado do dia de
+  vencimento da fatura na `Transacao` (só tem `fatura_mes`/`data` da compra); aplicar exigiria
+  derivar o vencimento da regra de fechamento do cartão. Conceito distinto (o "vencimento" é da
+  fatura inteira). Refinamento posterior.
+
 > **DECIDIDO:** o campo `pago` das parcelas **deixa de ser fonte de verdade**. Realizado/projetado
 > passa a ser derivado da competência (`fatura_mes`/`fatura_ano` de **vencimento** vs. mês corrente).
 > Na Fase 1, a query da IA (`_total_parcelas_proximo_mes`, que hoje filtra `pago == False`) é

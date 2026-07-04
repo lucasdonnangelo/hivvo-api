@@ -9,6 +9,7 @@ from app.models.user import Usuario
 from app.schemas.statistics import (
     AnualResponse,
     CategoriasResponse,
+    LeituraMes,
     MensalResponse,
     MesEvolucao,
 )
@@ -40,10 +41,22 @@ def monthly_stats(
 ):
     # Visão FLUXO: lançamentos por competência de fatura (parcelas + avulsas
     # faturadas + à vista/receitas por data), sem dupla contagem — T-39.
+    # Topo da resposta = PROJEÇÃO integral (todos os lançamentos, §1.3.1).
     lancamentos = _lancamentos_mes(session, current_user.id, mes, ano)
     receitas, despesas = _agregar(lancamentos)
     saldo = receitas - despesas
 
+    # §1.3.1 — decomposição do mês pelo dia (marcada nas fontes): realizado
+    # (dia <= hoje) e a-vir (dia > hoje). Invariante: topo == realizado + a_vir.
+    rec_real, desp_real = _agregar([l for l in lancamentos if l.realizado])
+    a_vir = LeituraMes(
+        receitas=receitas - rec_real,
+        despesas=despesas - desp_real,
+        saldo=(receitas - rec_real) - (despesas - desp_real),
+    )
+
+    # Variação: PROJEÇÃO integral vs. PROJEÇÃO integral (§1.3.1) — nunca o
+    # realizado parcial (a % ficaria enganosa no começo do mês).
     mes_ant, ano_ant = _mes_anterior(mes, ano)
     lancamentos_ant = _lancamentos_mes(session, current_user.id, mes_ant, ano_ant)
     rec_ant, desp_ant = _agregar(lancamentos_ant)
@@ -59,6 +72,10 @@ def monthly_stats(
         variacao_receitas=_variacao(receitas, rec_ant),
         variacao_despesas=_variacao(despesas, desp_ant),
         variacao_saldo=_variacao(saldo, saldo_ant),
+        realizado=LeituraMes(
+            receitas=rec_real, despesas=desp_real, saldo=rec_real - desp_real
+        ),
+        a_vir=a_vir,
     )
 
 

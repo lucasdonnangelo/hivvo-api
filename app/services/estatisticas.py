@@ -5,11 +5,12 @@ from typing import Optional, Union
 
 from sqlmodel import Session, select
 
+from app.core.dates import hoje
 from app.models.installment import Parcela
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.transaction import Transacao
 from app.schemas.statistics import CategoriaStats
-from app.services.recorrencias import valor_no_mes
+from app.services.recorrencias import data_ocorrencia, valor_no_mes
 
 _ZERO = Decimal("0.00")
 
@@ -25,12 +26,21 @@ class LancamentoFluxo:
 
     ``recorrente=True`` marca ocorrência calculada de recorrência (Fase 2b) —
     a Fase 3 usa a flag para distinguir visualmente; a agregação a ignora.
+
+    ``realizado`` (§1.3.1): no MÊS CORRENTE, True se a ocorrência já aconteceu
+    (dia/vencimento <= hoje, fronteira inclusiva) — só as Fontes 1 (parcelas,
+    por data_vencimento) e 4 (recorrência, por data_ocorrencia) são cortadas;
+    Fontes 2/3 são sempre realizadas (§1.3.2). Em mês NÃO-corrente é sempre
+    True (passado ocorreu; futuro é projeção integral — realizado == projeção,
+    a_vir = 0). Invariante: projeção = realizado + a_vir, por construção
+    (marcação, não filtro — a projeção agrega TODOS os lançamentos).
     """
 
     tipo: str
     valor: Decimal
     categoria: str
     recorrente: bool = False
+    realizado: bool = True
 
 
 # _agregar/_categorias operam por duck typing em .tipo/.valor/.categoria — servem
@@ -172,6 +182,7 @@ def _ocorrencias_recorrentes(
     recs_com_vigencias: list[tuple[Recorrencia, list[RecorrenciaVigencia]]],
     mes: int,
     ano: int,
+    limite_realizado: Optional[dt.date] = None,
 ) -> list[LancamentoFluxo]:
     """Fonte 4 (pura, sem I/O): ocorrências de recorrência na competência (mes, ano).
 
@@ -179,13 +190,28 @@ def _ocorrencias_recorrentes(
     MÊS direto, como a Fonte 3. Receita recorrente soma nas receitas, despesa
     nas despesas e no donut (via tipo/categoria); recorrente=True marca para a
     Fase 3.
+
+    `limite_realizado` (§1.3.1): setado APENAS quando (mes, ano) é o mês
+    corrente — marca realizado = data_ocorrencia (dia clampado) <= hoje.
+    None (mês não-corrente) = tudo realizado. NÃO filtra: a ocorrência entra
+    na lista de qualquer forma (a projeção é integral).
     """
     lancamentos: list[LancamentoFluxo] = []
     for recorrencia, vigencias in recs_com_vigencias:
         valor = valor_no_mes(recorrencia, vigencias, mes, ano)
         if valor is not None:
+            realizado = (
+                limite_realizado is None
+                or data_ocorrencia(recorrencia, mes, ano) <= limite_realizado
+            )
             lancamentos.append(
-                LancamentoFluxo(recorrencia.tipo, valor, recorrencia.categoria, recorrente=True)
+                LancamentoFluxo(
+                    recorrencia.tipo,
+                    valor,
+                    recorrencia.categoria,
+                    recorrente=True,
+                    realizado=realizado,
+                )
             )
     return lancamentos
 
@@ -208,26 +234,44 @@ def _lancamentos_mes(
     — quem soma são as parcelas (Fonte 1) e a avulsa na sua competência (Fonte 2).
     Resultado: o mês da compra deixa de mostrar o valor cheio (mostra a parcela
     daquele mês) e meses futuros deixam de ser zero.
+
+    Corte por dia (§1.3.1): no mês CORRENTE, Fontes 1 e 4 marcam realizado por
+    dia/vencimento <= hoje (marcação, não filtro — a lista completa é a
+    projeção). Fontes 2/3 são sempre realizadas (§1.3.2).
     """
+    h = hoje()
+    corrente = (ano, mes) == (h.year, h.month)
     lancamentos: list[LancamentoFluxo] = []
 
     # Fonte 3: à vista + receitas — não faturadas e não parceladas, pela data.
+    # Sempre realizada (§1.3.2: à vista já ocorreu por definição).
     for t in _buscar_mes(session, usuario_id, mes, ano):
         if t.parcelado or t.fatura_mes is not None:
             continue  # pai parcelada → Fonte 1; avulsa faturada → Fonte 2
         lancamentos.append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
 
-    # Fonte 1: parcelas na competência.
+    # Fonte 1: parcelas na competência — realizado pelo VENCIMENTO real (dia
+    # exato) no mês corrente, não pelo fatura_mes (§1.3.2).
     for p in _parcelas_competencia(session, usuario_id, mes, ano):
-        lancamentos.append(LancamentoFluxo("despesa", p.valor_parcela, p.categoria))
+        realizado = (not corrente) or p.data_vencimento <= h
+        lancamentos.append(
+            LancamentoFluxo("despesa", p.valor_parcela, p.categoria, realizado=realizado)
+        )
 
-    # Fonte 2: avulsas de cartão faturadas na competência.
+    # Fonte 2: avulsas de cartão faturadas na competência. Sempre realizada
+    # (§1.3.2: falta o dia de vencimento na Transacao — refinamento posterior).
     for t in _avulsas_cartao_competencia(session, usuario_id, mes, ano):
         lancamentos.append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
 
-    # Fonte 4: ocorrências de recorrência na competência (Fase 2b).
+    # Fonte 4: ocorrências de recorrência na competência (Fase 2b); no mês
+    # corrente, realizado por data_ocorrencia <= hoje.
     lancamentos.extend(
-        _ocorrencias_recorrentes(_recorrencias_com_vigencias(session, usuario_id), mes, ano)
+        _ocorrencias_recorrentes(
+            _recorrencias_com_vigencias(session, usuario_id),
+            mes,
+            ano,
+            limite_realizado=h if corrente else None,
+        )
     )
 
     return lancamentos
@@ -246,7 +290,12 @@ def _lancamentos_ano(
 
     Uma compra parcelada que atravessa anos distribui corretamente: só as parcelas
     cuja fatura cai NESTE ano entram aqui (fatura_ano == ano).
+
+    Corte por dia (§1.3.1): a MESMA marcação de realizado do mensal se aplica ao
+    mês corrente dentro do ano — as flags não divergem entre card e gráfico. A
+    série anual continua sendo a PROJEÇÃO integral (agrega todos os lançamentos).
     """
+    h = hoje()
     por_mes: dict[int, list[LancamentoFluxo]] = {m: [] for m in range(1, 13)}
 
     # Fonte 3: à vista + receitas (não faturadas, não parceladas), pela data.
@@ -272,8 +321,9 @@ def _lancamentos_ano(
             Parcela.cancelado == False,  # noqa: E712
         )
     ).all():
+        realizado = (ano, p.fatura_mes) != (h.year, h.month) or p.data_vencimento <= h
         por_mes[p.fatura_mes].append(
-            LancamentoFluxo("despesa", p.valor_parcela, p.categoria)
+            LancamentoFluxo("despesa", p.valor_parcela, p.categoria, realizado=realizado)
         )
 
     # Fonte 2: avulsas de cartão faturadas no ano, agrupadas por fatura_mes.
@@ -289,8 +339,12 @@ def _lancamentos_ano(
         por_mes[t.fatura_mes].append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
 
     # Fonte 4: recorrências buscadas UMA vez; os 12 meses aplicados em memória.
+    # O limite de realizado só vale para o mês corrente dentro deste ano.
     recs_com_vigencias = _recorrencias_com_vigencias(session, usuario_id)
     for m in range(1, 13):
-        por_mes[m].extend(_ocorrencias_recorrentes(recs_com_vigencias, m, ano))
+        limite = h if (ano, m) == (h.year, h.month) else None
+        por_mes[m].extend(
+            _ocorrencias_recorrentes(recs_com_vigencias, m, ano, limite_realizado=limite)
+        )
 
     return por_mes

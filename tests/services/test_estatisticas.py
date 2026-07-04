@@ -11,6 +11,7 @@
 import datetime as dt
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import event
 from sqlmodel import select
 
@@ -313,6 +314,7 @@ def _add_recorrencia(
     ano_fim=None,
     uid=1,
     ativa=True,
+    dia=5,
 ):
     """Cria recorrência + primeira vigência. Retorna a Recorrencia (para
     adicionar mais vigências no teste de edição versionada)."""
@@ -321,7 +323,7 @@ def _add_recorrencia(
         tipo=tipo,
         categoria=categoria,
         forma_pagamento="Pix",
-        dia_do_mes=5,
+        dia_do_mes=dia,
         descricao=categoria,
         ativa=ativa,
     )
@@ -479,3 +481,143 @@ class TestRecorrenciaNaProjecao:
             event.remove(engine, "before_cursor_execute", _conta)
 
         assert len(selects) == 5, selects
+
+
+HOJE_LEITURAS = dt.date(2026, 7, 15)
+
+
+class TestLeiturasDoDia:
+    """§1.3.1/§1.3.2 — o dia divide o mês CORRENTE em realizado (dia <= hoje) e
+    a-vir (dia > hoje); a projeção (todos os lançamentos) segue integral.
+
+    hoje congelado em 15/07/2026 via patch em app.services.estatisticas.hoje
+    (onde _lancamentos_mes/_lancamentos_ano leem o relógio)."""
+
+    @pytest.fixture(autouse=True)
+    def clock(self, mocker):
+        mocker.patch(
+            "app.services.estatisticas.hoje", return_value=HOJE_LEITURAS
+        )
+
+    def _leituras(self, session, mes, ano, uid=1):
+        lanc = _lancamentos_mes(session, uid, mes, ano)
+        projecao = _agregar(lanc)
+        realizado = _agregar([l for l in lanc if l.realizado])
+        a_vir = _agregar([l for l in lanc if not l.realizado])
+        return projecao, realizado, a_vir
+
+    def test_recorrencia_dia_futuro_projeta_mas_nao_realiza(self, session):
+        _add_recorrencia(session, dia=20)  # dia 20 > hoje 15
+        (rec_p, _), (rec_r, _), (rec_v, _) = self._leituras(session, 7, 2026)
+        assert _q(rec_p) == Decimal("10000.00")  # projeção conta
+        assert rec_r == _ZERO  # realizado NÃO conta
+        assert _q(rec_v) == Decimal("10000.00")  # a-vir conta
+
+    def test_recorrencia_dia_passado_realiza(self, session):
+        _add_recorrencia(session, dia=10)  # dia 10 < hoje 15
+        (rec_p, _), (rec_r, _), (rec_v, _) = self._leituras(session, 7, 2026)
+        assert _q(rec_p) == Decimal("10000.00")
+        assert _q(rec_r) == Decimal("10000.00")
+        assert rec_v == _ZERO
+
+    def test_fronteira_dia_igual_hoje_conta_como_realizado(self, session):
+        _add_recorrencia(session, dia=15)  # dia == hoje → <= inclui
+        _, (rec_r, _), (rec_v, _) = self._leituras(session, 7, 2026)
+        assert _q(rec_r) == Decimal("10000.00")
+        assert rec_v == _ZERO
+
+    def test_parcela_vencimento_futuro_projeta_mas_nao_realiza(self, session):
+        # 12x de jan/2026: a parcela de julho vence dia 10 por padrão do helper
+        # (_add_parcelada usa data_vencimento dia 10) → realizada. Criar caso
+        # com vencimento dia 20 exige parcela própria:
+        pai = _add_parcelada(session, "1200.00", 12, 1, 2026)
+        parcela_jul = session.exec(
+            select(Parcela).where(Parcela.fatura_mes == 7, Parcela.fatura_ano == 2026)
+        ).one()
+        parcela_jul.data_vencimento = dt.date(2026, 7, 20)  # > hoje 15
+        session.commit()
+
+        (_, desp_p), (_, desp_r), (_, desp_v) = self._leituras(session, 7, 2026)
+        assert _q(desp_p) == Decimal("100.00")  # projeção conta
+        assert desp_r == _ZERO  # ainda não venceu
+        assert _q(desp_v) == Decimal("100.00")
+        # junho (mês passado): a parcela venceu dia 10 → integral/realizada
+        (_, desp_p6), (_, desp_r6), (_, desp_v6) = self._leituras(session, 6, 2026)
+        assert _q(desp_p6) == _q(desp_r6) == Decimal("100.00")
+        assert desp_v6 == _ZERO
+
+    def test_parcela_vencimento_passado_realiza(self, session):
+        _add_parcelada(session, "1200.00", 12, 1, 2026)  # julho vence dia 10 < 15
+        (_, desp_p), (_, desp_r), (_, desp_v) = self._leituras(session, 7, 2026)
+        assert _q(desp_p) == _q(desp_r) == Decimal("100.00")
+        assert desp_v == _ZERO
+
+    def test_invariante_realizado_mais_a_vir_igual_projecao(self, session):
+        # 4 fontes juntas no mês corrente, com itens antes E depois do dia 15
+        _add_parcelada(session, "1200.00", 12, 1, 2026)  # parcela jul vence dia 10
+        _add_recorrencia(session, dia=20)  # receita a vir
+        _add_recorrencia(session, tipo="despesa", categoria="Moradia",
+                         valor="2000.00", dia=5)  # despesa realizada
+        session.add(  # à vista (Fonte 3)
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 7, 10),
+                descricao="mercado", valor=Decimal("80.00"), categoria="Mercado",
+                forma_pagamento="Débito", parcelado=False,
+            )
+        )
+        session.add(  # avulsa faturada em jul (Fonte 2)
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 6, 25),
+                descricao="avulsa", valor=Decimal("300.00"), categoria="Eletrônicos",
+                forma_pagamento="Crédito", cartao_id=1, parcelado=False,
+                fatura_mes=7, fatura_ano=2026,
+            )
+        )
+        session.commit()
+
+        (rp, dp), (rr, dr), (rv, dv) = self._leituras(session, 7, 2026)
+        assert _q(rr + rv) == _q(rp)  # receitas: realizado + a_vir == projeção
+        assert _q(dr + dv) == _q(dp)  # despesas idem
+        # decomposição exata: só a recorrência dia 20 está a vir
+        assert _q(rv) == Decimal("10000.00")
+        assert dv == _ZERO
+
+    def test_mes_passado_e_futuro_integrais_sem_a_vir(self, session):
+        _add_recorrencia(session, dia=20, mes_inicio=1, ano_inicio=2026)
+        for mes in (6, 8):  # passado e futuro; dia 20 > hoje 15 é irrelevante
+            (rec_p, _), (rec_r, _), (rec_v, _) = self._leituras(session, mes, 2026)
+            assert _q(rec_p) == _q(rec_r) == Decimal("10000.00")
+            assert rec_v == _ZERO  # a_vir só existe no mês corrente
+
+    def test_fontes_2_e_3_integrais_no_mes_corrente(self, session):
+        # À vista com data FUTURA (dia 20 > hoje 15) e avulsa faturada no
+        # corrente: ambas seguem realizadas (§1.3.2 — sem corte).
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 7, 20),
+                descricao="à vista futura", valor=Decimal("50.00"), categoria="Mercado",
+                forma_pagamento="Débito", parcelado=False,
+            )
+        )
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 6, 25),
+                descricao="avulsa", valor=Decimal("300.00"), categoria="Eletrônicos",
+                forma_pagamento="Crédito", cartao_id=1, parcelado=False,
+                fatura_mes=7, fatura_ano=2026,
+            )
+        )
+        session.commit()
+
+        (_, desp_p), (_, desp_r), (_, desp_v) = self._leituras(session, 7, 2026)
+        assert _q(desp_p) == _q(desp_r) == Decimal("350.00")
+        assert desp_v == _ZERO
+
+    def test_flags_do_anual_batem_com_o_mensal_no_mes_corrente(self, session):
+        _add_parcelada(session, "1200.00", 12, 1, 2026)
+        _add_recorrencia(session, dia=20)
+
+        mensal = _lancamentos_mes(session, 1, 7, 2026)
+        anual_jul = _lancamentos_ano(session, 1, 2026)[7]
+        chave = lambda l: (l.tipo, str(_q(l.valor)), l.categoria, l.recorrente, l.realizado)  # noqa: E731
+        assert sorted(map(chave, mensal)) == sorted(map(chave, anual_jul))

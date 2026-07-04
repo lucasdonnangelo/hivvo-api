@@ -74,6 +74,28 @@ class RecorrenciaUpdate(BaseModel):
         return v
 
 
+class RecorrenciaCorrigirValor(BaseModel):
+    """PATCH /{id}/corrigir-valor — operação de ERRO (§3.1.2): reescreve o valor
+    em TODOS os meses (só permitido com vigência única). Distinta do PATCH
+    normal, que VERSIONA ("a realidade mudou")."""
+
+    valor: Decimal
+
+    @field_validator("valor", mode="before")
+    @classmethod
+    def normaliza_decimal(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.replace(",", ".")
+        return v
+
+    @field_validator("valor")
+    @classmethod
+    def valor_positivo(cls, v: Decimal) -> Decimal:
+        if v <= 0:
+            raise ValueError("valor deve ser positivo")
+        return v
+
+
 class VigenciaResponse(BaseModel):
     valor: Decimal
     mes_inicio: int

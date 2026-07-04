@@ -195,6 +195,57 @@ Para o usuário, a UX é simples ("editar minha receita"): ele não vê a mecân
 Modelo interno: uma recorrência é uma **linha do tempo de vigências** (cada versão com seu
 período de validade), não um único registro mutável. Detalhar estrutura exata na Fase 2.
 
+### 3.1.2 Duas categorias de operação: "a realidade mudou" vs. "foi um erro"
+
+> Conceito transversal (motivado por: o usuário pode criar/valorar uma recorrência POR ENGANO —
+> e o modelo versionado, que preserva o passado, preserva um passado que é LIXO, não história).
+
+O modelo versionado (§3.1.1) assume que o passado é sempre **verdade** (um valor antigo era o
+valor que valia à época). Mas erros existem. Então toda operação de edição da recorrência tem
+**duas intenções possíveis**, e a UI deve deixar o usuário escolher:
+
+**Operações "a realidade mudou" (preservam o passado):**
+- **Alterar valor** (versionado): o valor mudou a partir de agora (ex.: aumento de salário). Fecha
+  a vigência atual, abre nova do mês corrente. O passado mantém o valor antigo. *(§3.1.1, já existe)*
+- **Encerrar** (soft delete): a recorrência acabou (ex.: saiu do emprego). Fecha a última vigência
+  no mês corrente. O histórico é preservado. *(§3.4, já existe)*
+
+**Operações "foi um erro" (corrigem/eliminam o passado):**
+- **Corrigir valor** (retroativo): o valor sempre foi outro (ex.: digitou 100000, era 10000). NÃO
+  versiona — corrige o valor **em todos os meses**, inclusive passados. O passado errado é
+  reescrito. *(novo)*
+- **Apagar permanentemente** (hard delete): a recorrência nunca deveria ter existido (criada por
+  engano). Remove a `Recorrencia` e TODAS as `RecorrenciaVigencia` do banco (DELETE real, não
+  `ativa=False`). Some de todo o histórico e projeção. *(novo)*
+
+**Regra de "corrigir valor" — só para erro FRESCO (vigência única):** "corrigir valor" só é
+oferecido quando a recorrência tem UMA vigência (nunca foi alterada — ou seja, é recém-criada e o
+valor está errado desde a criação). Nesse caso, corrigir muda o valor dessa vigência única
+(reescreve o passado curto que o erro poluiu). Se a recorrência já tem MÚLTIPLAS vigências (o valor
+já foi alterado legitimamente no tempo), "corrigir" NÃO aparece — só "alterar" (versionado) e
+"encerrar"/"apagar". Razão: o caso de "corrigir retroativo uma recorrência com histórico longo de
+valores diferentes" não é real (quem viu o valor por meses sabia o valor; erro de digitação se
+percebe logo, com uma vigência só). Para recomeçar do zero uma recorrência antiga, usa-se apagar
+permanentemente + recriar.
+
+**UX (onde cada operação vive):**
+- Fluxo NORMAL (lista de recorrências): **Encerrar** (o ✕). Seu aviso direciona: "Isso encerra a
+  partir deste mês, mantendo o histórico. Se foi criada por **erro** e quer removê-la
+  completamente, use Editar → Apagar permanentemente."
+- Modo CORREÇÃO DE ERRO (dentro do modal de Editar, mais fundo/deliberado):
+  - Ao mudar o valor: duas intenções NOMEADAS — "Alterar valor" (a partir deste mês) vs. "Corrigir
+    valor" (foi erro, todos os meses).
+  - No rodapé: "Apagar permanentemente" (cor de perigo, discreto), com aviso claro do que se perde
+    e confirmação normal (não-hard: um botão bem rotulado + cor de perigo, SEM exigir digitar nome/
+    duplo passo — a fricção vem de estar mais fundo e do aviso honesto, proporcional ao dano de UMA
+    recorrência, não de dados de conta).
+
+**Princípio geral (vai reaparecer em outras entidades):** a distinção "a realidade mudou" (preserva
+passado) vs. "foi um erro" (corrige passado) é transversal — vai valer para parcelas, transações,
+etc. Deleção/edição de erro deve ser SEMPRE distinta, mais deliberada, e bem avisada. (Primeira
+instância da questão maior: o Hivvo terá lixeira/desfazer, ou deleção é definitiva? Por ora,
+definitiva — registrar para decisão futura de filosofia de dados.)
+
 ### 3.4 Design detalhado da entidade (para a Fase 2)
 
 > Esta seção fecha os detalhes de implementação da recorrência, para a Fase 2 ser executada

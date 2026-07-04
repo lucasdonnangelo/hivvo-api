@@ -18,6 +18,7 @@ from app.core.dates import hoje
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.user import Usuario
 from app.schemas.recorrencia import (
+    RecorrenciaCorrigirValor,
     RecorrenciaCreate,
     RecorrenciaDetailResponse,
     RecorrenciaResponse,
@@ -245,3 +246,70 @@ def delete_recorrencia(
     rec.ativa = False
     session.add(rec)
     session.commit()
+
+
+# --- Operações de ERRO (§3.1.2) — corrigem/eliminam o passado. Rotas SEPARADAS
+# das operações normais (que preservam o passado): impossíveis de acionar por
+# engano por um cliente que só conhece DELETE /{id} e PATCH /{id}.
+
+
+@router.delete("/{id}/permanente", status_code=status.HTTP_204_NO_CONTENT)
+def hard_delete_recorrencia(
+    id: uuid.UUID,
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """APAGA PERMANENTEMENTE (§3.1.2 — "foi um erro"): remove a recorrência e
+    TODAS as vigências do banco. Some de todo o histórico e projeção (nada é
+    materializado em outras tabelas — §3.3 — então apagar a regra limpa tudo).
+
+    Distinto do DELETE /{id} (encerrar, que preserva o passado). Aceita também
+    recorrência ENCERRADA (é a borracha — cobre "encerrei por engano" e o
+    "apagar + recriar" do doc). Deletes explícitos num único commit: o CASCADE
+    do Postgres (migration 2a) fica como defesa em profundidade (convenção do
+    Batch 11a — o SQLite dos testes não o enforça).
+    """
+    rec = _get_propria(session, current_user, id, exigir_ativa=False)
+
+    for vigencia in session.exec(
+        select(RecorrenciaVigencia).where(RecorrenciaVigencia.recorrencia_id == rec.id)
+    ).all():
+        session.delete(vigencia)
+    session.delete(rec)
+    session.commit()
+
+
+@router.patch("/{id}/corrigir-valor", response_model=RecorrenciaDetailResponse)
+def corrigir_valor_recorrencia(
+    id: uuid.UUID,
+    body: RecorrenciaCorrigirValor,
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """CORRIGE o valor retroativamente (§3.1.2 — "foi um erro"): reescreve o
+    valor em TODOS os meses. Só permitido com vigência ÚNICA (erro fresco —
+    recém-criada com valor digitado errado). NÃO versiona, não cria vigência.
+
+    Distinto do PATCH /{id} (alterar, que versiona preservando o passado).
+    Com múltiplas vigências (valor já alterado legitimamente no tempo), a
+    correção retroativa não se aplica → 409; o caminho é alterar (versionado)
+    ou apagar permanentemente + recriar.
+    """
+    rec = _get_propria(session, current_user, id, exigir_ativa=True)
+
+    vigencias = _vigencias_ordenadas(session, rec.id)
+    if len(vigencias) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Correção retroativa indisponível: a recorrência já teve o valor "
+                "alterado. Use alterar (a partir deste mês) ou apague "
+                "permanentemente e recrie."
+            ),
+        )
+
+    vigencias[0].valor = body.valor
+    session.add(vigencias[0])
+    session.commit()
+    session.refresh(rec)
+    return _detail(rec, _vigencias_ordenadas(session, rec.id))

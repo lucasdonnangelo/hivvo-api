@@ -326,3 +326,144 @@ class TestIsolamento:
         rec = session.get(Recorrencia, uuid.UUID(rec_id))
         assert rec.ativa is True
         assert _q(_vigencias_db(session)[0].valor) == Decimal("10000.00")
+
+
+class TestHardDelete:
+    """§3.1.2 — "foi um erro": DELETE /{id}/permanente apaga recorrência E
+    vigências do banco (some do histórico e da projeção). Distinto do DELETE
+    /{id} (encerrar), que preserva o passado e não apaga linhas."""
+
+    def _criar_desde_jan(self, client):
+        return client.post(
+            "/recorrencias", json=_payload(mes_inicio=1, ano_inicio=2026)
+        ).json()["id"]
+
+    def test_apaga_linhas_e_some_da_projecao_passada(self, session, users, as_user):
+        client = as_user(users[0])
+        rec_id = self._criar_desde_jan(client)
+        uid = users[0].id
+        assert _q(_receitas(session, uid, 3, 2026)) == Decimal("10000.00")  # antes
+
+        resp = client.delete(f"/recorrencias/{rec_id}/permanente")
+        assert resp.status_code == 204
+
+        # linhas somem do banco (cabeçalho E vigências)
+        assert session.exec(select(Recorrencia)).all() == []
+        assert _vigencias_db(session) == []
+        # some da projeção inclusive no PASSADO (contraste com o soft delete)
+        assert _receitas(session, uid, 3, 2026) == _ZERO
+        assert _receitas(session, uid, 7, 2026) == _ZERO
+        # e do contrato de leitura
+        assert client.get(f"/recorrencias/{rec_id}").status_code == 404
+        assert client.get("/recorrencias", params={"incluir_encerradas": True}).json() == []
+
+    def test_funciona_em_recorrencia_encerrada(self, session, users, as_user):
+        # encerrou por engano → ainda dá para apagar permanentemente
+        client = as_user(users[0])
+        rec_id = self._criar_desde_jan(client)
+        client.delete(f"/recorrencias/{rec_id}")  # soft: encerra
+        assert len(_vigencias_db(session)) == 1  # soft NÃO apagou
+
+        assert client.delete(f"/recorrencias/{rec_id}/permanente").status_code == 204
+        assert session.exec(select(Recorrencia)).all() == []
+        assert _vigencias_db(session) == []
+
+    def test_soft_delete_segue_sem_apagar_linhas(self, session, users, as_user):
+        # contraste explícito: o DELETE normal (encerrar) preserva as linhas
+        client = as_user(users[0])
+        rec_id = self._criar_desde_jan(client)
+        client.delete(f"/recorrencias/{rec_id}")
+
+        assert len(session.exec(select(Recorrencia)).all()) == 1
+        assert len(_vigencias_db(session)) == 1
+        assert _q(_receitas(session, users[0].id, 3, 2026)) == Decimal("10000.00")
+
+    def test_isolamento_404_e_nada_apagado(self, session, users, as_user):
+        user_a, user_b = users
+        rec_id = as_user(user_a).post(
+            "/recorrencias", json=_payload(mes_inicio=1, ano_inicio=2026)
+        ).json()["id"]
+
+        resp = as_user(user_b).delete(f"/recorrencias/{rec_id}/permanente")
+        assert resp.status_code == 404
+        assert len(session.exec(select(Recorrencia)).all()) == 1
+        assert len(_vigencias_db(session)) == 1
+
+
+class TestCorrigirValor:
+    """§3.1.2 — "foi um erro": PATCH /{id}/corrigir-valor reescreve o valor em
+    todos os meses, SÓ com vigência única (erro fresco). Distinto do PATCH
+    /{id} (alterar), que versiona."""
+
+    def _criar_desde_jan(self, client, valor="100000.00"):
+        # criada com valor ERRADO (digitou 100000, era 10000)
+        return client.post(
+            "/recorrencias", json=_payload(valor=valor, mes_inicio=1, ano_inicio=2026)
+        ).json()["id"]
+
+    def test_vigencia_unica_reescreve_in_place_e_corrige_o_passado(
+        self, session, users, as_user
+    ):
+        client = as_user(users[0])
+        rec_id = self._criar_desde_jan(client)
+        id_vigencia_original = _vigencias_db(session)[0].id
+        uid = users[0].id
+        assert _q(_receitas(session, uid, 3, 2026)) == Decimal("100000.00")  # errado
+
+        resp = client.patch(
+            f"/recorrencias/{rec_id}/corrigir-valor", json={"valor": "10000.00"}
+        )
+        assert resp.status_code == 200
+        assert _q(resp.json()["valor_vigente"]) == Decimal("10000.00")
+
+        vigs = _vigencias_db(session)
+        assert len(vigs) == 1  # NÃO versionou — nenhuma vigência nova
+        assert vigs[0].id == id_vigencia_original  # a MESMA linha, reescrita
+        assert _periodo(vigs[0]) == (1, 2026, None, None)  # período intacto
+        assert _q(vigs[0].valor) == Decimal("10000.00")
+        # o passado reflete o valor corrigido, não o errado
+        assert _q(_receitas(session, uid, 3, 2026)) == Decimal("10000.00")
+        assert _q(_receitas(session, uid, 12, 2027)) == Decimal("10000.00")
+
+    def test_multiplas_vigencias_409_e_nada_muda(self, session, users, as_user):
+        client = as_user(users[0])
+        rec_id = self._criar_desde_jan(client)
+        client.patch(f"/recorrencias/{rec_id}", json={"valor": "12000.00"})  # versiona
+        antes = [(v.id, _q(v.valor), _periodo(v)) for v in _vigencias_db(session)]
+        assert len(antes) == 2
+
+        resp = client.patch(
+            f"/recorrencias/{rec_id}/corrigir-valor", json={"valor": "10000.00"}
+        )
+        assert resp.status_code == 409
+        assert "Correção retroativa indisponível" in resp.json()["detail"]
+        depois = [(v.id, _q(v.valor), _periodo(v)) for v in _vigencias_db(session)]
+        assert depois == antes  # vigências intactas
+
+    def test_encerrada_404(self, users, as_user):
+        client = as_user(users[0])
+        rec_id = self._criar_desde_jan(client)
+        client.delete(f"/recorrencias/{rec_id}")  # encerra (soft)
+
+        resp = client.patch(
+            f"/recorrencias/{rec_id}/corrigir-valor", json={"valor": "10000.00"}
+        )
+        assert resp.status_code == 404
+
+    def test_isolamento_404(self, session, users, as_user):
+        user_a, user_b = users
+        rec_id = self._criar_desde_jan(as_user(user_a))
+
+        resp = as_user(user_b).patch(
+            f"/recorrencias/{rec_id}/corrigir-valor", json={"valor": "10000.00"}
+        )
+        assert resp.status_code == 404
+        assert _q(_vigencias_db(session)[0].valor) == Decimal("100000.00")
+
+    @pytest.mark.parametrize("valor", ["0.00", "-10.00"])
+    def test_valor_invalido_422(self, users, as_user, valor):
+        client = as_user(users[0])
+        rec_id = self._criar_desde_jan(client)
+
+        resp = client.patch(f"/recorrencias/{rec_id}/corrigir-valor", json={"valor": valor})
+        assert resp.status_code == 422

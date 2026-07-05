@@ -44,6 +44,33 @@ def _payload(**over):
     return base
 
 
+def _semear_recorrencia_passada(session, uid, valor="10000.00"):
+    """Monta direto no banco uma recorrência aberta desde jan/2026 (passado vs.
+    hoje=15/07/2026). O POST agora barra início no passado (Bug 2 — piso no mês
+    corrente), mas esse ESTADO é legítimo: é como fica uma recorrência criada
+    meses atrás e ainda vigente. Os testes de editar/encerrar/corrigir precisam
+    desse passado, então montam o estado direto — não via POST (que é o endpoint
+    guardado; sua cobertura de sucesso vive em TestCriar e TestPisoInicioNoPassado)."""
+    rec = Recorrencia(
+        usuario_id=uid,
+        tipo="receita",
+        categoria="Salário",
+        forma_pagamento="Pix",
+        dia_do_mes=20,
+        descricao="Salário CLT",
+    )
+    session.add(rec)
+    session.flush()
+    session.add(
+        RecorrenciaVigencia(
+            recorrencia_id=rec.id, valor=Decimal(valor), mes_inicio=1, ano_inicio=2026
+        )
+    )
+    session.commit()
+    session.refresh(rec)
+    return str(rec.id)
+
+
 def _vigencias_db(session):
     return session.exec(
         select(RecorrenciaVigencia).order_by(
@@ -118,6 +145,57 @@ class TestCriar:
         assert resp.status_code == 422
 
 
+class TestPisoInicioNoPassado:
+    """Bug 2 — o POST barra override com início ANTERIOR ao mês corrente (o
+    passado é verdade histórica, §3.1.2; não se inventa recorrência retroativa).
+    hoje congelado em 15/07/2026 (fixture clock). Corrente e futuro passam; o
+    default (regra do dia) nunca resolve para o passado e fica intacto."""
+
+    def test_override_mes_passado_422(self, users, as_user):
+        resp = as_user(users[0]).post(
+            "/recorrencias", json=_payload(mes_inicio=6, ano_inicio=2026)
+        )
+        assert resp.status_code == 422
+        assert "anterior ao mês corrente" in resp.json()["detail"]
+
+    def test_override_ano_passado_422(self, users, as_user):
+        resp = as_user(users[0]).post(
+            "/recorrencias", json=_payload(mes_inicio=12, ano_inicio=2025)
+        )
+        assert resp.status_code == 422
+
+    def test_override_mes_corrente_ok(self, users, as_user):
+        resp = as_user(users[0]).post(
+            "/recorrencias", json=_payload(mes_inicio=7, ano_inicio=2026)
+        )
+        assert resp.status_code == 201
+        vig = resp.json()["vigencias"][0]
+        assert (vig["mes_inicio"], vig["ano_inicio"]) == (7, 2026)
+
+    def test_override_mes_futuro_ok(self, users, as_user):
+        resp = as_user(users[0]).post(
+            "/recorrencias", json=_payload(mes_inicio=9, ano_inicio=2026)
+        )
+        assert resp.status_code == 201
+        vig = resp.json()["vigencias"][0]
+        assert (vig["mes_inicio"], vig["ano_inicio"]) == (9, 2026)
+
+    def test_default_dia_futuro_mes_corrente_ok(self, users, as_user):
+        # sem mes_inicio: regra do dia. dia 20 > hoje 15 → mês corrente (o piso
+        # não toca o default — ele nunca resolve para o passado).
+        resp = as_user(users[0]).post("/recorrencias", json=_payload(dia_do_mes=20))
+        assert resp.status_code == 201
+        vig = resp.json()["vigencias"][0]
+        assert (vig["mes_inicio"], vig["ano_inicio"]) == (7, 2026)
+
+    def test_default_dia_passado_mes_seguinte_ok(self, users, as_user):
+        # dia 10 < hoje 15 → mês seguinte (agosto). Default intacto.
+        resp = as_user(users[0]).post("/recorrencias", json=_payload(dia_do_mes=10))
+        assert resp.status_code == 201
+        vig = resp.json()["vigencias"][0]
+        assert (vig["mes_inicio"], vig["ano_inicio"]) == (8, 2026)
+
+
 class TestRegraDiaDefaultInicio:
     """Fase 3a-backend: o mês de início DEFAULT depende do dia da recorrência
     vs. hoje (lógica de negócio). hoje congelado em 15/07/2026 (fixture clock);
@@ -160,16 +238,11 @@ class TestRegraDiaDefaultInicio:
 
 
 class TestEditarValor:
-    def _criar_desde_jan(self, client, **over):
-        return client.post(
-            "/recorrencias", json=_payload(mes_inicio=1, ano_inicio=2026, **over)
-        ).json()["id"]
-
     def test_fecha_antiga_e_abre_nova_sem_gap_nem_sobreposicao(
         self, session, users, as_user
     ):
         client = as_user(users[0])
-        rec_id = self._criar_desde_jan(client)
+        rec_id = _semear_recorrencia_passada(session, users[0].id)
 
         resp = client.patch(f"/recorrencias/{rec_id}", json={"valor": "12000.00"})
         assert resp.status_code == 200
@@ -190,7 +263,7 @@ class TestEditarValor:
 
     def test_editar_duas_vezes_no_mes_nao_cria_degenerada(self, session, users, as_user):
         client = as_user(users[0])
-        rec_id = self._criar_desde_jan(client)
+        rec_id = _semear_recorrencia_passada(session, users[0].id)
         client.patch(f"/recorrencias/{rec_id}", json={"valor": "12000.00"})
         client.patch(f"/recorrencias/{rec_id}", json={"valor": "13000.00"})
 
@@ -235,9 +308,7 @@ class TestEditarValor:
 class TestEditarMetadados:
     def test_retroativo_no_cabecalho_vigencias_intactas(self, session, users, as_user):
         client = as_user(users[0])
-        rec_id = client.post(
-            "/recorrencias", json=_payload(mes_inicio=1, ano_inicio=2026)
-        ).json()["id"]
+        rec_id = _semear_recorrencia_passada(session, users[0].id)
 
         resp = client.patch(
             f"/recorrencias/{rec_id}",
@@ -259,9 +330,7 @@ class TestEditarMetadados:
 class TestDelete:
     def test_preserva_passado_e_para_o_futuro(self, session, users, as_user):
         client = as_user(users[0])
-        rec_id = client.post(
-            "/recorrencias", json=_payload(mes_inicio=1, ano_inicio=2026)
-        ).json()["id"]
+        rec_id = _semear_recorrencia_passada(session, users[0].id)
 
         resp = client.delete(f"/recorrencias/{rec_id}")
         assert resp.status_code == 204
@@ -333,14 +402,9 @@ class TestHardDelete:
     vigências do banco (some do histórico e da projeção). Distinto do DELETE
     /{id} (encerrar), que preserva o passado e não apaga linhas."""
 
-    def _criar_desde_jan(self, client):
-        return client.post(
-            "/recorrencias", json=_payload(mes_inicio=1, ano_inicio=2026)
-        ).json()["id"]
-
     def test_apaga_linhas_e_some_da_projecao_passada(self, session, users, as_user):
         client = as_user(users[0])
-        rec_id = self._criar_desde_jan(client)
+        rec_id = _semear_recorrencia_passada(session, users[0].id)
         uid = users[0].id
         assert _q(_receitas(session, uid, 3, 2026)) == Decimal("10000.00")  # antes
 
@@ -360,7 +424,7 @@ class TestHardDelete:
     def test_funciona_em_recorrencia_encerrada(self, session, users, as_user):
         # encerrou por engano → ainda dá para apagar permanentemente
         client = as_user(users[0])
-        rec_id = self._criar_desde_jan(client)
+        rec_id = _semear_recorrencia_passada(session, users[0].id)
         client.delete(f"/recorrencias/{rec_id}")  # soft: encerra
         assert len(_vigencias_db(session)) == 1  # soft NÃO apagou
 
@@ -371,7 +435,7 @@ class TestHardDelete:
     def test_soft_delete_segue_sem_apagar_linhas(self, session, users, as_user):
         # contraste explícito: o DELETE normal (encerrar) preserva as linhas
         client = as_user(users[0])
-        rec_id = self._criar_desde_jan(client)
+        rec_id = _semear_recorrencia_passada(session, users[0].id)
         client.delete(f"/recorrencias/{rec_id}")
 
         assert len(session.exec(select(Recorrencia)).all()) == 1
@@ -380,9 +444,7 @@ class TestHardDelete:
 
     def test_isolamento_404_e_nada_apagado(self, session, users, as_user):
         user_a, user_b = users
-        rec_id = as_user(user_a).post(
-            "/recorrencias", json=_payload(mes_inicio=1, ano_inicio=2026)
-        ).json()["id"]
+        rec_id = _semear_recorrencia_passada(session, user_a.id)
 
         resp = as_user(user_b).delete(f"/recorrencias/{rec_id}/permanente")
         assert resp.status_code == 404
@@ -395,17 +457,12 @@ class TestCorrigirValor:
     todos os meses, SÓ com vigência única (erro fresco). Distinto do PATCH
     /{id} (alterar), que versiona."""
 
-    def _criar_desde_jan(self, client, valor="100000.00"):
-        # criada com valor ERRADO (digitou 100000, era 10000)
-        return client.post(
-            "/recorrencias", json=_payload(valor=valor, mes_inicio=1, ano_inicio=2026)
-        ).json()["id"]
-
     def test_vigencia_unica_reescreve_in_place_e_corrige_o_passado(
         self, session, users, as_user
     ):
         client = as_user(users[0])
-        rec_id = self._criar_desde_jan(client)
+        # criada com valor ERRADO (digitou 100000, era 10000)
+        rec_id = _semear_recorrencia_passada(session, users[0].id, valor="100000.00")
         id_vigencia_original = _vigencias_db(session)[0].id
         uid = users[0].id
         assert _q(_receitas(session, uid, 3, 2026)) == Decimal("100000.00")  # errado
@@ -427,7 +484,7 @@ class TestCorrigirValor:
 
     def test_multiplas_vigencias_409_e_nada_muda(self, session, users, as_user):
         client = as_user(users[0])
-        rec_id = self._criar_desde_jan(client)
+        rec_id = _semear_recorrencia_passada(session, users[0].id, valor="100000.00")
         client.patch(f"/recorrencias/{rec_id}", json={"valor": "12000.00"})  # versiona
         antes = [(v.id, _q(v.valor), _periodo(v)) for v in _vigencias_db(session)]
         assert len(antes) == 2
@@ -440,9 +497,9 @@ class TestCorrigirValor:
         depois = [(v.id, _q(v.valor), _periodo(v)) for v in _vigencias_db(session)]
         assert depois == antes  # vigências intactas
 
-    def test_encerrada_404(self, users, as_user):
+    def test_encerrada_404(self, session, users, as_user):
         client = as_user(users[0])
-        rec_id = self._criar_desde_jan(client)
+        rec_id = _semear_recorrencia_passada(session, users[0].id, valor="100000.00")
         client.delete(f"/recorrencias/{rec_id}")  # encerra (soft)
 
         resp = client.patch(
@@ -452,7 +509,7 @@ class TestCorrigirValor:
 
     def test_isolamento_404(self, session, users, as_user):
         user_a, user_b = users
-        rec_id = self._criar_desde_jan(as_user(user_a))
+        rec_id = _semear_recorrencia_passada(session, user_a.id, valor="100000.00")
 
         resp = as_user(user_b).patch(
             f"/recorrencias/{rec_id}/corrigir-valor", json={"valor": "10000.00"}
@@ -461,9 +518,9 @@ class TestCorrigirValor:
         assert _q(_vigencias_db(session)[0].valor) == Decimal("100000.00")
 
     @pytest.mark.parametrize("valor", ["0.00", "-10.00"])
-    def test_valor_invalido_422(self, users, as_user, valor):
+    def test_valor_invalido_422(self, session, users, as_user, valor):
         client = as_user(users[0])
-        rec_id = self._criar_desde_jan(client)
+        rec_id = _semear_recorrencia_passada(session, users[0].id, valor="100000.00")
 
         resp = client.patch(f"/recorrencias/{rec_id}/corrigir-valor", json={"valor": valor})
         assert resp.status_code == 422

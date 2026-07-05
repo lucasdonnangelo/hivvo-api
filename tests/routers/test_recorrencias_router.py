@@ -527,10 +527,11 @@ class TestCorrigirValor:
 
 
 class TestValorExibicao:
-    """Bug 1 — a gestão precisa de um valor não-nulo para recorrência de início
-    FUTURO (valor_vigente é null quando nada vige hoje). valor_exibicao cai para
-    a vigência futura mais próxima; ENCERRADA (só passado) permanece null. hoje
-    congelado em 15/07/2026 (fixture clock). valor_vigente fica intocado."""
+    """Bug 1 (+ complemento) — a gestão precisa de um valor E de um início não-
+    nulos para recorrência de início FUTURO (valor_vigente é null quando nada
+    vige hoje). valor_exibicao/mes_exibicao/ano_exibicao caem para a vigência
+    futura mais próxima (a MESMA para os três); ENCERRADA (só passado) → tudo
+    null. hoje congelado em 15/07/2026. valor_vigente fica intocado."""
 
     def test_inicio_mes_seguinte_expoe_valor_futuro(self, users, as_user):
         client = as_user(users[0])
@@ -538,11 +539,21 @@ class TestValorExibicao:
         body = client.post("/recorrencias", json=_payload(dia_do_mes=10)).json()
         assert body["valor_vigente"] is None
         assert _q(body["valor_exibicao"]) == Decimal("10000.00")
+        assert (body["mes_exibicao"], body["ano_exibicao"]) == (8, 2026)
+
+        # coerência: valor e início são da MESMA vigência futura
+        vig = body["vigencias"][0]
+        assert (vig["mes_inicio"], vig["ano_inicio"]) == (
+            body["mes_exibicao"],
+            body["ano_exibicao"],
+        )
+        assert _q(vig["valor"]) == _q(body["valor_exibicao"])
 
         # a mesma regra na LISTA (não só no detalhe do POST)
         item = client.get("/recorrencias").json()[0]
         assert item["valor_vigente"] is None
         assert _q(item["valor_exibicao"]) == Decimal("10000.00")
+        assert (item["mes_exibicao"], item["ano_exibicao"]) == (8, 2026)
 
     def test_vigente_hoje_exibicao_igual_vigente(self, users, as_user):
         client = as_user(users[0])
@@ -550,6 +561,8 @@ class TestValorExibicao:
         body = client.post("/recorrencias", json=_payload(dia_do_mes=20)).json()
         assert _q(body["valor_vigente"]) == Decimal("10000.00")
         assert _q(body["valor_exibicao"]) == _q(body["valor_vigente"])
+        # já está valendo → sem "a partir de"
+        assert body["mes_exibicao"] is None and body["ano_exibicao"] is None
 
     def test_encerrada_so_passado_exibicao_null(self, session, users, as_user):
         # Borda crítica: vigência fechada em mar/2026 (passado), ativa=False. Nada
@@ -581,12 +594,14 @@ class TestValorExibicao:
         detail = as_user(users[0]).get(f"/recorrencias/{rec.id}").json()
         assert detail["valor_vigente"] is None
         assert detail["valor_exibicao"] is None
+        assert detail["mes_exibicao"] is None and detail["ano_exibicao"] is None
 
         # na lista (incluir_encerradas) também permanece null
         item = as_user(users[0]).get(
             "/recorrencias", params={"incluir_encerradas": True}
         ).json()[0]
         assert item["valor_exibicao"] is None
+        assert item["mes_exibicao"] is None and item["ano_exibicao"] is None
 
     def test_inicio_futuro_distante_pega_primeira_vigencia(self, users, as_user):
         client = as_user(users[0])
@@ -596,6 +611,7 @@ class TestValorExibicao:
         ).json()
         assert body["valor_vigente"] is None
         assert _q(body["valor_exibicao"]) == Decimal("10000.00")
+        assert (body["mes_exibicao"], body["ano_exibicao"]) == (10, 2026)
 
     def test_multiplas_vigencias_uma_vigente_hoje(self, session, users, as_user):
         client = as_user(users[0])
@@ -606,3 +622,5 @@ class TestValorExibicao:
         detail = client.get(f"/recorrencias/{rec_id}").json()
         assert _q(detail["valor_vigente"]) == Decimal("12000.00")
         assert _q(detail["valor_exibicao"]) == _q(detail["valor_vigente"])
+        # vige hoje → sem início de exibição
+        assert detail["mes_exibicao"] is None and detail["ano_exibicao"] is None

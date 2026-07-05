@@ -25,7 +25,7 @@ from app.schemas.recorrencia import (
     RecorrenciaUpdate,
 )
 from app.services.estatisticas import _recorrencias_com_vigencias
-from app.services.recorrencias import valor_exibicao, valor_no_mes
+from app.services.recorrencias import dados_exibicao, valor_no_mes
 
 router = APIRouter(prefix="/recorrencias", tags=["recorrencias"])
 
@@ -90,11 +90,14 @@ def _detail(
     rec: Recorrencia, vigencias: list[RecorrenciaVigencia]
 ) -> RecorrenciaDetailResponse:
     h = hoje()
+    val_exib, mes_exib, ano_exib = dados_exibicao(rec, vigencias, h.month, h.year)
     return RecorrenciaDetailResponse.model_validate(
         {
             **rec.model_dump(),
             "valor_vigente": valor_no_mes(rec, vigencias, h.month, h.year),
-            "valor_exibicao": valor_exibicao(rec, vigencias, h.month, h.year),
+            "valor_exibicao": val_exib,
+            "mes_exibicao": mes_exib,
+            "ano_exibicao": ano_exib,
             "vigencias": vigencias,
         }
     )
@@ -165,12 +168,15 @@ def list_recorrencias(
     for rec, vigencias in _recorrencias_com_vigencias(session, current_user.id):
         if not incluir_encerradas and not rec.ativa:
             continue
+        val_exib, mes_exib, ano_exib = dados_exibicao(rec, vigencias, h.month, h.year)
         resposta.append(
             RecorrenciaResponse.model_validate(
                 {
                     **rec.model_dump(),
                     "valor_vigente": valor_no_mes(rec, vigencias, h.month, h.year),
-                    "valor_exibicao": valor_exibicao(rec, vigencias, h.month, h.year),
+                    "valor_exibicao": val_exib,
+                    "mes_exibicao": mes_exib,
+                    "ano_exibicao": ano_exib,
                 }
             )
         )

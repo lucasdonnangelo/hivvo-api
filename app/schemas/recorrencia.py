@@ -123,6 +123,11 @@ class RecorrenciaResponse(BaseModel):
     # vigência futura mais próxima quando nada vige hoje (início futuro).
     # None só quando encerrada (só passado). Aditivo — não substitui valor_vigente.
     valor_exibicao: Optional[Decimal] = None
+    # Início (mês/ano) da vigência de exibição, para a UI mostrar "a partir de
+    # ago/2026". Vêm da MESMA vigência que valor_exibicao. None quando já vige
+    # hoje (sem "a partir de") ou encerrada — coerentes com valor_exibicao.
+    mes_exibicao: Optional[int] = None
+    ano_exibicao: Optional[int] = None
 
     model_config = {"from_attributes": True}
 

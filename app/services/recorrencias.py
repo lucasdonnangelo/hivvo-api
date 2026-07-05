@@ -54,32 +54,36 @@ def valor_no_mes(
     return None
 
 
-def valor_exibicao(
+def dados_exibicao(
     recorrencia: Recorrencia,
     vigencias: Iterable[RecorrenciaVigencia],
     mes: int,
     ano: int,
-) -> Optional[Decimal]:
-    """Valor a EXIBIR na gestão (Bug 1): o que vige na competência (mes, ano),
-    ou — se nada vige — o valor da vigência FUTURA mais próxima (recorrência que
-    ainda vai começar, ex.: "Salário R$10.000, começa em agosto").
+) -> tuple[Optional[Decimal], Optional[int], Optional[int]]:
+    """Dados a EXIBIR na gestão (Bug 1) — valor E início da MESMA vigência de
+    exibição, num só cálculo (por construção não podem divergir):
 
-    Distinto de `valor_no_mes` (que é o "vige HOJE" estrito, base da projeção e
-    de consumidores que dependem do None): este é aditivo, só para exibição.
+    - VIGE na competência (mes, ano) → (valor de hoje, None, None): já está
+      valendo, não há "a partir de".
+    - NÃO vige, mas há vigência FUTURA mais próxima (menor (ano_inicio,
+      mes_inicio) com início >= (ano, mes)) → (valor dela, mes_inicio dela,
+      ano_inicio dela): a UI mostra "R$X · a partir de ago/2026".
+    - ENCERRADA (só vigências passadas, nenhuma futura) → (None, None, None):
+      continua "—" (não pega valor de vigência passada).
 
-    Borda crítica — ENCERRADA: uma recorrência encerrada só tem vigências
-    PASSADAS (fechadas antes do mês corrente) e nenhuma futura. O fallback é
-    restrito a início >= (mes, ano), então encerrada permanece None (não pega
-    valor de vigência passada) — continua "—" na gestão, correto.
+    Distinto de `valor_no_mes` (o "vige HOJE" estrito, base da projeção e de
+    consumidores que dependem do None): aditivo, só para exibição. Fonte ÚNICA do
+    trio de exibição — valor e início vêm SEMPRE da mesma vigência.
     """
     vigencias = list(vigencias)
     vigente = valor_no_mes(recorrencia, vigencias, mes, ano)
     if vigente is not None:
-        return vigente
+        return vigente, None, None
     futuras = [v for v in vigencias if (v.ano_inicio, v.mes_inicio) >= (ano, mes)]
     if not futuras:
-        return None
-    return min(futuras, key=lambda v: (v.ano_inicio, v.mes_inicio)).valor
+        return None, None, None
+    proxima = min(futuras, key=lambda v: (v.ano_inicio, v.mes_inicio))
+    return proxima.valor, proxima.mes_inicio, proxima.ano_inicio
 
 
 def data_ocorrencia(recorrencia: Recorrencia, mes: int, ano: int) -> dt.date:

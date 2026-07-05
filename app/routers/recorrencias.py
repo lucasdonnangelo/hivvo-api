@@ -111,6 +111,17 @@ def create_recorrencia(
         # Override explícito (o "ajustar" da UI): mes_inicio/ano_inicio vêm
         # pareados do schema — usar o que o cliente escolheu.
         mes_inicio, ano_inicio = body.mes_inicio, body.ano_inicio
+        # Bug 2 — piso no mês corrente: o passado é verdade histórica (§3.1.2),
+        # não se inventa recorrência retroativa. Só o override explícito precisa
+        # do piso — o default (regra do dia) nunca resolve para o passado. A UI
+        # ganha um `min` no campo, mas a chamada direta a burla; o backend é a
+        # fronteira REAL de integridade. Compara contra o MESMO `hoje` do resto
+        # do endpoint (por isso aqui, não no schema — a suíte patcha só este).
+        if (ano_inicio, mes_inicio) < (h.year, h.month):
+            raise HTTPException(
+                status_code=422,
+                detail="O início da recorrência não pode ser anterior ao mês corrente.",
+            )
     else:
         # Default: regra do dia (dia da ocorrência vs. hoje).
         mes_inicio, ano_inicio = _default_mes_inicio(body.dia_do_mes, h)

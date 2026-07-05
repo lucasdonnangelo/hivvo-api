@@ -54,6 +54,34 @@ def valor_no_mes(
     return None
 
 
+def valor_exibicao(
+    recorrencia: Recorrencia,
+    vigencias: Iterable[RecorrenciaVigencia],
+    mes: int,
+    ano: int,
+) -> Optional[Decimal]:
+    """Valor a EXIBIR na gestão (Bug 1): o que vige na competência (mes, ano),
+    ou — se nada vige — o valor da vigência FUTURA mais próxima (recorrência que
+    ainda vai começar, ex.: "Salário R$10.000, começa em agosto").
+
+    Distinto de `valor_no_mes` (que é o "vige HOJE" estrito, base da projeção e
+    de consumidores que dependem do None): este é aditivo, só para exibição.
+
+    Borda crítica — ENCERRADA: uma recorrência encerrada só tem vigências
+    PASSADAS (fechadas antes do mês corrente) e nenhuma futura. O fallback é
+    restrito a início >= (mes, ano), então encerrada permanece None (não pega
+    valor de vigência passada) — continua "—" na gestão, correto.
+    """
+    vigencias = list(vigencias)
+    vigente = valor_no_mes(recorrencia, vigencias, mes, ano)
+    if vigente is not None:
+        return vigente
+    futuras = [v for v in vigencias if (v.ano_inicio, v.mes_inicio) >= (ano, mes)]
+    if not futuras:
+        return None
+    return min(futuras, key=lambda v: (v.ano_inicio, v.mes_inicio)).valor
+
+
 def data_ocorrencia(recorrencia: Recorrencia, mes: int, ano: int) -> dt.date:
     """Data da ocorrência dentro do mês: dia_do_mes clampado ao último dia."""
     return dt.date(ano, mes, clamp_dia_no_mes(recorrencia.dia_do_mes, ano, mes))

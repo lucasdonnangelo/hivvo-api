@@ -119,6 +119,10 @@ class RecorrenciaResponse(BaseModel):
     # Valor da vigência do mês corrente (None se nada vige — ex.: encerrada,
     # ou início futuro) — para a UI mostrar "salário: R$X" sem abrir o detalhe.
     valor_vigente: Optional[Decimal] = None
+    # Valor a EXIBIR/preencher na gestão (Bug 1): = valor_vigente, ou o da
+    # vigência futura mais próxima quando nada vige hoje (início futuro).
+    # None só quando encerrada (só passado). Aditivo — não substitui valor_vigente.
+    valor_exibicao: Optional[Decimal] = None
 
     model_config = {"from_attributes": True}
 

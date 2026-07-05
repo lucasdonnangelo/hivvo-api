@@ -25,7 +25,7 @@ from app.schemas.recorrencia import (
     RecorrenciaUpdate,
 )
 from app.services.estatisticas import _recorrencias_com_vigencias
-from app.services.recorrencias import valor_no_mes
+from app.services.recorrencias import valor_exibicao, valor_no_mes
 
 router = APIRouter(prefix="/recorrencias", tags=["recorrencias"])
 
@@ -94,6 +94,7 @@ def _detail(
         {
             **rec.model_dump(),
             "valor_vigente": valor_no_mes(rec, vigencias, h.month, h.year),
+            "valor_exibicao": valor_exibicao(rec, vigencias, h.month, h.year),
             "vigencias": vigencias,
         }
     )
@@ -166,7 +167,11 @@ def list_recorrencias(
             continue
         resposta.append(
             RecorrenciaResponse.model_validate(
-                {**rec.model_dump(), "valor_vigente": valor_no_mes(rec, vigencias, h.month, h.year)}
+                {
+                    **rec.model_dump(),
+                    "valor_vigente": valor_no_mes(rec, vigencias, h.month, h.year),
+                    "valor_exibicao": valor_exibicao(rec, vigencias, h.month, h.year),
+                }
             )
         )
     resposta.sort(key=lambda r: r.data_criacao)

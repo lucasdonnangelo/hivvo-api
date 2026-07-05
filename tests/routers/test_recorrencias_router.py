@@ -524,3 +524,85 @@ class TestCorrigirValor:
 
         resp = client.patch(f"/recorrencias/{rec_id}/corrigir-valor", json={"valor": valor})
         assert resp.status_code == 422
+
+
+class TestValorExibicao:
+    """Bug 1 — a gestão precisa de um valor não-nulo para recorrência de início
+    FUTURO (valor_vigente é null quando nada vige hoje). valor_exibicao cai para
+    a vigência futura mais próxima; ENCERRADA (só passado) permanece null. hoje
+    congelado em 15/07/2026 (fixture clock). valor_vigente fica intocado."""
+
+    def test_inicio_mes_seguinte_expoe_valor_futuro(self, users, as_user):
+        client = as_user(users[0])
+        # dia 10 < hoje 15 → default começa agosto/2026 (futuro): nada vige em julho
+        body = client.post("/recorrencias", json=_payload(dia_do_mes=10)).json()
+        assert body["valor_vigente"] is None
+        assert _q(body["valor_exibicao"]) == Decimal("10000.00")
+
+        # a mesma regra na LISTA (não só no detalhe do POST)
+        item = client.get("/recorrencias").json()[0]
+        assert item["valor_vigente"] is None
+        assert _q(item["valor_exibicao"]) == Decimal("10000.00")
+
+    def test_vigente_hoje_exibicao_igual_vigente(self, users, as_user):
+        client = as_user(users[0])
+        # dia 20 > hoje 15 → começa julho (corrente): vige hoje
+        body = client.post("/recorrencias", json=_payload(dia_do_mes=20)).json()
+        assert _q(body["valor_vigente"]) == Decimal("10000.00")
+        assert _q(body["valor_exibicao"]) == _q(body["valor_vigente"])
+
+    def test_encerrada_so_passado_exibicao_null(self, session, users, as_user):
+        # Borda crítica: vigência fechada em mar/2026 (passado), ativa=False. Nada
+        # vige hoje E não há vigência futura → valor_exibicao NÃO pode pegar o
+        # valor passado; deve ser null (continua "—", correto — está encerrada).
+        rec = Recorrencia(
+            usuario_id=users[0].id,
+            tipo="receita",
+            categoria="Salário",
+            forma_pagamento="Pix",
+            dia_do_mes=20,
+            descricao="Salário CLT",
+            ativa=False,
+        )
+        session.add(rec)
+        session.flush()
+        session.add(
+            RecorrenciaVigencia(
+                recorrencia_id=rec.id,
+                valor=Decimal("10000.00"),
+                mes_inicio=1,
+                ano_inicio=2026,
+                mes_fim=3,
+                ano_fim=2026,
+            )
+        )
+        session.commit()
+
+        detail = as_user(users[0]).get(f"/recorrencias/{rec.id}").json()
+        assert detail["valor_vigente"] is None
+        assert detail["valor_exibicao"] is None
+
+        # na lista (incluir_encerradas) também permanece null
+        item = as_user(users[0]).get(
+            "/recorrencias", params={"incluir_encerradas": True}
+        ).json()[0]
+        assert item["valor_exibicao"] is None
+
+    def test_inicio_futuro_distante_pega_primeira_vigencia(self, users, as_user):
+        client = as_user(users[0])
+        # override futuro out/2026 (3 meses à frente; permitido pelo piso do Bug 2)
+        body = client.post(
+            "/recorrencias", json=_payload(mes_inicio=10, ano_inicio=2026)
+        ).json()
+        assert body["valor_vigente"] is None
+        assert _q(body["valor_exibicao"]) == Decimal("10000.00")
+
+    def test_multiplas_vigencias_uma_vigente_hoje(self, session, users, as_user):
+        client = as_user(users[0])
+        rec_id = _semear_recorrencia_passada(session, users[0].id)  # jan/2026 aberta
+        client.patch(f"/recorrencias/{rec_id}", json={"valor": "12000.00"})  # versiona
+
+        # duas vigências: jan–jun/2026 (10000) e jul/2026 aberta (12000, vige hoje)
+        detail = client.get(f"/recorrencias/{rec_id}").json()
+        assert _q(detail["valor_vigente"]) == Decimal("12000.00")
+        assert _q(detail["valor_exibicao"]) == _q(detail["valor_vigente"])

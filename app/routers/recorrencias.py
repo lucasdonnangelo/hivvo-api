@@ -25,6 +25,7 @@ from app.schemas.recorrencia import (
     RecorrenciaUpdate,
 )
 from app.services.estatisticas import _recorrencias_com_vigencias
+from app.services.faturas import clamp_dia_no_mes
 from app.services.recorrencias import dados_exibicao, valor_no_mes
 
 router = APIRouter(prefix="/recorrencias", tags=["recorrencias"])
@@ -115,16 +116,24 @@ def create_recorrencia(
         # Override explícito (o "ajustar" da UI): mes_inicio/ano_inicio vêm
         # pareados do schema — usar o que o cliente escolheu.
         mes_inicio, ano_inicio = body.mes_inicio, body.ano_inicio
-        # Bug 2 — piso no mês corrente: o passado é verdade histórica (§3.1.2),
-        # não se inventa recorrência retroativa. Só o override explícito precisa
-        # do piso — o default (regra do dia) nunca resolve para o passado. A UI
-        # ganha um `min` no campo, mas a chamada direta a burla; o backend é a
-        # fronteira REAL de integridade. Compara contra o MESMO `hoje` do resto
-        # do endpoint (por isso aqui, não no schema — a suíte patcha só este).
-        if (ano_inicio, mes_inicio) < (h.year, h.month):
+        # Bug 2 (estendido) — piso na DATA da primeira ocorrência: o passado é
+        # verdade histórica (§3.1.2), não se inventa recorrência retroativa. O
+        # piso por MÊS deixava passar mês corrente + dia já passado (ex. hoje 5,
+        # dia 4 → ocorrência ontem); a regra real é sobre a DATA (mês+dia, com
+        # o mesmo clamp de data_ocorrencia — dia 31 em fev = último dia). Só o
+        # override explícito precisa do piso — o default (regra do dia) nunca
+        # resolve para o passado. A UI ganha o bloqueio no Add, mas a chamada
+        # direta a burla; o backend é a fronteira REAL de integridade. Compara
+        # contra o MESMO `hoje` do resto do endpoint (por isso aqui, não no
+        # schema — a suíte patcha só este). Borda: ocorrência == hoje passa
+        # (o próprio dia conta, coerente com o <= do §1.3.1).
+        primeira_ocorrencia = dt.date(
+            ano_inicio, mes_inicio, clamp_dia_no_mes(body.dia_do_mes, ano_inicio, mes_inicio)
+        )
+        if primeira_ocorrencia < h:
             raise HTTPException(
                 status_code=422,
-                detail="O início da recorrência não pode ser anterior ao mês corrente.",
+                detail="A primeira ocorrência da recorrência não pode ser no passado.",
             )
     else:
         # Default: regra do dia (dia da ocorrência vs. hoje).

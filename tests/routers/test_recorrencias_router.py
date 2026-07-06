@@ -146,23 +146,62 @@ class TestCriar:
 
 
 class TestPisoInicioNoPassado:
-    """Bug 2 — o POST barra override com início ANTERIOR ao mês corrente (o
-    passado é verdade histórica, §3.1.2; não se inventa recorrência retroativa).
-    hoje congelado em 15/07/2026 (fixture clock). Corrente e futuro passam; o
-    default (regra do dia) nunca resolve para o passado e fica intacto."""
+    """Bug 2 (estendido) — o POST barra override cuja PRIMEIRA OCORRÊNCIA
+    (mês/ano de início + dia_do_mes, com clamp) é anterior a hoje. O piso por
+    MÊS deixava passar mês corrente + dia já passado. hoje congelado em
+    15/07/2026 (fixture clock). Ocorrência == hoje ou futura passa; o default
+    (regra do dia) nunca resolve para o passado e fica intacto."""
 
     def test_override_mes_passado_422(self, users, as_user):
         resp = as_user(users[0]).post(
             "/recorrencias", json=_payload(mes_inicio=6, ano_inicio=2026)
         )
         assert resp.status_code == 422
-        assert "anterior ao mês corrente" in resp.json()["detail"]
+        assert "no passado" in resp.json()["detail"]
 
     def test_override_ano_passado_422(self, users, as_user):
         resp = as_user(users[0]).post(
             "/recorrencias", json=_payload(mes_inicio=12, ano_inicio=2025)
         )
         assert resp.status_code == 422
+
+    def test_override_mes_corrente_dia_passado_422(self, users, as_user):
+        # o buraco do piso mensal: julho >= julho passava, mas dia 10 < hoje 15
+        # → primeira ocorrência 10/07 já passou
+        resp = as_user(users[0]).post(
+            "/recorrencias", json=_payload(mes_inicio=7, ano_inicio=2026, dia_do_mes=10)
+        )
+        assert resp.status_code == 422
+        assert "no passado" in resp.json()["detail"]
+
+    def test_override_mes_corrente_dia_hoje_ok(self, users, as_user):
+        # borda: ocorrência == hoje (15/07) conta como válida (<= do §1.3.1)
+        resp = as_user(users[0]).post(
+            "/recorrencias", json=_payload(mes_inicio=7, ano_inicio=2026, dia_do_mes=15)
+        )
+        assert resp.status_code == 201
+        vig = resp.json()["vigencias"][0]
+        assert (vig["mes_inicio"], vig["ano_inicio"]) == (7, 2026)
+
+    def test_override_mes_futuro_dia_passado_ok(self, users, as_user):
+        # dia 1 < hoje 15, mas agosto é futuro → ocorrência 01/08 é futura
+        resp = as_user(users[0]).post(
+            "/recorrencias", json=_payload(mes_inicio=8, ano_inicio=2026, dia_do_mes=1)
+        )
+        assert resp.status_code == 201
+        vig = resp.json()["vigencias"][0]
+        assert (vig["mes_inicio"], vig["ano_inicio"]) == (8, 2026)
+
+    def test_override_clamp_mes_curto(self, mocker, users, as_user):
+        # dia 31 em fevereiro clampa para 28/02 == hoje → 201 (não é passado
+        # nem estoura dt.date; mesma comparação do clamp de data_ocorrencia)
+        mocker.patch("app.routers.recorrencias.hoje", return_value=dt.date(2027, 2, 28))
+        resp = as_user(users[0]).post(
+            "/recorrencias", json=_payload(mes_inicio=2, ano_inicio=2027, dia_do_mes=31)
+        )
+        assert resp.status_code == 201
+        vig = resp.json()["vigencias"][0]
+        assert (vig["mes_inicio"], vig["ano_inicio"]) == (2, 2027)
 
     def test_override_mes_corrente_ok(self, users, as_user):
         resp = as_user(users[0]).post(

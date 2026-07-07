@@ -8,7 +8,9 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 ## Estado do Projeto
 
 **Fase atual:** Fase 3 da projeção (as "lentes" — frontend), pós-deploy.
-**Status:** App deployado e no ar (Railway + Vercel; Supabase de produção = `hivvo-prod`, ref `kufbqivycqjkydnfvgee`, us-west-2). Hardening pré-deploy (Batches 1–11) concluído e o backend da projeção Fase 1–2 completo: competência/fluxo, recorrência on-the-fly versionada por vigências, §1.3.1 (corte por dia: projeção/realizado/a-vir), §3.1.2 (operações de erro), Bugs 1/2. **~319 testes verdes; tudo commitado e pushado em `origin/master`** (working tree clean em 06/jul). Próximo: **Fase 3 — 3b (toggle fluxo/consumo)**, que começa pelo gate do endpoint `monthly_stats` (ver `PLANO_PROJECAO.md`).
+**Status:** App deployado e no ar (Railway + Vercel; Supabase de produção = `hivvo-prod`, ref `kufbqivycqjkydnfvgee`, us-west-2). Hardening pré-deploy (Batches 1–11) concluído e o backend da projeção Fase 1–2 completo: competência/fluxo, recorrência on-the-fly versionada por vigências, §1.3.1 (corte por dia: projeção/realizado/a-vir), §3.1.2 (operações de erro), Bugs 1/2. O backend da Fase 3 avançou: **3b-backend (visão CONSUMO no `/statistics/monthly`, commit `8ac6db5`)** e o **mês default do Dashboard (`GET /statistics/default-month`)** prontos. **342 testes verdes.** Próximo: **Fase 3 frontend** — toggle fluxo/consumo + consumir o default-month.
+**Mês default do Dashboard — `GET /statistics/default-month` (07/07/2026):** endpoint leve que responde **em que mês o Dashboard ABRE** (não trava navegação): `{fluxo: {mes, ano}, consumo: {mes, ano}}`. FLUXO: tem histórico (competência < corrente) → **corrente**; senão → **1º mês com fluxo** no horizonte de 60 meses; senão → **mês seguinte**. CONSUMO: sempre o corrente. Regra no PLANO_PROJECAO §"Mês default do Dashboard". Suíte: **342 testes** (331 + 11), todos verdes. Ver seção "Mês default do Dashboard" abaixo.
+**Fase 3b-backend — visão CONSUMO no `/statistics/monthly` (07/07/2026, commitado `8ac6db5`):** a `MensalResponse` ganhou `consumo: LeituraMes` (gasto por DATA da compra — pai parcelada pelo valor CHEIO, avulsa por data, à vista, receitas, recorrência) e `categorias_consumo` (donut) — 100% aditivo (FLUXO/realizado/a_vir/variação/yearly/IA intactos). Nova `_lancamentos_consumo_mes` em `estatisticas.py`. Opção A (valor cheio da pai): não reflete cancelamento por-parcela — limitação e gatilho registrados no PLANO §Fase 3b. Suíte: **331 testes** (319 + 12), todos verdes.
 **Bug 2 (extensão) — piso por DATA da primeira ocorrência no POST /recorrencias (06/07/2026, commitado):** o piso do Bug 2 validava só o MÊS — override no **mês corrente com `dia_do_mes` já passado** (ex. hoje 5/jul, dia 4) passava (julho >= julho) e criava a primeira ocorrência no PASSADO. A validação do override agora compara a **DATA da primeira ocorrência** (`dt.date(ano_inicio, mes_inicio, clamp_dia_no_mes(dia_do_mes, ...))` — o MESMO clamp de `data_ocorrencia`) contra `hoje`: `< hoje` → **422** `"A primeira ocorrência da recorrência não pode ser no passado."`; `== hoje` passa (o próprio dia conta, coerente com o `<=` do §1.3.1). **SUBSTITUI** a comparação mensal (a de data é mais forte e a engloba — mensagem única). Default (regra do dia) **intacto** — seguro por construção (dia passado → mês seguinte). Suíte: **319 testes** (315 + 4), todos verdes; único teste existente alterado: a assertion da mensagem em `test_override_mes_passado_422`. Ver seção "Bug 2 (extensão)" abaixo.
 **Bug 1 (E2E) — expor valor de recorrência com início futuro na gestão / campo `valor_exibicao` (05/07/2026, commitado):** recorrência cuja 1ª vigência começa no MÊS SEGUINTE tinha `valor_vigente=null` (`valor_no_mes(mês corrente)` não acha vigência cobrindo hoje) → lista mostrava "—" e o form de Editar carregava vazio, embora o valor esteja em `vigencias[]`. **Fix aditivo:** campo NOVO `valor_exibicao` na resposta (lista E detalhe, via `RecorrenciaResponse` — `RecorrenciaDetailResponse` herda), SEM tocar `valor_vigente` (que mantém o significado estrito "vige HOJE"; há consumidores que dependem do `null` — gating do corrigir, comparação de valor no front). Regra (helper puro `valor_exibicao` em [services/recorrencias.py](../app/services/recorrencias.py), reusa `valor_no_mes`): `= valor_vigente` se algo vige hoje; **senão** o valor da **vigência FUTURA mais próxima** (`min (ano_inicio, mes_inicio)` com início `>= (ano, mes)`). **Borda crítica (encerrada):** fallback restrito a início futuro → recorrência encerrada (só vigências passadas, nenhuma futura) → `valor_exibicao=null` (continua "—", correto — não pega valor de vigência passada). Início futuro → valor da vigência que vai começar; vigente hoje → `== valor_vigente`. **Complemento (mesmo dia):** adicionados `mes_exibicao`/`ano_exibicao` (início da MESMA vigência de exibição, para "a partir de ago/2026") — o helper virou `dados_exibicao`, que retorna `(valor, mes, ano)` num só cálculo (fonte única, coerência garantida); `null` quando vige hoje ou encerrada. Projeção intocada. Suíte: **315 testes**, todos verdes. **Falta o frontend** (ler `valor_exibicao` + `mes/ano_exibicao` na lista e no prefill do Editar — próximo batch). Ver seção "Bug 1 — valor_exibicao" abaixo.
 **Bug 2 (E2E) — proibir início de recorrência no passado / piso no mês corrente (05/07/2026, commitado):** o POST `/recorrencias` passa a **barrar override explícito com início ANTERIOR ao mês corrente** (o passado é verdade histórica §3.1.2 — não se inventa recorrência retroativa; senão corrompe meses fechados e a variação vs. mês anterior). Achado na validação E2E: a UI deixava criar "Começa em" num mês já passado. Validação **no router** (`create_recorrencia`, branch de override), NÃO no schema — precisa comparar contra o MESMO `hoje` que o resto do endpoint usa (`app.routers.recorrencias.hoje`, que a suíte patcha; no schema seria um segundo relógio não-patchado → não-determinístico). Comparação por tupla `(ano_inicio, mes_inicio) < (hoje.year, hoje.month)` → **422** "O início da recorrência não pode ser anterior ao mês corrente." Corrente e futuro passam; o **default (regra do dia) fica intacto** (nunca resolve para o passado — só o override é validado). É a **fronteira REAL de integridade** (a UI ganha `min` no campo em outro batch, mas chamada direta a burla). **Migração de teste:** ~13 testes de editar/encerrar/corrigir que criavam recorrência com início jan/2026 **via POST** (agora barrado) passaram a montar esse estado — legítimo, é como fica uma recorrência criada meses atrás — **direto no banco** (helper `_semear_recorrencia_passada`); a cobertura de sucesso do POST não se perde (vive em `TestCriar` e na nova `TestPisoInicioNoPassado`). Suíte: **310 testes** (304 + 6), todos verdes. Ver seção "Bug 2 — piso no mês corrente" abaixo.
@@ -22,7 +24,7 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Deploy — remetente do e-mail parametrizado (02/07/2026, commitado):** novo `EMAIL_FROM` em Settings (default sandbox `Hivvo <onboarding@resend.dev>`) usado no `forgot_password` no lugar do `from` hardcoded. Único ponto de envio de e-mail (confirmado por varredura de `resend.Emails.send`). Suíte com **213 testes, todos verdes** (212 + 1) — ver seção "Deploy — remetente do e-mail" abaixo. **⚠️ PRODUÇÃO (Railway): setar `EMAIL_FROM="Hivvo <noreply@hivvo.app>"`** (domínio verificado no Resend). **Não** toca F-24/F-18/Batch 16 nem outros batches.
 **Batch 11b concluído — CÓDIGO (01/07/2026, commitado):** cookies same-site + token 30min (F-03, F-09), env-conditional (dev em localhost intacto). Cookies com `Domain=.hivvo.app`/`Secure`/`SameSite=Lax` em produção (sem Domain/Secure em dev), CORS com origem explícita + métodos/headers restritos, reforço CSRF por `Origin` nos endpoints mutáveis, access token 30min (refresh segue 7 dias). Suíte com **212 testes, todos verdes** (196 + 16) — ver seção "Batch 11b" abaixo. **⚠️ F-03/F-09 só se validam DE FATO no deploy** (domínio real). **Não** toca outros batches nem papel Postgres (ops).
 **Fase 5 — resiliência de banco concluída (01/07/2026, commitado):** Batch 7 (parte CÓDIGO) — `pool_pre_ping`/`pool_recycle=1800`/`pool_size=5`/`max_overflow=10` no `database.py` (pool modesto p/ o pooler) — + **exception handler global**: falha de conexão (`OperationalError`/`InterfaceError`) → **503 limpo COM headers de CORS** (não mais falso-CORS). Suíte com **196 testes, todos verdes** (194 + 2) — ver seção "Fase 5 — resiliência de banco" abaixo. **Parte OPS do Batch 7 (papel Postgres restrito, sem superuser) fica para o passo de infra.** **Não** toca 11b, T-28 nem outros batches.
-**Próximo passo imediato:** **Fase 3 (frontend) — 3b: toggle fluxo/consumo no Dashboard.** Gate antes de qualquer código: confirmar se `monthly_stats` já expõe a visão CONSUMO ou só FLUXO (investigação read-only no Claude Code). Se só fluxo → batch de backend do consumo antes do toggle. Deploy (Fase 5) e hardening pré-deploy **já feitos** — o app está no ar.
+**Próximo passo imediato:** **Fase 3 (frontend)** — toggle fluxo/consumo no Dashboard (consome `consumo`/`categorias_consumo` do `/statistics/monthly`) + abrir a tela no mês do `GET /statistics/default-month`. O backend dos dois já está pronto (gate do `monthly_stats` resolvido: a visão CONSUMO foi implementada em `8ac6db5`). Deploy (Fase 5) e hardening pré-deploy **já feitos** — o app está no ar.
 **T-28 CONCLUÍDO e VERIFICADO (01/07/2026, commitado `f46f17e`):** todos os routers de NEGÓCIO montados sob `/api/v1` (hard switch, sem dual-mount); `/health` permanece na RAIZ. **Cross-repo casado e testado ponta a ponta:** login + escrita + leitura funcionando sob `/api/v1` com os dois repos (API + Web) apontando para o mesmo prefixo. Suíte com **191 testes, todos verdes** (188 + 3 do hard switch) — ver seção "T-28 (lado API)" abaixo. **⚠️ Cross-repo: NÃO deployar API e Web separados** — produção precisa subir com `/api/v1` casado dos dois lados (`VITE_API_URL=https://api.hivvo.app/api/v1`).
 **Batch 11a concluído (01/07/2026, commitado `1623dc8`):** LGPD — exclusão de conta (F-07). `DELETE /auth/me` (sob `/api/v1`), autenticado + reautenticação por senha, apaga TODOS os dados do usuário numa transação única. Suíte com **194 testes, todos verdes** (191 + 3) — ver seção "Batch 11a" abaixo. **⚠️ Política de Privacidade precisa ser atualizada** mencionando o direito de exclusão (conteúdo, fora do código). **F-03 (cookies same-site) e F-09 (token 30min) ficam para o deploy (11b)** — são deploy-coupled.
 **Migração de conexão do banco (01/07/2026, ops — antecipa o núcleo do Batch 7):** `DATABASE_URL` local migrada da **conexão direta** do Supabase para o **SESSION POOLER** (host `pooler.supabase.com`, IPv4). Motivo: a conexão direta resolve para **IPv6** e a rede local é **IPv4-only** (`Test-NetConnection` deu `DestinationNetworkUnreachable` no IPv6). A **senha do banco de dev foi ROTACIONADA** nesta sessão. **⚠️ O mesmo problema de IPv6 reaparece no Railway** se usar a direct — ver checklist de deploy.
@@ -41,6 +43,60 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Teste de regressão round-trip parcelada→fatura concluído (26/06/2026, commitado `f3565c8`):** só testes — fecha o gap de cobertura do caminho de SUCESSO da criação parcelada (havia só atomicidade/FALHA do T-41). Suíte com **103 testes, todos verdes** — ver seção "Regressão round-trip" abaixo.
 **T-29 ordenação estável de transações concluído (26/06/2026, commitado):** desempate determinístico `data DESC, id DESC` em `GET /transactions` e nas avulsas do detalhe de fatura. Suíte com **106 testes, todos verdes** — ver seção "T-29" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
+
+---
+
+## Mês default do Dashboard — GET /statistics/default-month (07/07/2026)
+
+Implementa a decisão de produto do **mês em que o Dashboard ABRE por padrão** (regra completa no
+`docs/PLANO_PROJECAO.md` §"Mês default do Dashboard") — só a abertura; a navegação segue livre.
+Suíte: **342 testes** (331 + 11), todos verdes; **nenhum teste existente alterado** (mudança
+100% aditiva).
+
+**A regra (visão FLUXO):**
+1. **TEM HISTÓRICO** (lançamento com competência ANTERIOR ao mês corrente) → **mês corrente**.
+2. Senão → **PRIMEIRO mês (corrente..corrente+60) que TEM FLUXO** — multi-cartão automático
+   (cada compra já está na fatura certa por `fatura_mes`, sem calcular ciclo).
+3. Sem fluxo em lugar nenhum → **mês seguinte** (fallback neutro, com virada dez → jan/ano+1).
+
+**Visão CONSUMO:** sempre o mês corrente.
+
+**Contrato — endpoint leve dedicado (não campo na `MensalResponse`):** `GET
+/statistics/default-month` → `{fluxo: {mes, ano}, consumo: {mes, ano}}` (novos `MesAno` e
+`MesDefaultResponse` em [schemas/statistics.py](../app/schemas/statistics.py)). Razões: o mês
+default precisa ser conhecido ANTES do primeiro `/monthly` (campo na resposta mensal criaria
+chicken-and-egg + refetch); e "tem fluxo" DEVE ser a definição da projeção (fonte única). O
+`consumo` vem junto para o frontend não derivar "mês corrente" com o relógio/fuso do browser —
+o backend usa **um único `hoje()`** (fuso do produto) para as duas visões.
+
+**Implementação ([estatisticas.py](../app/services/estatisticas.py)):**
+- **`_tem_historico(session, uid, mes, ano)`** — 4 consultas de existência (`LIMIT 1`,
+  curto-circuito via `any`), uma por fonte, com a MESMA competência da projeção: Fonte 3 por
+  `data <` 1º dia do corrente; Fontes 1/2 por tupla `(fatura_ano, fatura_mes) <` corrente
+  (`or_/and_`; parcela respeita `cancelado=False`); Fonte 4 por vigência com
+  `(ano_inicio, mes_inicio) <` corrente (vigência que começou no passado gerou ocorrência lá —
+  cobre inclusive recorrência já encerrada). A transação-PAI parcelada NÃO conta (§2.1). Caminho
+  comum (usuário com histórico): 4 queries e acabou.
+- **`mes_default(session, uid)`** — devolve `((mes, ano) fluxo, (mes, ano) consumo)`. A varredura
+  do "1º mês com fluxo" **reusa `_lancamentos_ano`** ano a ano (a MESMA projeção — zero drift de
+  definição; "tem fluxo" == lista não-vazia, pois todo lançamento tem `valor > 0` por CHECK).
+  Só usuários SEM histórico chegam à varredura (base pequena por definição) — custo máx. ~6×5
+  queries triviais.
+- **`HORIZONTE_MESES = 60`** — primeira materialização do §6.5 como constante no backend.
+- Helper `_mes_seguinte` (virada dez → jan/ano+1).
+
+**Testes (`TestDefaultMonth` em [test_statistics_router.py](../tests/routers/test_statistics_router.py), 11, hoje=15/07/2026):**
+histórico (à vista em jun) vence fluxo futuro → corrente; parcela vencendo no corrente →
+corrente (pai parcelada não é histórico); corrente vazio + parcela em 2 meses → pula para o mês
+da parcela; sem nada → mês seguinte; **multi-cartão** (faturas em out e set) → o mais próximo
+(set); consumo sempre corrente mesmo com fluxo futuro; recorrência com início futuro é o 1º
+fluxo (e NÃO é histórico); **recorrência encerrada no passado conta como histórico** → corrente;
+parcela cancelada não conta (nem histórico nem fluxo) → fallback; **borda do horizonte**
+(+60 meses entra, +61 cai no fallback — 2 usuários, também exercita isolamento); fallback vira o
+ano em dezembro (jan/2027). Helpers estendidos com defaults aditivos (`_add_recorrencia` ganhou
+`mes_fim/ano_fim`; `_add_parcelada` ganhou `cartao_id/cancelado`; novo `_add_avista`).
+
+**Não incluído:** frontend (toggle e consumo do default-month), importação, bugs de cartão.
 
 ---
 

@@ -26,7 +26,8 @@ def clock(mocker):
     mocker.patch("app.services.estatisticas.hoje", return_value=HOJE)
 
 
-def _add_recorrencia(session, uid, dia, valor="10000.00", mes_inicio=1, ano_inicio=2026):
+def _add_recorrencia(session, uid, dia, valor="10000.00", mes_inicio=1, ano_inicio=2026,
+                     mes_fim=None, ano_fim=None):
     rec = Recorrencia(
         usuario_id=uid, tipo="receita", categoria="Salário",
         forma_pagamento="Pix", dia_do_mes=dia, descricao="Salário",
@@ -37,6 +38,7 @@ def _add_recorrencia(session, uid, dia, valor="10000.00", mes_inicio=1, ano_inic
         RecorrenciaVigencia(
             recorrencia_id=rec.id, valor=Decimal(valor),
             mes_inicio=mes_inicio, ano_inicio=ano_inicio,
+            mes_fim=mes_fim, ano_fim=ano_fim,
         )
     )
     session.commit()
@@ -87,13 +89,13 @@ class TestMonthlyLeituras:
 
 
 def _add_parcelada(session, uid, valor_total="1200.00", n=12, mes0=1, ano0=2026,
-                   categoria="Eletrônicos"):
+                   categoria="Eletrônicos", cartao_id=1, cancelado=False):
     """Pai parcelada (data no dia 15 de mes0/ano0) + n parcelas por competência."""
     total = Decimal(valor_total)
     pai = Transacao(
         usuario_id=uid, tipo="despesa", data=dt.date(ano0, mes0, 15),
         descricao="compra parcelada", valor=total, categoria=categoria,
-        forma_pagamento="Crédito", cartao_id=1, parcelado=True, total_parcelas=n,
+        forma_pagamento="Crédito", cartao_id=cartao_id, parcelado=True, total_parcelas=n,
     )
     session.add(pai)
     session.flush()
@@ -105,8 +107,8 @@ def _add_parcelada(session, uid, valor_total="1200.00", n=12, mes0=1, ano0=2026,
             Parcela(
                 usuario_id=uid, transacao_id=pai.id, numero_parcela=i, total_parcelas=n,
                 valor_parcela=val, data_vencimento=dt.date(a, m, 10),
-                descricao="compra parcelada", categoria=categoria, cartao_id=1,
-                fatura_mes=m, fatura_ano=a,
+                descricao="compra parcelada", categoria=categoria, cartao_id=cartao_id,
+                fatura_mes=m, fatura_ano=a, cancelado=cancelado,
             )
         )
         m += 1
@@ -149,3 +151,121 @@ class TestMonthlyConsumo:
         assert _q(body["despesas"]) == Decimal("100.00")            # fluxo: parcela de fev
         assert _q(body["consumo"]["despesas"]) == Decimal("0.00")  # consumo: nada comprado em fev
         assert body["categorias_consumo"] == []
+
+
+def _add_avista(session, uid, data, tipo="despesa", valor="50.00"):
+    """Transação à vista/receita (não parcelada, não faturada) — Fonte 3."""
+    session.add(
+        Transacao(
+            usuario_id=uid, tipo=tipo, data=data, descricao="à vista",
+            valor=Decimal(valor), categoria="Outros", forma_pagamento="Pix",
+        )
+    )
+    session.commit()
+
+
+class TestDefaultMonth:
+    """GET /statistics/default-month — mês em que o Dashboard ABRE (PLANO §"Mês
+    default do Dashboard"). hoje congelado em 15/07/2026 (fixture clock)."""
+
+    def _get(self, as_user, user):
+        resp = as_user(user).get("/statistics/default-month")
+        assert resp.status_code == 200
+        return resp.json()
+
+    def test_com_historico_abre_no_mes_corrente(self, session, users, as_user):
+        # histórico (à vista em junho) + fluxo futuro (parcela em setembro):
+        # a regra 1 ganha — abre no corrente, não pula para o fluxo futuro.
+        _add_avista(session, users[0].id, dt.date(2026, 6, 10))
+        _add_parcelada(session, users[0].id, n=1, mes0=9)
+
+        body = self._get(as_user, users[0])
+        assert body["fluxo"] == {"mes": 7, "ano": 2026}
+
+    def test_sem_passado_parcela_vencendo_no_corrente(self, session, users, as_user):
+        # pai parcelada não é histórico (§2.1); a parcela fatura jul → corrente
+        _add_parcelada(session, users[0].id, n=1, mes0=7)
+
+        body = self._get(as_user, users[0])
+        assert body["fluxo"] == {"mes": 7, "ano": 2026}
+
+    def test_sem_passado_corrente_vazio_pula_para_primeiro_mes_com_fluxo(
+        self, session, users, as_user
+    ):
+        _add_parcelada(session, users[0].id, n=1, mes0=9)  # daqui a 2 meses
+
+        body = self._get(as_user, users[0])
+        assert body["fluxo"] == {"mes": 9, "ano": 2026}  # pula jul/ago vazios
+
+    def test_sem_nada_fallback_mes_seguinte(self, users, as_user):
+        body = self._get(as_user, users[0])
+        assert body["fluxo"] == {"mes": 8, "ano": 2026}
+        assert body["consumo"] == {"mes": 7, "ano": 2026}
+
+    def test_multi_cartao_abre_no_mes_mais_proximo_com_fluxo(
+        self, session, users, as_user
+    ):
+        # dois cartões com fatura em meses diferentes: fatura_mes já respeita o
+        # ciclo de cada cartão — o default é o mês mais próximo com fluxo.
+        _add_parcelada(session, users[0].id, n=1, mes0=10, cartao_id=1)
+        _add_parcelada(session, users[0].id, n=1, mes0=9, cartao_id=2)
+
+        body = self._get(as_user, users[0])
+        assert body["fluxo"] == {"mes": 9, "ano": 2026}
+
+    def test_consumo_sempre_corrente_mesmo_com_fluxo_futuro(
+        self, session, users, as_user
+    ):
+        _add_parcelada(session, users[0].id, n=1, mes0=9)
+
+        body = self._get(as_user, users[0])
+        assert body["fluxo"] == {"mes": 9, "ano": 2026}
+        assert body["consumo"] == {"mes": 7, "ano": 2026}
+
+    def test_recorrencia_futura_e_o_primeiro_fluxo(self, session, users, as_user):
+        # início em outubro NÃO é histórico (>= corrente); é o 1º mês com fluxo
+        _add_recorrencia(session, users[0].id, dia=5, mes_inicio=10, ano_inicio=2026)
+
+        body = self._get(as_user, users[0])
+        assert body["fluxo"] == {"mes": 10, "ano": 2026}
+
+    def test_recorrencia_encerrada_no_passado_conta_como_historico(
+        self, session, users, as_user
+    ):
+        # vigência jan–mar/2026 (fechada): sem fluxo corrente/futuro, mas o
+        # passado existe → regra 1 → corrente (não o fallback ago)
+        _add_recorrencia(
+            session, users[0].id, dia=5,
+            mes_inicio=1, ano_inicio=2026, mes_fim=3, ano_fim=2026,
+        )
+
+        body = self._get(as_user, users[0])
+        assert body["fluxo"] == {"mes": 7, "ano": 2026}
+
+    def test_parcela_cancelada_nao_conta_nem_como_historico_nem_como_fluxo(
+        self, session, users, as_user
+    ):
+        _add_parcelada(session, users[0].id, n=1, mes0=6, cancelado=True)  # passado
+        _add_parcelada(session, users[0].id, n=1, mes0=9, cancelado=True)  # futuro
+
+        body = self._get(as_user, users[0])
+        assert body["fluxo"] == {"mes": 8, "ano": 2026}  # fallback
+
+    def test_horizonte_60_meses_dentro_conta_alem_cai_no_fallback(
+        self, session, users, as_user
+    ):
+        # jul/2026 + 60 meses = jul/2031 (última competência varrida)
+        _add_parcelada(session, users[0].id, n=1, mes0=7, ano0=2031)   # borda: entra
+        _add_parcelada(session, users[1].id, n=1, mes0=8, ano0=2031)   # 61 meses: fora
+
+        assert self._get(as_user, users[0])["fluxo"] == {"mes": 7, "ano": 2031}
+        assert self._get(as_user, users[1])["fluxo"] == {"mes": 8, "ano": 2026}
+
+    def test_fallback_vira_o_ano_em_dezembro(self, mocker, users, as_user):
+        mocker.patch(
+            "app.services.estatisticas.hoje", return_value=dt.date(2026, 12, 15)
+        )
+
+        body = self._get(as_user, users[0])
+        assert body["fluxo"] == {"mes": 1, "ano": 2027}
+        assert body["consumo"] == {"mes": 12, "ano": 2026}

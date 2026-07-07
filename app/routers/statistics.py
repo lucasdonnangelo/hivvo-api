@@ -11,6 +11,8 @@ from app.schemas.statistics import (
     CategoriasResponse,
     LeituraMes,
     MensalResponse,
+    MesAno,
+    MesDefaultResponse,
     MesEvolucao,
 )
 from app.services.estatisticas import (
@@ -20,6 +22,7 @@ from app.services.estatisticas import (
     _lancamentos_consumo_mes,
     _lancamentos_mes,
     _variacao,
+    mes_default,
 )
 
 router = APIRouter(prefix="/statistics", tags=["statistics"])
@@ -86,6 +89,22 @@ def monthly_stats(
         a_vir=a_vir,
         consumo=LeituraMes(receitas=rec_c, despesas=desp_c, saldo=rec_c - desp_c),
         categorias_consumo=_categorias(consumo_lanc),
+    )
+
+
+@router.get("/default-month", response_model=MesDefaultResponse)
+def default_month(
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Mês em que o Dashboard ABRE (PLANO §"Mês default do Dashboard"): FLUXO
+    # pela regra histórico → corrente / 1º mês com fluxo no horizonte /
+    # fallback mês seguinte; CONSUMO sempre o corrente. Chamado 1x na abertura
+    # do app, ANTES do primeiro /monthly (resolve qual mês buscar primeiro).
+    (fluxo_mes, fluxo_ano), (cons_mes, cons_ano) = mes_default(session, current_user.id)
+    return MesDefaultResponse(
+        fluxo=MesAno(mes=fluxo_mes, ano=fluxo_ano),
+        consumo=MesAno(mes=cons_mes, ano=cons_ano),
     )
 
 

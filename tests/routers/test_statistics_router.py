@@ -10,7 +10,9 @@ from decimal import Decimal
 
 import pytest
 
+from app.models.installment import Parcela
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
+from app.models.transaction import Transacao
 
 HOJE = dt.date(2026, 7, 15)
 
@@ -82,3 +84,68 @@ class TestMonthlyLeituras:
             "/statistics/monthly", params={"mes": 7, "ano": 2026}
         ).json()
         assert _q(body["variacao_receitas"]) == Decimal("0.00")
+
+
+def _add_parcelada(session, uid, valor_total="1200.00", n=12, mes0=1, ano0=2026,
+                   categoria="Eletrônicos"):
+    """Pai parcelada (data no dia 15 de mes0/ano0) + n parcelas por competência."""
+    total = Decimal(valor_total)
+    pai = Transacao(
+        usuario_id=uid, tipo="despesa", data=dt.date(ano0, mes0, 15),
+        descricao="compra parcelada", valor=total, categoria=categoria,
+        forma_pagamento="Crédito", cartao_id=1, parcelado=True, total_parcelas=n,
+    )
+    session.add(pai)
+    session.flush()
+    base = (total / n).quantize(Decimal("0.01"))
+    m, a = mes0, ano0
+    for i in range(1, n + 1):
+        val = base if i < n else total - base * (n - 1)
+        session.add(
+            Parcela(
+                usuario_id=uid, transacao_id=pai.id, numero_parcela=i, total_parcelas=n,
+                valor_parcela=val, data_vencimento=dt.date(a, m, 10),
+                descricao="compra parcelada", categoria=categoria, cartao_id=1,
+                fatura_mes=m, fatura_ano=a,
+            )
+        )
+        m += 1
+        if m == 13:
+            m, a = 1, a + 1
+    session.commit()
+
+
+class TestMonthlyConsumo:
+    """§"Fase 3b" — a resposta ganha `consumo` (LeituraMes) + `categorias_consumo`
+    (donut), aditivos ao topo de FLUXO (que não muda)."""
+
+    def test_consumo_parcelada_valor_cheio_no_mes_da_compra(self, session, users, as_user):
+        _add_parcelada(session, users[0].id)  # R$1200/12x, compra em jan/2026
+
+        body = as_user(users[0]).get(
+            "/statistics/monthly", params={"mes": 1, "ano": 2026}
+        ).json()
+
+        # FLUXO (topo) = a parcela de jan; inalterado
+        assert _q(body["despesas"]) == Decimal("100.00")
+        # CONSUMO = valor cheio no mês da compra (número único, sem realizado/a_vir)
+        assert _q(body["consumo"]["despesas"]) == Decimal("1200.00")
+        assert _q(body["consumo"]["receitas"]) == Decimal("0.00")
+        assert _q(body["consumo"]["saldo"]) == Decimal("-1200.00")
+        assert "realizado" not in body["consumo"] and "a_vir" not in body["consumo"]
+        # donut de consumo
+        assert [(c["categoria"], _q(c["total"])) for c in body["categorias_consumo"]] == [
+            ("Eletrônicos", Decimal("1200.00"))
+        ]
+
+    def test_consumo_zero_no_mes_sem_compra_mas_fluxo_tem_a_parcela(
+        self, session, users, as_user
+    ):
+        _add_parcelada(session, users[0].id)  # compra em jan; fev só tem a parcela
+
+        body = as_user(users[0]).get(
+            "/statistics/monthly", params={"mes": 2, "ano": 2026}
+        ).json()
+        assert _q(body["despesas"]) == Decimal("100.00")            # fluxo: parcela de fev
+        assert _q(body["consumo"]["despesas"]) == Decimal("0.00")  # consumo: nada comprado em fev
+        assert body["categorias_consumo"] == []

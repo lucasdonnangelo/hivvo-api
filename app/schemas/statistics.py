@@ -34,6 +34,12 @@ class MensalResponse(BaseModel):
     # não-corrente: realizado == projeção (topo) e a_vir zerado.
     realizado: LeituraMes
     a_vir: LeituraMes
+    # §"Fase 3b" — visão CONSUMO (gasto por DATA da compra: pai parcelada pelo
+    # valor cheio + avulsa por data + à vista + receitas + recorrência). Número
+    # único, INTEGRAL (sem realizado/a_vir — D2) + donut próprio (D3). Aditivo:
+    # o topo/fluxo acima não muda.
+    consumo: LeituraMes
+    categorias_consumo: list[CategoriaStats]
 
 
 class MesEvolucao(BaseModel):

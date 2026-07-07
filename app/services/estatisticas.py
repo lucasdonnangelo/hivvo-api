@@ -277,6 +277,47 @@ def _lancamentos_mes(
     return lancamentos
 
 
+def _lancamentos_consumo_mes(
+    session: Session, usuario_id: int, mes: int, ano: int
+) -> list[LancamentoFluxo]:
+    """Lançamentos da visão CONSUMO ("gastei neste mês") pela DATA da compra.
+
+    PLANO_PROJECAO §1.1 e §"Fase 3b": a compra parcelada conta INTEIRA no mês da
+    COMPRA (transação-PAI pelo valor cheio), não fatiada por competência de
+    fatura. Une duas fontes SEM dupla contagem:
+      C1. TODAS as transações do mês por `data` — a pai parcelada pelo valor
+          cheio, a avulsa de cartão pela data (não pela fatura), à vista e
+          receitas. Cada Transacao conta UMA vez; as parcelas (fatias de fluxo)
+          NÃO entram → sem dupla contagem. Reusa `_buscar_mes` SEM o `continue`
+          de pai-parcelada/faturada que a Fonte 3 do fluxo aplica.
+      C4. Ocorrências de recorrência na competência do mês — IDÊNTICA ao fluxo
+          (recorrência não passa por fatura, §3.4); reusa a Fonte 4.
+
+    Diferença para :func:`_lancamentos_mes` (fluxo): aqui NÃO há Fonte 1
+    (parcelas por fatura) nem a competência-de-fatura da Fonte 2. Consumo é
+    INTEGRAL (§Fase 3b D2): sem realizado/a_vir — `realizado` fica no default e
+    é ignorado. Receita coincide entre as visões; só a despesa com fatura
+    (parcelada + avulsa de cartão) muda de mês.
+
+    Limitação (Opção A, §Fase 3b): não reflete cancelamento por-parcela
+    (`Parcela.cancelado`) — a pai não tem flag de cancelado. A invariante
+    Σparcelas==consumo vale no caso limpo e sob DELETE da compra inteira (pai +
+    parcelas somem juntas); diverge só sob cancelamento de parcela individual.
+    ⚠️ Se cancelamento por-parcela virar operação de usuário (UI + rota viva),
+    revisitar (Opção B) — ver §Fase 3b.
+    """
+    lancamentos: list[LancamentoFluxo] = [
+        LancamentoFluxo(t.tipo, t.valor, t.categoria)
+        for t in _buscar_mes(session, usuario_id, mes, ano)
+    ]
+    lancamentos.extend(
+        _ocorrencias_recorrentes(
+            _recorrencias_com_vigencias(session, usuario_id), mes, ano
+        )
+    )
+    return lancamentos
+
+
 def _lancamentos_ano(
     session: Session, usuario_id: int, ano: int
 ) -> dict[int, list[LancamentoFluxo]]:

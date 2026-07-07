@@ -108,3 +108,31 @@ class TestT36IsolamentoEntreUsuarios:
         (card_body,) = response.json()
         assert (card_body["fatura_aberta_mes"], card_body["fatura_aberta_ano"]) == FATURA_ABERTA
         assert Decimal(str(card_body["fatura_aberta_total"])) == Decimal("150.00")
+
+
+class TestCartaoDebitoSemFatura:
+    """Cartão de débito não tem fatura: limite/fechamento/vencimento não se aplicam.
+
+    O bug reportado (form exigindo esses campos no débito) é do frontend
+    (hivvo-web). Estes testes fixam o contrato do backend: POST /cards de um
+    débito SEM esses campos já é aceito e os grava como None — nenhuma mudança
+    de código foi necessária aqui.
+    """
+
+    def test_criar_debito_sem_campos_de_fatura_retorna_201(self, users, as_user):
+        (user_a, _) = users
+        response = as_user(user_a).post("/cards", json={"nome": "Nubank Débito", "tipo": "Débito"})
+        assert response.status_code == 201
+        body = response.json()
+        assert body["tipo"] == "Débito"
+        assert body["limite"] is None
+        assert body["dia_fechamento"] is None
+        assert body["dia_vencimento"] is None
+
+    def test_criar_credito_sem_campos_de_fatura_continua_aceito(self, users, as_user):
+        # Comportamento atual da API preservado: crédito sem os campos ainda é
+        # aceito pelo backend (a obrigatoriedade de fatura no crédito vive no form).
+        (user_a, _) = users
+        response = as_user(user_a).post("/cards", json={"nome": "Nubank", "tipo": "Crédito"})
+        assert response.status_code == 201
+        assert response.json()["tipo"] == "Crédito"

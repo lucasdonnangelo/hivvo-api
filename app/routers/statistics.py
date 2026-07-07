@@ -14,6 +14,8 @@ from app.schemas.statistics import (
     MesAno,
     MesDefaultResponse,
     MesEvolucao,
+    MesProjecao,
+    ProjecaoResponse,
 )
 from app.services.estatisticas import (
     _agregar,
@@ -21,6 +23,7 @@ from app.services.estatisticas import (
     _lancamentos_ano,
     _lancamentos_consumo_mes,
     _lancamentos_mes,
+    _mes_seguinte,
     _variacao,
     mes_default,
 )
@@ -106,6 +109,37 @@ def default_month(
         fluxo=MesAno(mes=fluxo_mes, ano=fluxo_ano),
         consumo=MesAno(mes=cons_mes, ano=cons_ano),
     )
+
+
+@router.get("/projection", response_model=ProjecaoResponse)
+def projection_stats(
+    meses: int = Query(12, ge=1, le=60),  # alinhado a HORIZONTE_MESES
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Série do Bloco 2 (PLANO_DASHBOARD_DOIS_BLOCOS): N meses de FLUXO a partir
+    # do mês default — series[0] é o destaque por construção. Mesmo padrão de
+    # mes_default: _lancamentos_ano carregado quando o ano muda (5 queries
+    # fixas/ano) e o mês fatiado em memória — a virada dez→jan sai de graça
+    # (_mes_seguinte troca o ano e o ano seguinte é carregado). Mês sem fluxo
+    # entra com zeros (série contínua). Semântica idêntica ao /monthly (mesmas
+    # 4 fontes, projeção integral).
+    (mes, ano), _ = mes_default(session, current_user.id)
+
+    series = []
+    por_mes: dict = {}
+    ano_carregado = None
+    for _ in range(meses):
+        if ano != ano_carregado:
+            por_mes = _lancamentos_ano(session, current_user.id, ano)
+            ano_carregado = ano
+        rec, a_pagar = _agregar(por_mes[mes])
+        series.append(
+            MesProjecao(mes=mes, ano=ano, receitas=rec, a_pagar=a_pagar, saldo=rec - a_pagar)
+        )
+        mes, ano = _mes_seguinte(mes, ano)
+
+    return ProjecaoResponse(series=series)
 
 
 @router.get("/yearly", response_model=AnualResponse)

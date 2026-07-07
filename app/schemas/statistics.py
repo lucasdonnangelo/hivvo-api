@@ -69,6 +69,32 @@ class MesAno(BaseModel):
     ano: int
 
 
+class MesProjecao(BaseModel):
+    """Um mês da série de projeção do Bloco 2 (PLANO_DASHBOARD_DOIS_BLOCOS).
+
+    Sempre visão FLUXO: a_pagar = despesas por competência de fatura/vencimento
+    (projeção é o que vem a pagar; consumo não se aplica ao futuro) e
+    saldo = receitas − a_pagar — a mesma semântica do /monthly e /yearly.
+    """
+
+    mes: int
+    ano: int
+    receitas: Decimal
+    a_pagar: Decimal
+    saldo: Decimal
+
+
+class ProjecaoResponse(BaseModel):
+    """Série de N meses de FLUXO do Bloco 2 "Sua projeção".
+
+    series[0] é o mês default de fluxo (o destaque do Bloco 2) por construção;
+    series[1..N-1] são os meses seguintes, contínuos — mês sem fluxo aparece
+    com zeros, não é omitido.
+    """
+
+    series: list[MesProjecao]
+
+
 class MesDefaultResponse(BaseModel):
     """Mês default de abertura do Dashboard (PLANO §"Mês default do Dashboard").
 

@@ -5,9 +5,10 @@
 > Fases 1–3. Deve ser revisado e aprovado por Lucas antes de qualquer código,
 > e mantido como referência entre sessões (igual aos PLANO_EXECUCAO_*).
 >
-> Status: **APROVADO.** Fase 1 (estatísticas por competência / fluxo) CONCLUÍDA e deployada
-> (commit `de1f1eb`). Fase 2 (recorrência) — design fechado (§3.4), pronta para implementar,
-> fatiada em 2a (fundação: modelos + migration + algoritmo), 2b (integração na projeção), 2c (CRUD).
+> Status: **APROVADO.** Fase 1 (fluxo/competência) CONCLUÍDA e deployada (`de1f1eb`).
+> Fase 2 (recorrência) CONCLUÍDA e deployada — 2a (modelos+migration+algoritmo), 2b (integração
+> na projeção), 2c (CRUD versionado) + §1.3.1 (corte por dia), §3.1.2 (operações de erro), Bugs 1/2.
+> Fase 3 (as "lentes": toggle fluxo/consumo, Resumo, faturas futuras) — próxima; começa pelo gate do `monthly_stats`.
 
 ---
 

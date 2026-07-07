@@ -17,6 +17,7 @@ from app.services.estatisticas import (
     _agregar,
     _categorias,
     _lancamentos_ano,
+    _lancamentos_consumo_mes,
     _lancamentos_mes,
     _variacao,
 )
@@ -62,6 +63,13 @@ def monthly_stats(
     rec_ant, desp_ant = _agregar(lancamentos_ant)
     saldo_ant = rec_ant - desp_ant
 
+    # Visão CONSUMO (§"Fase 3b"): gasto por DATA da compra (pai parcelada pelo
+    # valor cheio + avulsa por data + à vista + receitas + recorrência). Número
+    # único e integral (sem realizado/a_vir — D2) + donut próprio (D3). Aditivo:
+    # o bloco de FLUXO acima fica intocado.
+    consumo_lanc = _lancamentos_consumo_mes(session, current_user.id, mes, ano)
+    rec_c, desp_c = _agregar(consumo_lanc)
+
     return MensalResponse(
         mes=mes,
         ano=ano,
@@ -76,6 +84,8 @@ def monthly_stats(
             receitas=rec_real, despesas=desp_real, saldo=rec_real - desp_real
         ),
         a_vir=a_vir,
+        consumo=LeituraMes(receitas=rec_c, despesas=desp_c, saldo=rec_c - desp_c),
+        categorias_consumo=_categorias(consumo_lanc),
     )
 
 

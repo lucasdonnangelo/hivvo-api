@@ -24,8 +24,10 @@ from app.services.estatisticas import (
     _buscar_mes,
     _categorias,
     _lancamentos_ano,
+    _lancamentos_consumo_mes,
     _lancamentos_mes,
 )
+from app.services.parcelas import _criar_parcelas
 
 _ZERO = Decimal("0.00")
 
@@ -621,3 +623,183 @@ class TestLeiturasDoDia:
         anual_jul = _lancamentos_ano(session, 1, 2026)[7]
         chave = lambda l: (l.tipo, str(_q(l.valor)), l.categoria, l.recorrente, l.realizado)  # noqa: E731
         assert sorted(map(chave, mensal)) == sorted(map(chave, anual_jul))
+
+
+class TestConsumoMensal:
+    """§"Fase 3b" (PLANO_PROJECAO) — a visão CONSUMO conta a compra INTEIRA no
+    mês da COMPRA (transação-pai por `data`), não fatiada por competência.
+
+    Invariante-âncora: Σ das parcelas de fluxo ao longo do tempo == a despesa de
+    consumo no mês da compra (§Fase 3b). Receita coincide entre as visões; só a
+    despesa com fatura (parcelada + avulsa de cartão) muda de mês."""
+
+    def test_parcelada_consumo_no_mes_da_compra_igual_soma_das_parcelas(self, session):
+        # R$1200 em 12x, compra em 15/jan/2026 (data do pai). Fluxo distribui
+        # R$100/mês por 12 meses; consumo conta R$1200 inteiro em jan.
+        _add_parcelada(session, "1200.00", 12, 1, 2026)
+
+        soma_fluxo = _ZERO
+        for m in range(1, 13):
+            soma_fluxo += _agregar(_lancamentos_mes(session, 1, m, 2026))[1]
+
+        _, desp_consumo_jan = _agregar(_lancamentos_consumo_mes(session, 1, 1, 2026))
+        assert _q(desp_consumo_jan) == Decimal("1200.00")   # valor cheio no mês da compra
+        assert _q(desp_consumo_jan) == _q(soma_fluxo)        # invariante Σparcelas==consumo
+
+        # mês seguinte: fluxo tem a parcela de fev; consumo NÃO (compra foi em jan)
+        _, desp_consumo_fev = _agregar(_lancamentos_consumo_mes(session, 1, 2, 2026))
+        assert desp_consumo_fev == _ZERO
+
+    def test_a_vista_e_receita_consumo_igual_fluxo(self, session):
+        # Sem cartão / não faturadas: as duas visões contam pela mesma data.
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 1, 10),
+                descricao="mercado", valor=Decimal("50.00"), categoria="Mercado",
+                forma_pagamento="Débito", parcelado=False,
+            )
+        )
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="receita", data=dt.date(2026, 1, 5),
+                descricao="salário", valor=Decimal("5000.00"), categoria="Salário",
+                forma_pagamento="Pix", parcelado=False,
+            )
+        )
+        session.commit()
+
+        rec_f, desp_f = _agregar(_lancamentos_mes(session, 1, 1, 2026))
+        rec_c, desp_c = _agregar(_lancamentos_consumo_mes(session, 1, 1, 2026))
+        assert (_q(rec_c), _q(desp_c)) == (_q(rec_f), _q(desp_f))
+        assert (_q(rec_c), _q(desp_c)) == (Decimal("5000.00"), Decimal("50.00"))
+
+    def test_avulsa_cartao_consumo_no_mes_da_compra_fluxo_na_fatura(self, session):
+        # Avulsa de crédito comprada em 20/jan, faturada em fev.
+        # CONSUMO conta em jan (data da compra); FLUXO conta em fev (competência).
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 1, 20),
+                descricao="avulsa crédito", valor=Decimal("300.00"),
+                categoria="Eletrônicos", forma_pagamento="Crédito", cartao_id=1,
+                parcelado=False, fatura_mes=2, fatura_ano=2026,
+            )
+        )
+        session.commit()
+
+        _, desp_consumo_jan = _agregar(_lancamentos_consumo_mes(session, 1, 1, 2026))
+        _, desp_consumo_fev = _agregar(_lancamentos_consumo_mes(session, 1, 2, 2026))
+        _, desp_fluxo_jan = _agregar(_lancamentos_mes(session, 1, 1, 2026))
+        _, desp_fluxo_fev = _agregar(_lancamentos_mes(session, 1, 2, 2026))
+
+        assert _q(desp_consumo_jan) == Decimal("300.00")  # consumo: mês da compra
+        assert desp_consumo_fev == _ZERO
+        assert desp_fluxo_jan == _ZERO
+        assert _q(desp_fluxo_fev) == Decimal("300.00")    # fluxo: mês da fatura
+
+    def test_recorrencia_consumo_igual_fluxo(self, session):
+        # Recorrência não passa por fatura (§3.4) — idêntica nas duas visões.
+        _add_recorrencia(session)  # receita R$10000, aberta desde jan/2026
+
+        rec_f, _ = _agregar(_lancamentos_mes(session, 1, 7, 2026))
+        rec_c, _ = _agregar(_lancamentos_consumo_mes(session, 1, 7, 2026))
+        assert _q(rec_c) == _q(rec_f) == Decimal("10000.00")
+
+    def test_compra_cancelada_via_delete_nao_entra_em_nenhuma_visao(self, session):
+        # Cancelar a compra inteira = DELETE /transactions (pai + parcelas somem
+        # juntas). As duas visões excluem automaticamente — a invariante se mantém.
+        pai = _add_parcelada(session, "1200.00", 12, 1, 2026)
+        for p in session.exec(
+            select(Parcela).where(Parcela.transacao_id == pai.id)
+        ).all():
+            session.delete(p)
+        session.delete(pai)
+        session.commit()
+
+        _, desp_consumo = _agregar(_lancamentos_consumo_mes(session, 1, 1, 2026))
+        assert desp_consumo == _ZERO
+        for m in range(1, 13):  # fluxo: nenhuma parcela sobrou em nenhum mês
+            assert _agregar(_lancamentos_mes(session, 1, m, 2026))[1] == _ZERO
+
+    def test_receita_coincide_fluxo_consumo(self, session):
+        # Receita nunca passa por cartão — sempre por data; coincide nas visões.
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="receita", data=dt.date(2026, 3, 5),
+                descricao="salário", valor=Decimal("7000.00"), categoria="Salário",
+                forma_pagamento="Pix", parcelado=False,
+            )
+        )
+        session.commit()
+
+        rec_f, desp_f = _agregar(_lancamentos_mes(session, 1, 3, 2026))
+        rec_c, desp_c = _agregar(_lancamentos_consumo_mes(session, 1, 3, 2026))
+        assert _q(rec_c) == _q(rec_f) == Decimal("7000.00")
+        assert desp_c == desp_f == _ZERO
+
+    def test_cancelamento_por_parcela_diverge_fluxo_cai_consumo_mantem(self, session):
+        # A rota PUT /installments/{id} cancelado=true é VIVA e alcançável (só sem
+        # UI). O FLUXO respeita Parcela.cancelado (cai a parcela); o CONSUMO soma a
+        # transação-PAI pelo valor CHEIO e NÃO enxerga o cancelado (a pai não tem
+        # flag). Esta divergência é o comportamento ESPERADO da Opção A, fixado aqui.
+        # Opção A: quando cancelamento por-parcela virar operação de usuário
+        # (UI + rota viva), migrar p/ Opção B (§Fase 3b) — a invariante volta a fechar.
+        _add_parcelada(session, "1200.00", 12, 1, 2026)  # 12x R$100, compra em jan
+        p3 = session.exec(
+            select(Parcela).where(Parcela.fatura_mes == 3, Parcela.fatura_ano == 2026)
+        ).one()
+        p3.cancelado = True
+        session.commit()
+
+        # FLUXO: o mês da parcela cancelada (mar) cai a R$0 (filtro cancelado==False).
+        _, desp_fluxo_mar = _agregar(_lancamentos_mes(session, 1, 3, 2026))
+        assert desp_fluxo_mar == _ZERO
+
+        # CONSUMO: o mês da compra (jan) mantém o valor CHEIO — não reflete o cancelado.
+        _, desp_consumo_jan = _agregar(_lancamentos_consumo_mes(session, 1, 1, 2026))
+        assert _q(desp_consumo_jan) == Decimal("1200.00")
+
+        # Invariante DIVERGE por exatamente a parcela cancelada: fluxo soma 1100
+        # (11×100), consumo 1200. Divergência conhecida e aceita (§Fase 3b).
+        soma_fluxo = _ZERO
+        for m in range(1, 13):
+            soma_fluxo += _agregar(_lancamentos_mes(session, 1, m, 2026))[1]
+        assert _q(soma_fluxo) == Decimal("1100.00")
+        assert _q(desp_consumo_jan) - _q(soma_fluxo) == Decimal("100.00")
+
+    def test_invariante_valor_nao_divisivel_usa_split_real_do_app(self, session):
+        # Valor que NÃO divide redondo: R$100 em 3x → 33,33 / 33,33 / 33,34.
+        # Usa o split REAL do app (_criar_parcelas), não um recálculo à mão, para
+        # provar que a soma das parcelas de FLUXO volta EXATAMENTE ao total do
+        # CONSUMO — pegaria qualquer resíduo de arredondamento que não fechasse.
+        pai = Transacao(
+            usuario_id=1, tipo="despesa", data=dt.date(2026, 1, 15),
+            descricao="compra 3x", valor=Decimal("100.00"), categoria="Compras",
+            forma_pagamento="Crédito", cartao_id=None, parcelado=True, total_parcelas=3,
+        )
+        session.add(pai)
+        session.flush()  # obtém pai.id para as parcelas
+        _criar_parcelas(session, pai, None)  # split real; sem cartão → i meses após a compra
+        session.commit()
+
+        # Sanidade: o split real soma o total e joga o resíduo na última parcela.
+        parcelas = session.exec(
+            select(Parcela)
+            .where(Parcela.transacao_id == pai.id)
+            .order_by(Parcela.numero_parcela)
+        ).all()
+        assert [p.valor_parcela for p in parcelas] == [
+            Decimal("33.33"), Decimal("33.33"), Decimal("33.34")
+        ]
+
+        # CONSUMO no mês da compra (jan) = valor cheio da pai.
+        _, desp_consumo_jan = _agregar(_lancamentos_consumo_mes(session, 1, 1, 2026))
+        assert _q(desp_consumo_jan) == Decimal("100.00")
+
+        # Σ das parcelas de FLUXO ao longo dos meses == consumo, SEM resíduo (varre
+        # 2026 e 2027 para não depender de onde as parcelas caem).
+        soma_fluxo = _ZERO
+        for ano in (2026, 2027):
+            for m in range(1, 13):
+                soma_fluxo += _agregar(_lancamentos_mes(session, 1, m, ano))[1]
+        assert _q(soma_fluxo) == Decimal("100.00")
+        assert _q(soma_fluxo) == _q(desp_consumo_jan)  # invariante exata, valor quebrado

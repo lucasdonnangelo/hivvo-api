@@ -360,6 +360,52 @@ Regras de UX (writing):
 
 ---
 
+## Fase 3b — Consumo mensal no backend (design travado, 07/jul/2026)
+
+**Gate (investigação read-only no hivvo-api):** confirmado que `GET /statistics/monthly` é 100%
+FLUXO. A transação-pai parcelada foi removida da soma na Fase 1 (`estatisticas.py`, Fonte 3 pula
+`t.parcelado or t.fatura_mes is not None`), então o valor cheio da compra não está em nenhum campo
+da resposta — a visão CONSUMO (§1.1) não é derivável do que existe. Logo, 3b exige um batch de
+BACKEND (aditivo) antes do toggle de frontend.
+
+**Definição de CONSUMO mensal:** soma de TODAS as `transacoes` do mês pela `data` (pai parcelada
+pelo valor CHEIO + avulsas de cartão pela data + à vista + receitas), MAIS a recorrência por
+competência (idêntica ao fluxo). As Fontes 1 (parcelas por fatura) e a competência-de-fatura da
+Fonte 2 são conceitos de FLUXO e NÃO entram no consumo. Consequência: a RECEITA coincide nas duas
+visões; só a DESPESA com fatura (pai parcelada + avulsa de cartão) muda de mês.
+
+**Decisões travadas:**
+- **D1 — contrato aditivo.** Novo campo `consumo: LeituraMes {receitas, despesas, saldo}` na MESMA
+  `MensalResponse` (não `?visao=`, não endpoint separado). Alinha com o precedente
+  `realizado`/`a_vir` (topo = projeção de fluxo, campos aditivos), torna o toggle client-side
+  instantâneo (sem refetch) e deixa a invariante testável com as duas visões na mesma resposta.
+- **D2 — sem realizado/a_vir no consumo.** Consumo é integral por definição (a compra do dia 3 foi
+  100% consumida no mês); não existe "a vir". A decomposição §1.3.1 é conceito de FLUXO (evento
+  com dia de vencimento/ocorrência) e não se aplica.
+- **D3 — inclui `categorias_consumo`** (donut de despesa por categoria na visão consumo) já neste
+  batch, para o 3c (Resumo) não reabrir `estatisticas.py` depois.
+
+**Invariante (fonte dos testes):** Σ das parcelas de fluxo de uma compra ao longo do tempo == a
+despesa de consumo dela no mês da compra. Cancelamento tratado de forma CONSISTENTE nas duas
+visões (o que sai do fluxo sai do consumo), senão a invariante quebra.
+
+**Escopo:** só MENSAL (`/statistics/monthly`). Consumo no anual/Resumo + projeção estendida = 3c
+(batch posterior). FLUXO, realizado/a_vir, yearly e contexto da IA ficam byte a byte intactos
+(aditivo).
+
+**Limitação (Opção A) — cancelamento por-parcela:** o consumo soma a transação-pai pelo valor
+CHEIO (`Transacao` por `data`); NÃO reflete cancelamento por-parcela (`Parcela.cancelado`). A
+invariante Σparcelas==consumo vale no **caso limpo** e sob **DELETE da compra inteira** (apaga pai
++ parcelas → some das duas visões); **diverge só** sob cancelamento de uma parcela individual (o
+fluxo cai a parcela via `cancelado==False`; o consumo mantém o valor cheio da pai, que não tem
+flag de cancelado). Estado hoje: `PUT /installments/{id}` `cancelado=true` é rota **viva e
+alcançável pela API** (montada em `main.py` sob `/api/v1`), mas **sem UI/operação de usuário** — não
+é um fluxo de produto. **⚠️ GATILHO:** se/quando cancelamento por-parcela virar operação de usuário
+(UI + rota viva), revisitar a agregação de consumo (Opção B — consumo da parcelada = Σ parcelas
+`cancelado==False` re-bucketadas no mês da compra, invariante airtight) ANTES de expor.
+
+---
+
 ## 5. Fases de execução
 
 | Fase | Escopo | Repo | Complexidade | Depende de |

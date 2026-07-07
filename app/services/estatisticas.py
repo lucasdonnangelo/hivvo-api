@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Union
 
-from sqlmodel import Session, select
+from sqlmodel import Session, and_, or_, select
 
 from app.core.dates import hoje
 from app.models.installment import Parcela
@@ -13,6 +13,10 @@ from app.schemas.statistics import CategoriaStats
 from app.services.recorrencias import data_ocorrencia, valor_no_mes
 
 _ZERO = Decimal("0.00")
+
+# Horizonte de exibição futuro (PLANO §6.5): a busca do "primeiro mês com
+# fluxo" do mês default varre no máximo o corrente + 60 meses à frente.
+HORIZONTE_MESES = 60
 
 
 @dataclass(frozen=True)
@@ -389,3 +393,110 @@ def _lancamentos_ano(
         )
 
     return por_mes
+
+
+def _mes_seguinte(mes: int, ano: int) -> tuple[int, int]:
+    """Competência seguinte a (mes, ano), com virada dez → jan do ano seguinte."""
+    if mes == 12:
+        return 1, ano + 1
+    return mes + 1, ano
+
+
+def _tem_historico(session: Session, usuario_id: int, mes: int, ano: int) -> bool:
+    """Existe lançamento de FLUXO com competência ANTERIOR a (mes, ano)?
+
+    Usa a MESMA noção de competência das quatro fontes de _lancamentos_mes
+    (PLANO §"Mês default do Dashboard"): parcelas (Fonte 1) e avulsas
+    faturadas (Fonte 2) por fatura_mes/ano, à vista/receitas (Fonte 3) por
+    data, recorrência (Fonte 4) pela vigência — vigência que COMEÇOU em
+    competência passada gerou ocorrência lá (o início é a primeira competência
+    gerada; fim >= início por invariante). A transação-PAI parcelada não conta
+    (§2.1 — quem conta são as parcelas). 4 consultas de existência (LIMIT 1),
+    com curto-circuito no primeiro achado.
+    """
+    inicio_mes = dt.date(ano, mes, 1)
+
+    # Fonte 3: à vista + receitas, pela data.
+    fonte3 = select(Transacao.id).where(
+        Transacao.usuario_id == usuario_id,
+        Transacao.parcelado == False,  # noqa: E712
+        Transacao.fatura_mes == None,  # noqa: E711
+        Transacao.data < inicio_mes,
+    )
+    # Fontes 1 e 2: competência de fatura < (ano, mes), por tupla.
+    fonte1 = select(Parcela.id).where(
+        Parcela.usuario_id == usuario_id,
+        Parcela.cancelado == False,  # noqa: E712
+        Parcela.fatura_mes != None,  # noqa: E711
+        or_(
+            Parcela.fatura_ano < ano,
+            and_(Parcela.fatura_ano == ano, Parcela.fatura_mes < mes),
+        ),
+    )
+    fonte2 = select(Transacao.id).where(
+        Transacao.usuario_id == usuario_id,
+        Transacao.parcelado == False,  # noqa: E712
+        Transacao.tipo == "despesa",
+        Transacao.fatura_mes != None,  # noqa: E711
+        or_(
+            Transacao.fatura_ano < ano,
+            and_(Transacao.fatura_ano == ano, Transacao.fatura_mes < mes),
+        ),
+    )
+    # Fonte 4: vigência de recorrência iniciada em competência passada.
+    fonte4 = (
+        select(RecorrenciaVigencia.id)
+        .join(Recorrencia, Recorrencia.id == RecorrenciaVigencia.recorrencia_id)  # type: ignore[arg-type]
+        .where(
+            Recorrencia.usuario_id == usuario_id,
+            or_(
+                RecorrenciaVigencia.ano_inicio < ano,
+                and_(
+                    RecorrenciaVigencia.ano_inicio == ano,
+                    RecorrenciaVigencia.mes_inicio < mes,
+                ),
+            ),
+        )
+    )
+    return any(
+        session.exec(q.limit(1)).first() is not None
+        for q in (fonte3, fonte1, fonte2, fonte4)
+    )
+
+
+def mes_default(
+    session: Session, usuario_id: int
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Mês em que o Dashboard ABRE por padrão — ((mes, ano) fluxo, (mes, ano) consumo).
+
+    Regra do FLUXO (PLANO §"Mês default do Dashboard"):
+      1. TEM HISTÓRICO (lançamento com competência < mês corrente) → corrente.
+      2. Senão → PRIMEIRO mês, do corrente até corrente + HORIZONTE_MESES, que
+         TEM FLUXO. Reusa _lancamentos_ano ano a ano — a MESMA projeção, zero
+         drift de definição; multi-cartão sai de graça (cada compra já está na
+         fatura certa via fatura_mes). Todo lançamento tem valor > 0 (CHECK no
+         banco), então "tem fluxo" == lista não-vazia. Só usuários SEM
+         histórico chegam aqui (base pequena por definição — custo trivial).
+      3. Sem fluxo em lugar nenhum → mês seguinte (fallback neutro).
+
+    CONSUMO: sempre o mês corrente (o gasto do mês é sempre relevante). Um
+    único hoje() de referência para as duas visões. Isto define só onde a
+    tela abre — a navegação segue livre.
+    """
+    h = hoje()
+    corrente = (h.month, h.year)
+    if _tem_historico(session, usuario_id, h.month, h.year):
+        return corrente, corrente
+
+    mes, ano = corrente
+    por_mes: dict[int, list[LancamentoFluxo]] = {}
+    ano_carregado: Optional[int] = None
+    for _ in range(HORIZONTE_MESES + 1):  # corrente + 60 à frente
+        if ano != ano_carregado:
+            por_mes = _lancamentos_ano(session, usuario_id, ano)
+            ano_carregado = ano
+        if por_mes[mes]:
+            return (mes, ano), corrente
+        mes, ano = _mes_seguinte(mes, ano)
+
+    return _mes_seguinte(*corrente), corrente

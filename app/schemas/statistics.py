@@ -62,3 +62,20 @@ class CategoriasResponse(BaseModel):
     ano: int
     total_despesas: Decimal
     categorias: list[CategoriaStats]
+
+
+class MesAno(BaseModel):
+    mes: int
+    ano: int
+
+
+class MesDefaultResponse(BaseModel):
+    """Mês default de abertura do Dashboard (PLANO §"Mês default do Dashboard").
+
+    fluxo: com histórico → mês corrente; senão o 1º mês com fluxo no horizonte
+    de 60 meses; senão o mês seguinte. consumo: sempre o mês corrente. Define
+    só onde a tela ABRE — a navegação segue livre.
+    """
+
+    fluxo: MesAno
+    consumo: MesAno

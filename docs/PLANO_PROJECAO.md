@@ -8,7 +8,9 @@
 > Status: **APROVADO.** Fase 1 (fluxo/competência) CONCLUÍDA e deployada (`de1f1eb`).
 > Fase 2 (recorrência) CONCLUÍDA e deployada — 2a (modelos+migration+algoritmo), 2b (integração
 > na projeção), 2c (CRUD versionado) + §1.3.1 (corte por dia), §3.1.2 (operações de erro), Bugs 1/2.
-> Fase 3 (as "lentes": toggle fluxo/consumo, Resumo, faturas futuras) — próxima; começa pelo gate do `monthly_stats`.
+> Fase 3 (as "lentes": toggle fluxo/consumo, Resumo, faturas futuras) — em andamento no backend:
+> 3b-backend (visão CONSUMO no `/statistics/monthly`) e o mês default do Dashboard
+> (`GET /statistics/default-month`, ver §"Mês default do Dashboard") implementados; falta o frontend.
 
 ---
 
@@ -406,7 +408,41 @@ alcançável pela API** (montada em `main.py` sob `/api/v1`), mas **sem UI/opera
 
 ---
 
-## 5. Fases de execução
+## Mês default do Dashboard (decidido e implementado, 07/jul/2026)
+
+**Decisão de produto — qual mês a tela ABRE por padrão** (só define a abertura; a navegação
+segue livre):
+
+- **Visão FLUXO ("A pagar"):**
+  1. **TEM HISTÓRICO** (existe lançamento com competência ANTERIOR ao mês corrente) → abre no
+     **mês corrente**.
+  2. Senão → abre no **PRIMEIRO mês (corrente ou futuro) que TEM FLUXO** (parcela vencendo,
+     fatura com valor, recorrência), varrendo até o horizonte de **60 meses** (§6.5).
+     Multi-cartão sai de graça: cada compra já está na fatura certa por cartão (`fatura_mes`),
+     então "o primeiro mês com fluxo" respeita os ciclos de todos os cartões sem calcular ciclo.
+  3. Sem fluxo em lugar nenhum → **mês seguinte** (fallback neutro).
+- **Visão CONSUMO ("Gasto"):** sempre o **mês corrente**.
+
+**Contrato — endpoint leve dedicado `GET /statistics/default-month`** →
+`{fluxo: {mes, ano}, consumo: {mes, ano}}`. Por quê: o mês default precisa ser conhecido ANTES
+do primeiro `/monthly` (campo na `MensalResponse` criaria chicken-and-egg + refetch); e a
+definição de "tem fluxo" DEVE ser a da projeção (fonte única, §7) — o backend responde, o
+frontend não deriva. `consumo` vem junto para o frontend não derivar "mês corrente" com o
+relógio/fuso do browser (o backend usa `hoje()` no fuso do produto; um único `hoje()` para as
+duas visões).
+
+**Implementação (`estatisticas.py`):**
+- **"TEM HISTÓRICO"** (`_tem_historico`): 4 consultas de existência (LIMIT 1, curto-circuito),
+  uma por fonte, com a MESMA noção de competência da projeção — parcelas (`cancelado=False`) e
+  avulsas faturadas por `(fatura_ano, fatura_mes)` < corrente; à vista/receitas por `data` <
+  1º dia do mês corrente; recorrência por vigência com `(ano_inicio, mes_inicio)` < corrente
+  (vigência que começou no passado gerou ocorrência lá). A transação-PAI parcelada NÃO conta
+  (§2.1). Caminho comum (usuário com histórico): 4 queries baratas e acabou.
+- **"PRIMEIRO mês com fluxo"** (`mes_default`): reusa **`_lancamentos_ano`** ano a ano
+  (corrente → corrente+60) — reuso integral da projeção, zero drift de definição; "tem fluxo"
+  == lista não-vazia (todo lançamento tem `valor > 0` por CHECK). Só usuários SEM histórico
+  chegam aqui (base pequena por definição) — custo máx. ~6×5 queries triviais.
+- `HORIZONTE_MESES = 60` — primeira materialização do §6.5 como constante no backend.
 
 | Fase | Escopo | Repo | Complexidade | Depende de |
 |---|---|---|---|---|

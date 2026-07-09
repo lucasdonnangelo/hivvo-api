@@ -6,10 +6,12 @@ from typing import Optional, Union
 from sqlmodel import Session, and_, or_, select
 
 from app.core.dates import hoje
+from app.models.card import Cartao
 from app.models.installment import Parcela
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.transaction import Transacao
 from app.schemas.statistics import CategoriaStats
+from app.services.faturas import vencimento_avulsa
 from app.services.recorrencias import data_ocorrencia, valor_no_mes
 
 _ZERO = Decimal("0.00")
@@ -32,12 +34,24 @@ class LancamentoFluxo:
     a Fase 3 usa a flag para distinguir visualmente; a agregação a ignora.
 
     ``realizado`` (§1.3.1): no MÊS CORRENTE, True se a ocorrência já aconteceu
-    (dia/vencimento <= hoje, fronteira inclusiva) — só as Fontes 1 (parcelas,
-    por data_vencimento) e 4 (recorrência, por data_ocorrencia) são cortadas;
-    Fontes 2/3 são sempre realizadas (§1.3.2). Em mês NÃO-corrente é sempre
-    True (passado ocorreu; futuro é projeção integral — realizado == projeção,
-    a_vir = 0). Invariante: projeção = realizado + a_vir, por construção
-    (marcação, não filtro — a projeção agrega TODOS os lançamentos).
+    (dia/vencimento <= hoje, fronteira inclusiva) — as Fontes 1 (parcelas, por
+    data_vencimento), 2 (avulsas, por vencimento derivado do cartão) e 4
+    (recorrência, por data_ocorrencia) são cortadas; a Fonte 3 é sempre
+    realizada (§1.3.2: à vista já ocorreu por definição). Em mês NÃO-corrente
+    é sempre True (passado ocorreu; futuro é projeção integral — realizado ==
+    projeção, a_vir = 0). Invariante: projeção = realizado + a_vir, por
+    construção (marcação, não filtro — a projeção agrega TODOS os lançamentos).
+
+    ``a_pagar`` (§"A pagar e Saldo" — eixo saída-já-ocorrida × a-ocorrer):
+    True só para CRÉDITO que ainda não saiu do caixa — parcela não paga
+    (Fonte 1, `not pago`) e avulsa de fatura cujo vencimento derivado ainda
+    não passou (Fonte 2, `venc > hoje`). À vista/receitas (Fonte 3) e
+    recorrência (Fonte 4, à vista por definição) saem no ato → nunca a_pagar.
+    Eixo INDEPENDENTE do `realizado` (tempo-no-mês-corrente ≠ dívida-de-
+    crédito) e regra única por lançamento, sem olhar se o mês é corrente.
+    FRONTEIRA do `pago`: este flag é o ÚNICO consumidor de Parcela.pago em
+    toda a projeção — topo, realizado/a_vir, anual, série e consumo derivam
+    exclusivamente de data/competência (§1.3: pago não governa a projeção).
     """
 
     tipo: str
@@ -45,6 +59,7 @@ class LancamentoFluxo:
     categoria: str
     recorrente: bool = False
     realizado: bool = True
+    a_pagar: bool = False
 
 
 # _agregar/_categorias operam por duck typing em .tipo/.valor/.categoria — servem
@@ -71,6 +86,11 @@ def _agregar(itens: list[_Somavel]) -> tuple[Decimal, Decimal]:
     receitas = sum((t.valor for t in itens if t.tipo == "receita"), _ZERO)
     despesas = sum((t.valor for t in itens if t.tipo == "despesa"), _ZERO)
     return receitas, despesas
+
+
+def _soma_a_pagar(itens: list[LancamentoFluxo]) -> Decimal:
+    """Total "A pagar" do mês: só crédito cuja saída ainda não ocorreu."""
+    return sum((l.valor for l in itens if l.a_pagar), _ZERO)
 
 
 def _categorias(itens: list[_Somavel]) -> list[CategoriaStats]:
@@ -149,6 +169,15 @@ def _avulsas_cartao_competencia(
             Transacao.fatura_ano == ano,
         )
     ).all()
+
+
+def _cartoes_por_id(session: Session, usuario_id: int) -> dict[int, Cartao]:
+    """Cartões do usuário indexados por id — 1 query, para a Fonte 2 derivar
+    o vencimento das avulsas sem N+1. Só é chamada quando há avulsas."""
+    return {
+        c.id: c
+        for c in session.exec(select(Cartao).where(Cartao.usuario_id == usuario_id))
+    }
 
 
 def _recorrencias_com_vigencias(
@@ -239,33 +268,58 @@ def _lancamentos_mes(
     Resultado: o mês da compra deixa de mostrar o valor cheio (mostra a parcela
     daquele mês) e meses futuros deixam de ser zero.
 
-    Corte por dia (§1.3.1): no mês CORRENTE, Fontes 1 e 4 marcam realizado por
-    dia/vencimento <= hoje (marcação, não filtro — a lista completa é a
-    projeção). Fontes 2/3 são sempre realizadas (§1.3.2).
+    Corte por dia (§1.3.1): no mês CORRENTE, Fontes 1, 2 e 4 marcam realizado
+    por dia/vencimento <= hoje (marcação, não filtro — a lista completa é a
+    projeção). A Fonte 3 é sempre realizada (§1.3.2).
+
+    Eixo a_pagar (§"A pagar e Saldo"): Fonte 1 marca `not pago` (parcela
+    atrasada — vencida e não paga — continua a pagar; paga sai, inclusive
+    antecipada); Fonte 2 marca vencimento derivado > hoje (Transacao não tem
+    `pago` — presunção venceu = saiu). Fontes 3/4 nunca (saem no ato).
     """
     h = hoje()
     corrente = (ano, mes) == (h.year, h.month)
     lancamentos: list[LancamentoFluxo] = []
 
     # Fonte 3: à vista + receitas — não faturadas e não parceladas, pela data.
-    # Sempre realizada (§1.3.2: à vista já ocorreu por definição).
+    # Sempre realizada (§1.3.2: à vista já ocorreu por definição, mesmo com
+    # data futura) e nunca a_pagar.
     for t in _buscar_mes(session, usuario_id, mes, ano):
         if t.parcelado or t.fatura_mes is not None:
             continue  # pai parcelada → Fonte 1; avulsa faturada → Fonte 2
         lancamentos.append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
 
     # Fonte 1: parcelas na competência — realizado pelo VENCIMENTO real (dia
-    # exato) no mês corrente, não pelo fatura_mes (§1.3.2).
+    # exato) no mês corrente, não pelo fatura_mes (§1.3.2); a_pagar enquanto
+    # não paga (ÚNICO ponto da projeção que lê `pago`).
     for p in _parcelas_competencia(session, usuario_id, mes, ano):
         realizado = (not corrente) or p.data_vencimento <= h
         lancamentos.append(
-            LancamentoFluxo("despesa", p.valor_parcela, p.categoria, realizado=realizado)
+            LancamentoFluxo(
+                "despesa",
+                p.valor_parcela,
+                p.categoria,
+                realizado=realizado,
+                a_pagar=not p.pago,
+            )
         )
 
-    # Fonte 2: avulsas de cartão faturadas na competência. Sempre realizada
-    # (§1.3.2: falta o dia de vencimento na Transacao — refinamento posterior).
-    for t in _avulsas_cartao_competencia(session, usuario_id, mes, ano):
-        lancamentos.append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
+    # Fonte 2: avulsas de cartão faturadas na competência — vencimento REAL
+    # derivado do dia_vencimento do cartão (furo 1 fechado): corta realizado
+    # no mês corrente e fica a_pagar enquanto não vence.
+    avulsas = _avulsas_cartao_competencia(session, usuario_id, mes, ano)
+    cartoes = _cartoes_por_id(session, usuario_id) if avulsas else {}
+    for t in avulsas:
+        venc = vencimento_avulsa(cartoes.get(t.cartao_id), mes, ano)
+        lancamentos.append(
+            LancamentoFluxo(
+                t.tipo,
+                t.valor,
+                t.categoria,
+                realizado=(not corrente) or venc <= h,
+                a_pagar=venc > h,
+            )
+        )
 
     # Fonte 4: ocorrências de recorrência na competência (Fase 2b); no mês
     # corrente, realizado por data_ocorrencia <= hoje.
@@ -368,11 +422,19 @@ def _lancamentos_ano(
     ).all():
         realizado = (ano, p.fatura_mes) != (h.year, h.month) or p.data_vencimento <= h
         por_mes[p.fatura_mes].append(
-            LancamentoFluxo("despesa", p.valor_parcela, p.categoria, realizado=realizado)
+            LancamentoFluxo(
+                "despesa",
+                p.valor_parcela,
+                p.categoria,
+                realizado=realizado,
+                a_pagar=not p.pago,
+            )
         )
 
-    # Fonte 2: avulsas de cartão faturadas no ano, agrupadas por fatura_mes.
-    for t in session.exec(
+    # Fonte 2: avulsas de cartão faturadas no ano, agrupadas por fatura_mes —
+    # mesmas marcações do mensal (vencimento derivado do cartão), para as
+    # flags nunca divergirem entre card e gráfico/série.
+    avulsas = session.exec(
         select(Transacao).where(
             Transacao.usuario_id == usuario_id,
             Transacao.parcelado == False,  # noqa: E712
@@ -380,8 +442,16 @@ def _lancamentos_ano(
             Transacao.fatura_ano == ano,
             Transacao.fatura_mes != None,  # noqa: E711
         )
-    ).all():
-        por_mes[t.fatura_mes].append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
+    ).all()
+    cartoes = _cartoes_por_id(session, usuario_id) if avulsas else {}
+    for t in avulsas:
+        venc = vencimento_avulsa(cartoes.get(t.cartao_id), t.fatura_mes, ano)
+        realizado = (ano, t.fatura_mes) != (h.year, h.month) or venc <= h
+        por_mes[t.fatura_mes].append(
+            LancamentoFluxo(
+                t.tipo, t.valor, t.categoria, realizado=realizado, a_pagar=venc > h
+            )
+        )
 
     # Fonte 4: recorrências buscadas UMA vez; os 12 meses aplicados em memória.
     # O limite de realizado só vale para o mês corrente dentro deste ano.
@@ -488,15 +558,46 @@ def mes_default(
     if _tem_historico(session, usuario_id, h.month, h.year):
         return corrente, corrente
 
-    mes, ano = corrente
+    achado = _primeiro_mes_com_fluxo(
+        session, usuario_id, h.month, h.year, HORIZONTE_MESES + 1
+    )  # corrente + 60 à frente
+    return achado or _mes_seguinte(*corrente), corrente
+
+
+def _primeiro_mes_com_fluxo(
+    session: Session, usuario_id: int, mes: int, ano: int, limite: int
+) -> Optional[tuple[int, int]]:
+    """Primeiro mês, de (mes, ano) em diante, que TEM FLUXO — ou None.
+
+    Varre no máximo `limite` competências reusando _lancamentos_ano ano a ano
+    (a MESMA projeção, zero drift de definição); "tem fluxo" == lista
+    não-vazia (todo lançamento tem valor > 0 por CHECK no banco). Compartilhado
+    por mes_default (a partir do corrente) e inicio_projecao (a partir do
+    seguinte).
+    """
     por_mes: dict[int, list[LancamentoFluxo]] = {}
     ano_carregado: Optional[int] = None
-    for _ in range(HORIZONTE_MESES + 1):  # corrente + 60 à frente
+    for _ in range(limite):
         if ano != ano_carregado:
             por_mes = _lancamentos_ano(session, usuario_id, ano)
             ano_carregado = ano
         if por_mes[mes]:
-            return (mes, ano), corrente
+            return mes, ano
         mes, ano = _mes_seguinte(mes, ano)
+    return None
 
-    return _mes_seguinte(*corrente), corrente
+
+def inicio_projecao(session: Session, usuario_id: int) -> tuple[int, int]:
+    """(mes, ano) em que a série do Bloco 2 COMEÇA — o destaque da projeção.
+
+    PLANO §"PROJEÇÃO (Bloco 2)": o primeiro mês FUTURO (>= corrente + 1) com
+    fluxo — NUNCA o mês corrente (esse é o Bloco 1, evita duplicação) e
+    independe de haver histórico. Fallback: o mês seguinte, se não há fluxo
+    em nenhum dos HORIZONTE_MESES à frente.
+    """
+    h = hoje()
+    seguinte = _mes_seguinte(h.month, h.year)
+    achado = _primeiro_mes_com_fluxo(
+        session, usuario_id, *seguinte, HORIZONTE_MESES
+    )
+    return achado or seguinte

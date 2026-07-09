@@ -24,7 +24,9 @@ from app.services.estatisticas import (
     _lancamentos_consumo_mes,
     _lancamentos_mes,
     _mes_seguinte,
+    _soma_a_pagar,
     _variacao,
+    inicio_projecao,
     mes_default,
 )
 
@@ -92,6 +94,9 @@ def monthly_stats(
         a_vir=a_vir,
         consumo=LeituraMes(receitas=rec_c, despesas=desp_c, saldo=rec_c - desp_c),
         categorias_consumo=_categorias(consumo_lanc),
+        # §"A pagar e Saldo" — só crédito não-saído (marcado nas fontes);
+        # aditivo: topo/saldo intocados (saldo já é o caixa fim de mês).
+        a_pagar=_soma_a_pagar(lancamentos),
     )
 
 
@@ -118,13 +123,14 @@ def projection_stats(
     session: Session = Depends(get_session),
 ):
     # Série do Bloco 2 (PLANO_DASHBOARD_DOIS_BLOCOS): N meses de FLUXO a partir
-    # do mês default — series[0] é o destaque por construção. Mesmo padrão de
-    # mes_default: _lancamentos_ano carregado quando o ano muda (5 queries
-    # fixas/ano) e o mês fatiado em memória — a virada dez→jan sai de graça
-    # (_mes_seguinte troca o ano e o ano seguinte é carregado). Mês sem fluxo
-    # entra com zeros (série contínua). Semântica idêntica ao /monthly (mesmas
-    # 4 fontes, projeção integral).
-    (mes, ano), _ = mes_default(session, current_user.id)
+    # do início da projeção — primeiro mês FUTURO com fluxo, nunca o corrente
+    # (§"PROJEÇÃO (Bloco 2)"; o corrente é o Bloco 1). _lancamentos_ano é
+    # carregado quando o ano muda (queries fixas/ano) e o mês fatiado em
+    # memória — a virada dez→jan sai de graça (_mes_seguinte troca o ano e o
+    # ano seguinte é carregado). Mês sem fluxo entra com zeros (série
+    # contínua). Semântica idêntica ao /monthly (mesmas 4 fontes, projeção
+    # integral; a_pagar = só crédito não-saído, NÃO é o subtraendo do saldo).
+    mes, ano = inicio_projecao(session, current_user.id)
 
     series = []
     por_mes: dict = {}
@@ -133,9 +139,16 @@ def projection_stats(
         if ano != ano_carregado:
             por_mes = _lancamentos_ano(session, current_user.id, ano)
             ano_carregado = ano
-        rec, a_pagar = _agregar(por_mes[mes])
+        rec, desp = _agregar(por_mes[mes])
         series.append(
-            MesProjecao(mes=mes, ano=ano, receitas=rec, a_pagar=a_pagar, saldo=rec - a_pagar)
+            MesProjecao(
+                mes=mes,
+                ano=ano,
+                receitas=rec,
+                despesas=desp,
+                a_pagar=_soma_a_pagar(por_mes[mes]),
+                saldo=rec - desp,
+            )
         )
         mes, ano = _mes_seguinte(mes, ano)
 

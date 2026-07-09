@@ -67,6 +67,28 @@ def _fatura_vencimento(card: Cartao, fatura_mes: int, fatura_ano: int) -> Option
     return dt.date(fatura_ano, fatura_mes, day)
 
 
+def vencimento_avulsa(
+    card: Optional[Cartao], fatura_mes: int, fatura_ano: int
+) -> dt.date:
+    """Vencimento REAL de uma avulsa de cartão faturada em (fatura_mes, fatura_ano).
+
+    fatura_mes/fatura_ano JÁ são o mês de vencimento (materializados por
+    _fatura_cartao_avulso na criação) — só falta o DIA, que vem do
+    dia_vencimento do cartão (PLANO_PROJECAO §"A pagar e Saldo", furo 1).
+
+    Fallback (cartão apagado/sem dia_vencimento hoje): último dia do mês —
+    conservador: crédito com dia desconhecido permanece "a pagar" até virar o
+    mês (esconder dívida a vencer seria pior que superestimá-la).
+    """
+    if card is not None:
+        venc = _fatura_vencimento(card, fatura_mes, fatura_ano)
+        if venc is not None:
+            return venc
+    return dt.date(
+        fatura_ano, fatura_mes, calendar.monthrange(fatura_ano, fatura_mes)[1]
+    )
+
+
 def _current_open_fatura(card: Cartao, today: dt.date) -> tuple[int, int, Optional[dt.date]]:
     """Retorna (fatura_mes, fatura_ano, data_vencimento) da fatura aberta atual."""
     if card.dia_fechamento and today.day > card.dia_fechamento:

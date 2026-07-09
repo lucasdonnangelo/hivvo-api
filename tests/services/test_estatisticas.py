@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import event
 from sqlmodel import select
 
+from app.models.card import Cartao
 from app.models.installment import Parcela
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.transaction import Transacao
@@ -26,6 +27,7 @@ from app.services.estatisticas import (
     _lancamentos_ano,
     _lancamentos_consumo_mes,
     _lancamentos_mes,
+    _soma_a_pagar,
 )
 from app.services.parcelas import _criar_parcelas
 
@@ -484,6 +486,37 @@ class TestRecorrenciaNaProjecao:
 
         assert len(selects) == 5, selects
 
+    def test_lancamentos_ano_com_avulsa_faz_uma_query_extra_de_cartoes(self, session):
+        # Com avulsa faturada, a Fonte 2 carrega os cartões do usuário para
+        # derivar o vencimento (§"A pagar e Saldo") — 1 SELECT a mais, fixo
+        # (sem N+1), e SÓ quando há avulsas.
+        _add_recorrencia(session)
+        _add_recorrencia(session, tipo="despesa", categoria="Moradia", valor="2000.00")
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 6, 25),
+                descricao="avulsa", valor=Decimal("300.00"), categoria="Eletrônicos",
+                forma_pagamento="Crédito", cartao_id=1, parcelado=False,
+                fatura_mes=7, fatura_ano=2026,
+            )
+        )
+        session.commit()
+
+        selects: list[str] = []
+
+        def _conta(conn, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith("SELECT"):
+                selects.append(statement)
+
+        engine = session.get_bind()
+        event.listen(engine, "before_cursor_execute", _conta)
+        try:
+            _lancamentos_ano(session, 1, 2026)
+        finally:
+            event.remove(engine, "before_cursor_execute", _conta)
+
+        assert len(selects) == 6, selects
+
 
 HOJE_LEITURAS = dt.date(2026, 7, 15)
 
@@ -580,9 +613,11 @@ class TestLeiturasDoDia:
         (rp, dp), (rr, dr), (rv, dv) = self._leituras(session, 7, 2026)
         assert _q(rr + rv) == _q(rp)  # receitas: realizado + a_vir == projeção
         assert _q(dr + dv) == _q(dp)  # despesas idem
-        # decomposição exata: só a recorrência dia 20 está a vir
+        # decomposição exata: a recorrência dia 20 e a avulsa faturada estão a
+        # vir (a avulsa corta pelo vencimento derivado — sem cartão no banco,
+        # fallback = fim do mês, 31/jul > hoje 15).
         assert _q(rv) == Decimal("10000.00")
-        assert dv == _ZERO
+        assert _q(dv) == Decimal("300.00")
 
     def test_mes_passado_e_futuro_integrais_sem_a_vir(self, session):
         _add_recorrencia(session, dia=20, mes_inicio=1, ano_inicio=2026)
@@ -591,9 +626,9 @@ class TestLeiturasDoDia:
             assert _q(rec_p) == _q(rec_r) == Decimal("10000.00")
             assert rec_v == _ZERO  # a_vir só existe no mês corrente
 
-    def test_fontes_2_e_3_integrais_no_mes_corrente(self, session):
-        # À vista com data FUTURA (dia 20 > hoje 15) e avulsa faturada no
-        # corrente: ambas seguem realizadas (§1.3.2 — sem corte).
+    def test_fonte_3_integral_no_mes_corrente(self, session):
+        # À vista com data FUTURA (dia 20 > hoje 15) segue realizada (§1.3.2:
+        # à vista já ocorreu por definição — o corte por dia não se aplica).
         session.add(
             Transacao(
                 usuario_id=1, tipo="despesa", data=dt.date(2026, 7, 20),
@@ -601,6 +636,40 @@ class TestLeiturasDoDia:
                 forma_pagamento="Débito", parcelado=False,
             )
         )
+        session.commit()
+
+        (_, desp_p), (_, desp_r), (_, desp_v) = self._leituras(session, 7, 2026)
+        assert _q(desp_p) == _q(desp_r) == Decimal("50.00")
+        assert desp_v == _ZERO
+
+    def test_fonte_2_corta_pelo_vencimento_derivado_do_cartao(self, session):
+        # Furo 1 fechado (§"A pagar e Saldo"): a avulsa faturada corta pelo
+        # dia_vencimento do CARTÃO no mês corrente — dia 20 (> hoje 15) fica a
+        # vir; dia 10 (< hoje) realiza.
+        for dia, valor in ((20, "300.00"), (10, "100.00")):
+            card = Cartao(usuario_id=1, nome=f"Cartão dia {dia}", tipo="Crédito",
+                          dia_vencimento=dia)
+            session.add(card)
+            session.flush()
+            session.add(
+                Transacao(
+                    usuario_id=1, tipo="despesa", data=dt.date(2026, 6, 25),
+                    descricao=f"avulsa dia {dia}", valor=Decimal(valor),
+                    categoria="Eletrônicos", forma_pagamento="Crédito",
+                    cartao_id=card.id, parcelado=False,
+                    fatura_mes=7, fatura_ano=2026,
+                )
+            )
+        session.commit()
+
+        (_, desp_p), (_, desp_r), (_, desp_v) = self._leituras(session, 7, 2026)
+        assert _q(desp_p) == Decimal("400.00")  # projeção integral
+        assert _q(desp_r) == Decimal("100.00")  # venceu dia 10
+        assert _q(desp_v) == Decimal("300.00")  # vence dia 20
+
+    def test_fonte_2_sem_dia_de_vencimento_fallback_fim_do_mes(self, session):
+        # Cartão sem linha no banco (ou sem dia_vencimento): vencimento
+        # desconhecido → fim do mês (conservador) — fica a vir até o dia 31.
         session.add(
             Transacao(
                 usuario_id=1, tipo="despesa", data=dt.date(2026, 6, 25),
@@ -612,17 +681,179 @@ class TestLeiturasDoDia:
         session.commit()
 
         (_, desp_p), (_, desp_r), (_, desp_v) = self._leituras(session, 7, 2026)
-        assert _q(desp_p) == _q(desp_r) == Decimal("350.00")
-        assert desp_v == _ZERO
+        assert _q(desp_p) == _q(desp_v) == Decimal("300.00")
+        assert desp_r == _ZERO
 
     def test_flags_do_anual_batem_com_o_mensal_no_mes_corrente(self, session):
         _add_parcelada(session, "1200.00", 12, 1, 2026)
         _add_recorrencia(session, dia=20)
+        card = Cartao(usuario_id=1, nome="Nubank", tipo="Crédito", dia_vencimento=20)
+        session.add(card)
+        session.flush()
+        session.add(  # avulsa faturada em jul — cobre as flags da Fonte 2
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 6, 25),
+                descricao="avulsa", valor=Decimal("300.00"), categoria="Eletrônicos",
+                forma_pagamento="Crédito", cartao_id=card.id, parcelado=False,
+                fatura_mes=7, fatura_ano=2026,
+            )
+        )
+        session.commit()
 
         mensal = _lancamentos_mes(session, 1, 7, 2026)
         anual_jul = _lancamentos_ano(session, 1, 2026)[7]
-        chave = lambda l: (l.tipo, str(_q(l.valor)), l.categoria, l.recorrente, l.realizado)  # noqa: E731
+        chave = lambda l: (l.tipo, str(_q(l.valor)), l.categoria, l.recorrente, l.realizado, l.a_pagar)  # noqa: E731
         assert sorted(map(chave, mensal)) == sorted(map(chave, anual_jul))
+
+
+class TestAPagar:
+    """§"A pagar e Saldo" — eixo saída-já-ocorrida × a-ocorrer: "a pagar" = só
+    CRÉDITO que ainda não saiu do caixa (parcela não paga + avulsa de fatura a
+    vencer). À vista e recorrência saem no ato → nunca a pagar. Regra única por
+    lançamento, sem olhar se o mês é corrente. hoje congelado em 15/07/2026."""
+
+    @pytest.fixture(autouse=True)
+    def clock(self, mocker):
+        mocker.patch(
+            "app.services.estatisticas.hoje", return_value=HOJE_LEITURAS
+        )
+
+    def _a_pagar(self, session, mes, ano, uid=1):
+        return _q(_soma_a_pagar(_lancamentos_mes(session, uid, mes, ano)))
+
+    def _parcela_unica(self, session, mes, dia_venc, pago=False):
+        """Compra 1x com a única parcela na fatura de (mes)/2026."""
+        _add_parcelada(session, "100.00", 1, mes, 2026)
+        p = session.exec(select(Parcela)).one()
+        p.data_vencimento = dt.date(2026, mes, dia_venc)
+        p.pago = pago
+        if pago:
+            p.data_pagamento = HOJE_LEITURAS
+        session.add(p)
+        session.commit()
+
+    def _avulsa(self, session, dia_vencimento_cartao, fatura_mes=7):
+        """Avulsa de cartão faturada em (fatura_mes)/2026; cartão com o dia dado
+        (None = sem cartão no banco → fallback fim do mês)."""
+        cartao_id = 999
+        if dia_vencimento_cartao is not None:
+            card = Cartao(usuario_id=1, nome="Nubank", tipo="Crédito",
+                          dia_vencimento=dia_vencimento_cartao)
+            session.add(card)
+            session.flush()
+            cartao_id = card.id
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 6, 25),
+                descricao="avulsa", valor=Decimal("300.00"), categoria="Eletrônicos",
+                forma_pagamento="Crédito", cartao_id=cartao_id, parcelado=False,
+                fatura_mes=fatura_mes, fatura_ano=2026,
+            )
+        )
+        session.commit()
+
+    # ---- FURO 3: à vista/recorrência saem no ato — fora, independente de data
+
+    def test_a_vista_fora_mesmo_com_data_futura(self, session):
+        for dia in (10, 20):  # passada e futura vs hoje 15
+            _add(session, dt.date(2026, 7, dia))
+        session.commit()
+        assert self._a_pagar(session, 7, 2026) == _ZERO
+
+    def test_recorrencia_despesa_fora_mesmo_a_vir(self, session):
+        _add_recorrencia(session, tipo="despesa", categoria="Moradia",
+                         valor="2000.00", dia=20)  # a vir (20 > 15), e ainda assim fora
+        assert self._a_pagar(session, 7, 2026) == _ZERO
+
+    # ---- Fonte 1 (parcelas): `not pago` — único ponto que lê `pago`
+
+    def test_parcela_a_vencer_nao_paga_dentro(self, session):
+        self._parcela_unica(session, mes=7, dia_venc=20)
+        assert self._a_pagar(session, 7, 2026) == Decimal("100.00")
+
+    def test_parcela_atrasada_vencida_e_nao_paga_continua_dentro(self, session):
+        # FURO 2: vencida (dia 10 <= hoje 15) mas não paga — NÃO some de a pagar.
+        self._parcela_unica(session, mes=7, dia_venc=10)
+        assert self._a_pagar(session, 7, 2026) == Decimal("100.00")
+
+    def test_parcela_vencida_e_paga_fora(self, session):
+        self._parcela_unica(session, mes=7, dia_venc=10, pago=True)
+        assert self._a_pagar(session, 7, 2026) == _ZERO
+
+    def test_parcela_paga_antecipada_fora(self, session):
+        # pago=True = a saída ocorreu, mesmo antes do vencimento (dia 20 > hoje).
+        self._parcela_unica(session, mes=7, dia_venc=20, pago=True)
+        assert self._a_pagar(session, 7, 2026) == _ZERO
+
+    # ---- Fonte 2 (avulsas): vencimento derivado do cartão (FURO 1)
+
+    def test_avulsa_a_vencer_dentro_com_o_dia_do_cartao(self, session):
+        self._avulsa(session, dia_vencimento_cartao=20)  # vence 20/jul > hoje 15
+        assert self._a_pagar(session, 7, 2026) == Decimal("300.00")
+
+    def test_avulsa_vencida_fora_e_fronteira_no_proprio_dia(self, session):
+        self._avulsa(session, dia_vencimento_cartao=10)  # venceu dia 10
+        self._avulsa(session, dia_vencimento_cartao=15)  # vence HOJE → já saiu
+        assert self._a_pagar(session, 7, 2026) == _ZERO
+
+    def test_avulsa_sem_cartao_fallback_fim_do_mes_dentro(self, session):
+        self._avulsa(session, dia_vencimento_cartao=None)  # venc 31/jul > hoje
+        assert self._a_pagar(session, 7, 2026) == Decimal("300.00")
+
+    # ---- Regra única para qualquer mês
+
+    def test_mes_futuro_a_pagar_so_o_credito(self, session):
+        self._parcela_unica(session, mes=8, dia_venc=10)  # crédito: dentro
+        self._avulsa(session, dia_vencimento_cartao=10, fatura_mes=8)  # dentro
+        _add(session, dt.date(2026, 8, 10))  # à vista: fora
+        _add_recorrencia(session, tipo="despesa", categoria="Moradia",
+                         valor="2000.00", dia=5)  # recorrência: fora
+        session.commit()
+
+        lanc = _lancamentos_mes(session, 1, 8, 2026)
+        _, despesas = _agregar(lanc)
+        assert _q(_soma_a_pagar(lanc)) == Decimal("400.00")
+        assert _q(despesas) == Decimal("2410.00")  # projeção integral intacta
+
+    def test_mes_passado_parcela_nao_paga_permanece_avulsa_sai(self, session):
+        self._parcela_unica(session, mes=6, dia_venc=10)  # atrasada: dentro
+        self._avulsa(session, dia_vencimento_cartao=10, fatura_mes=6)  # venceu: fora
+        assert self._a_pagar(session, 6, 2026) == Decimal("100.00")
+
+    # ---- Teste-guarda da FRONTEIRA: pago não governa a projeção
+
+    def test_alternar_pago_so_muda_o_a_pagar(self, session):
+        # A projeção integral, realizado/a_vir, consumo e o anual derivam de
+        # data/competência — alternar `pago` não pode mexer em NENHUM deles
+        # (PLANO §1.3 + §"A pagar e Saldo": pago só separa pago/a-pagar).
+        _add_parcelada(session, "1200.00", 12, 1, 2026)
+        _add_recorrencia(session, dia=20)
+
+        def _fotografia():
+            lanc = _lancamentos_mes(session, 1, 7, 2026)
+            anual = _lancamentos_ano(session, 1, 2026)
+            return (
+                _agregar(lanc),
+                _agregar([l for l in lanc if l.realizado]),
+                _agregar([l for l in lanc if not l.realizado]),
+                _agregar(_lancamentos_consumo_mes(session, 1, 7, 2026)),
+                [_agregar(anual[m]) for m in range(1, 13)],
+            )
+
+        antes, a_pagar_antes = _fotografia(), self._a_pagar(session, 7, 2026)
+
+        parcela_jul = session.exec(
+            select(Parcela).where(Parcela.fatura_mes == 7, Parcela.fatura_ano == 2026)
+        ).one()
+        parcela_jul.pago = True
+        parcela_jul.data_pagamento = HOJE_LEITURAS
+        session.add(parcela_jul)
+        session.commit()
+
+        depois, a_pagar_depois = _fotografia(), self._a_pagar(session, 7, 2026)
+        assert antes == depois  # nada da projeção se moveu
+        assert a_pagar_antes == Decimal("100.00")
+        assert a_pagar_depois == _ZERO  # só o a_pagar reagiu
 
 
 class TestConsumoMensal:

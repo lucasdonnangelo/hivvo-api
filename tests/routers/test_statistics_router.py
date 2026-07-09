@@ -9,6 +9,7 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
+from sqlmodel import select
 
 from app.models.installment import Parcela
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
@@ -164,6 +165,64 @@ def _add_avista(session, uid, data, tipo="despesa", valor="50.00"):
     session.commit()
 
 
+class TestMonthlyAPagar:
+    """§"A pagar e Saldo" — MensalResponse ganha `a_pagar` (só crédito não
+    saído); o `saldo` do topo segue receitas − despesas (caixa projetado de
+    fim de mês). hoje congelado em 15/07/2026 (fixture clock)."""
+
+    def test_a_vista_pago_fora_e_saldo_caixa_fim_de_mes(self, session, users, as_user):
+        # O caso que motivou a decisão: receita 8k + aluguel 2k via PIX (já
+        # saiu) → NADA a pagar; saldo = como termino o mês = 6k.
+        _add_avista(session, users[0].id, dt.date(2026, 7, 5), tipo="receita",
+                    valor="8000.00")
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="2000.00")
+
+        body = as_user(users[0]).get(
+            "/statistics/monthly", params={"mes": 7, "ano": 2026}
+        ).json()
+        assert _q(body["a_pagar"]) == Decimal("0.00")
+        assert _q(body["saldo"]) == Decimal("6000.00")
+        assert _q(body["despesas"]) == Decimal("2000.00")
+        assert _q(body["receitas"]) == Decimal("8000.00")
+
+    def test_credito_do_mes_dentro_de_a_pagar(self, session, users, as_user):
+        # Parcela de jul vence dia 10 (< hoje 15) e não está paga → atrasada,
+        # continua a pagar (furo 2); e a_pagar nunca excede as despesas.
+        _add_parcelada(session, users[0].id)  # 1200/12x — parcela jul = 100
+
+        body = as_user(users[0]).get(
+            "/statistics/monthly", params={"mes": 7, "ano": 2026}
+        ).json()
+        assert _q(body["a_pagar"]) == Decimal("100.00")
+        assert _q(body["a_pagar"]) <= _q(body["despesas"])
+
+    def test_marcar_pago_so_mexe_no_a_pagar(self, session, users, as_user):
+        # Fronteira do `pago` de ponta a ponta: marcar a parcela como paga não
+        # move NENHUM outro campo da resposta (projeção, realizado/a_vir,
+        # variações, consumo, donuts) — só o a_pagar.
+        _add_parcelada(session, users[0].id)
+        _add_recorrencia(session, users[0].id, dia=20)
+
+        def _monthly():
+            return as_user(users[0]).get(
+                "/statistics/monthly", params={"mes": 7, "ano": 2026}
+            ).json()
+
+        antes = _monthly()
+        parcela_jul = session.exec(
+            select(Parcela).where(Parcela.fatura_mes == 7, Parcela.fatura_ano == 2026)
+        ).one()
+        parcela_jul.pago = True
+        parcela_jul.data_pagamento = HOJE
+        session.add(parcela_jul)
+        session.commit()
+        depois = _monthly()
+
+        assert _q(antes.pop("a_pagar")) == Decimal("100.00")
+        assert _q(depois.pop("a_pagar")) == Decimal("0.00")
+        assert antes == depois  # resto da resposta byte a byte igual
+
+
 class TestDefaultMonth:
     """GET /statistics/default-month — mês em que o Dashboard ABRE (PLANO §"Mês
     default do Dashboard"). hoje congelado em 15/07/2026 (fixture clock)."""
@@ -273,86 +332,108 @@ class TestDefaultMonth:
 
 class TestProjection:
     """GET /statistics/projection — série de N meses de FLUXO do Bloco 2
-    (PLANO_DASHBOARD_DOIS_BLOCOS): series[0] = mês default de fluxo por
-    construção; meses seguintes contínuos, zeros quando sem fluxo. hoje
-    congelado em 15/07/2026 (fixture clock)."""
+    (PLANO_DASHBOARD_DOIS_BLOCOS + §"PROJEÇÃO (Bloco 2)"): series[0] = primeiro
+    mês FUTURO com fluxo — NUNCA o corrente (Bloco 1), fallback mês seguinte;
+    meses seguintes contínuos, zeros quando sem fluxo. hoje congelado em
+    15/07/2026 (fixture clock)."""
 
     def _series(self, as_user, user, **params):
         resp = as_user(user).get("/statistics/projection", params=params)
         assert resp.status_code == 200
         return resp.json()["series"]
 
-    def test_12_meses_com_historico_comeca_no_corrente_e_vira_o_ano(
+    def test_12_meses_sem_fluxo_futuro_comeca_no_mes_seguinte_e_vira_o_ano(
         self, session, users, as_user
     ):
-        # histórico (à vista em junho) → default = corrente (jul/2026); a série
-        # de 12 vai até jun/2027, contínua, com a virada dez/2026 → jan/2027.
+        # Só histórico (à vista em junho), nada à frente → fallback = mês
+        # seguinte (ago/2026); a série de 12 vai até jul/2027, contínua, com a
+        # virada dez/2026 → jan/2027.
         _add_avista(session, users[0].id, dt.date(2026, 6, 10))
 
         series = self._series(as_user, users[0])
         assert len(series) == 12
-        assert (series[0]["mes"], series[0]["ano"]) == (7, 2026)
-        esperado = [(m, 2026) for m in range(7, 13)] + [(m, 2027) for m in range(1, 7)]
+        assert (series[0]["mes"], series[0]["ano"]) == (8, 2026)
+        esperado = [(m, 2026) for m in range(8, 13)] + [(m, 2027) for m in range(1, 8)]
         assert [(i["mes"], i["ano"]) for i in series] == esperado
+
+    def test_nunca_comeca_no_corrente_mesmo_com_fluxo_nele(
+        self, session, users, as_user
+    ):
+        # Fluxo no corrente (parcela jul) E à frente (ago/set): o corrente é o
+        # Bloco 1 — a série pula para o primeiro mês FUTURO com fluxo.
+        _add_parcelada(session, users[0].id, n=3, mes0=7)  # jul, ago, set
+
+        series = self._series(as_user, users[0], meses=2)
+        assert [(i["mes"], i["ano"]) for i in series] == [(8, 2026), (9, 2026)]
 
     def test_sem_historico_comeca_no_primeiro_mes_com_fluxo(
         self, session, users, as_user
     ):
-        _add_parcelada(session, users[0].id, n=1, mes0=9)  # jul/ago vazios
+        _add_parcelada(session, users[0].id, n=1, mes0=9)  # ago vazio, fluxo em set
 
         series = self._series(as_user, users[0])
         assert (series[0]["mes"], series[0]["ano"]) == (9, 2026)
+        assert _q(series[0]["despesas"]) == Decimal("1200.00")
+        # crédito não pago → também é "a pagar" (eixo §"A pagar e Saldo")
         assert _q(series[0]["a_pagar"]) == Decimal("1200.00")
 
     def test_saldo_e_consistencia_cruzada_com_monthly(self, session, users, as_user):
-        # salário 10000 desde jan (histórico → default = jul) + parcelada
-        # 1200/12x de jan (parcelas jan–dez/2026): a série tem receitas e
-        # a_pagar em todos os meses de 2026 e só receitas em 2027.
+        # salário 10000 desde jan + parcelada 1200/12x de jan (parcelas
+        # jan–dez/2026): a série começa em ago/2026 (1º futuro com fluxo), tem
+        # receitas e despesas em 2026 e só receitas em 2027.
         _add_recorrencia(session, users[0].id, dia=20)
         _add_parcelada(session, users[0].id)
 
         series = self._series(as_user, users[0])
+        assert (series[0]["mes"], series[0]["ano"]) == (8, 2026)
         for item in series:
-            assert _q(item["saldo"]) == _q(item["receitas"]) - _q(item["a_pagar"])
+            # saldo = caixa fim de mês (receitas − TODAS as saídas); a_pagar é
+            # o recorte de crédito, NUNCA o subtraendo do saldo.
+            assert _q(item["saldo"]) == _q(item["receitas"]) - _q(item["despesas"])
+            assert _q(item["a_pagar"]) <= _q(item["despesas"])
 
         # consistência cruzada: item da série == topo (projeção integral) do
         # /monthly do mesmo mês — mesma semântica de fluxo, item a item.
-        for item in (series[0], series[2], series[6]):  # jul/set/2026, jan/2027
+        for item in (series[0], series[2], series[5]):  # ago/out/2026, jan/2027
             monthly = as_user(users[0]).get(
                 "/statistics/monthly", params={"mes": item["mes"], "ano": item["ano"]}
             ).json()
             assert _q(item["receitas"]) == _q(monthly["receitas"])
-            assert _q(item["a_pagar"]) == _q(monthly["despesas"])
+            assert _q(item["despesas"]) == _q(monthly["despesas"])
             assert _q(item["saldo"]) == _q(monthly["saldo"])
+            assert _q(item["a_pagar"]) == _q(monthly["a_pagar"])
 
     def test_mes_sem_fluxo_no_meio_entra_com_zeros(self, session, users, as_user):
-        # fluxo em jul e set, ago vazio: sem histórico → default = jul; agosto
-        # aparece na série com zeros (contínua, não pula o mês).
-        _add_parcelada(session, users[0].id, n=1, mes0=7)
-        _add_parcelada(session, users[0].id, n=1, mes0=9)
+        # fluxo em ago e out, set vazio: setembro aparece na série com zeros
+        # (contínua, não pula o mês).
+        _add_parcelada(session, users[0].id, n=1, mes0=8)
+        _add_parcelada(session, users[0].id, n=1, mes0=10)
 
         series = self._series(as_user, users[0], meses=3)
-        assert [(i["mes"], i["ano"]) for i in series] == [(7, 2026), (8, 2026), (9, 2026)]
+        assert [(i["mes"], i["ano"]) for i in series] == [(8, 2026), (9, 2026), (10, 2026)]
         assert _q(series[1]["receitas"]) == Decimal("0.00")
+        assert _q(series[1]["despesas"]) == Decimal("0.00")
         assert _q(series[1]["a_pagar"]) == Decimal("0.00")
         assert _q(series[1]["saldo"]) == Decimal("0.00")
 
     def test_virada_de_ano_em_dezembro(self, mocker, session, users, as_user):
+        # hoje em dez/2026, sem fluxo futuro → fallback = jan/2027 (o "mês
+        # seguinte" do início da projeção também vira o ano).
         mocker.patch(
             "app.services.estatisticas.hoje", return_value=dt.date(2026, 12, 15)
         )
-        _add_avista(session, users[0].id, dt.date(2026, 11, 10))  # histórico → dez
+        _add_avista(session, users[0].id, dt.date(2026, 11, 10))
 
         series = self._series(as_user, users[0], meses=3)
         assert [(i["mes"], i["ano"]) for i in series] == [
-            (12, 2026), (1, 2027), (2, 2027)
+            (1, 2027), (2, 2027), (3, 2027)
         ]
 
-    def test_meses_1_so_o_mes_default(self, session, users, as_user):
+    def test_meses_1_so_o_inicio_da_projecao(self, session, users, as_user):
         _add_avista(session, users[0].id, dt.date(2026, 6, 10))
 
         series = self._series(as_user, users[0], meses=1)
-        assert [(i["mes"], i["ano"]) for i in series] == [(7, 2026)]
+        assert [(i["mes"], i["ano"]) for i in series] == [(8, 2026)]
 
     def test_default_12_e_limites_1_a_60(self, users, as_user):
         assert len(self._series(as_user, users[0])) == 12       # default

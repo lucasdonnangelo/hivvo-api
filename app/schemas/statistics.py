@@ -40,6 +40,13 @@ class MensalResponse(BaseModel):
     # o topo/fluxo acima não muda.
     consumo: LeituraMes
     categorias_consumo: list[CategoriaStats]
+    # §"A pagar e Saldo" — card "A pagar": só CRÉDITO cuja saída ainda não
+    # ocorreu (parcela não paga + avulsa de fatura a vencer). À vista/
+    # recorrência saem no ato e ficam FORA. NÃO confundir com a_vir (eixo
+    # tempo-no-mês-corrente): a_pagar é o eixo dívida-de-crédito, válido para
+    # qualquer mês. O saldo do topo segue receitas − despesas (caixa projetado
+    # de fim de mês) — a_pagar não entra nessa conta.
+    a_pagar: Decimal
 
 
 class MesEvolucao(BaseModel):
@@ -72,14 +79,17 @@ class MesAno(BaseModel):
 class MesProjecao(BaseModel):
     """Um mês da série de projeção do Bloco 2 (PLANO_DASHBOARD_DOIS_BLOCOS).
 
-    Sempre visão FLUXO: a_pagar = despesas por competência de fatura/vencimento
-    (projeção é o que vem a pagar; consumo não se aplica ao futuro) e
-    saldo = receitas − a_pagar — a mesma semântica do /monthly e /yearly.
+    Sempre visão FLUXO, com os MESMOS significados do /monthly (fonte única,
+    lentes que não divergem): despesas = saídas integrais do mês por
+    competência, saldo = receitas − despesas (caixa projetado de fim de mês)
+    e a_pagar = só o crédito cuja saída ainda não ocorreu (§"A pagar e
+    Saldo") — a_pagar NÃO é o subtraendo do saldo.
     """
 
     mes: int
     ano: int
     receitas: Decimal
+    despesas: Decimal
     a_pagar: Decimal
     saldo: Decimal
 
@@ -87,9 +97,10 @@ class MesProjecao(BaseModel):
 class ProjecaoResponse(BaseModel):
     """Série de N meses de FLUXO do Bloco 2 "Sua projeção".
 
-    series[0] é o mês default de fluxo (o destaque do Bloco 2) por construção;
-    series[1..N-1] são os meses seguintes, contínuos — mês sem fluxo aparece
-    com zeros, não é omitido.
+    series[0] é o início da projeção (§"PROJEÇÃO (Bloco 2)"): o primeiro mês
+    FUTURO com fluxo — NUNCA o corrente (esse é o Bloco 1), fallback mês
+    seguinte. series[1..N-1] são os meses seguintes, contínuos — mês sem
+    fluxo aparece com zeros, não é omitido.
     """
 
     series: list[MesProjecao]

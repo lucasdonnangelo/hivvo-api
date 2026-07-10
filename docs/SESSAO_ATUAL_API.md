@@ -8,7 +8,8 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 ## Estado do Projeto
 
 **Fase atual:** Dashboard em dois blocos (PLANO_DASHBOARD_DOIS_BLOCOS.md) — Batch 1 (API) pronto; batches 2–3 (frontend) a seguir.
-**Status:** App deployado e no ar (Railway + Vercel; Supabase de produção = `hivvo-prod`, ref `kufbqivycqjkydnfvgee`, us-west-2). Hardening pré-deploy (Batches 1–11) concluído e o backend da projeção Fase 1–2 completo: competência/fluxo, recorrência on-the-fly versionada por vigências, §1.3.1 (corte por dia: projeção/realizado/a-vir), §3.1.2 (operações de erro), Bugs 1/2. O backend da Fase 3 avançou: **3b-backend (visão CONSUMO no `/statistics/monthly`, commit `8ac6db5`)**, o **mês default do Dashboard (`GET /statistics/default-month`)**, a **série de projeção do Bloco 2 (`GET /statistics/projection`)** e a **leva "A pagar e Saldo"** (abaixo) prontos. **368 testes verdes.** Próximo: **frontend dos dois blocos** (batches 2–3).
+**Status:** App deployado e no ar (Railway + Vercel; Supabase de produção = `hivvo-prod`, ref `kufbqivycqjkydnfvgee`, us-west-2). Hardening pré-deploy (Batches 1–11) concluído e o backend da projeção Fase 1–2 completo: competência/fluxo, recorrência on-the-fly versionada por vigências, §1.3.1 (corte por dia: projeção/realizado/a-vir), §3.1.2 (operações de erro), Bugs 1/2. O backend da Fase 3 avançou: **3b-backend (visão CONSUMO no `/statistics/monthly`, commit `8ac6db5`)**, o **mês default do Dashboard (`GET /statistics/default-month`)**, a **série de projeção do Bloco 2 (`GET /statistics/projection`)** e a **leva "A pagar e Saldo"** (abaixo) prontos. **379 testes verdes.** Próximo: **frontend dos dois blocos** (batches 2–3).
+**Lente 3d — faturas de N cartões numa competência (`GET /invoices/{ano}/{mes}` + `/invoices/next-due`) (10/07/2026):** visão inversa da existente "1 cartão × N meses": dado um mês, quais faturas cada cartão tem. `GET /invoices/{ano}/{mes}` → `{ano, mes, total_geral, faturas: [{cartao_id, cartao_nome, total, data_vencimento}]}` — **uma linha por cartão COM fatura no mês** (total > 0; cartões sem lançamento na competência NÃO aparecem, sem zeros), ordenada por `data_vencimento` asc (o que vence primeiro em cima; vencimento ausente por último). Composição = **fonte única** `totais_fatura_por_cartao` em `faturas.py` (SUM GROUP BY `cartao_id`, mesmos filtros do `GET /cards/{id}/invoices/{ano}/{mes}`: parcelas não canceladas + avulsas de cartão despesa; `cartao_id != None`) — consistência cruzada afirmada em teste. `data_vencimento` reusa `_fatura_vencimento`. Auxiliar `GET /invoices/next-due` → `{ano, mes}` = **próxima fatura a vencer** (1ª competência, do mês corrente para frente, com fatura de vencimento >= hoje; competência futura qualifica direto, a corrente só se algum cartão ainda não venceu — via `vencimento_avulsa`; fallback = mês corrente) — derivação de negócio no backend (regra do projeto; depende do `dia_vencimento` por cartão). Novo `router_competencia` (prefix `/invoices`) em `invoices.py`, registrado no `main.py`; `ano/mes` validados por `Path` (422 fora de `2000+`/`1..12`). 100% aditivo (`list_invoices`/`get_invoice` intocados). Suíte: **379 testes** (366 + 13), todos verdes. Ver seção "Lente 3d" abaixo.
 **Leva "A pagar e Saldo" — eixo já-saiu × a-vencer, B completo (09/07/2026):** implementa a decisão do PLANO_PROJECAO §"Decisão — A pagar e Saldo" (regras finais no §"COMO FICOU" de lá). `MensalResponse` ganhou **`a_pagar: Decimal`** (aditivo): só CRÉDITO cuja saída ainda não ocorreu — Fonte 1 (parcela) = `not pago` (atrasada CONTINUA a pagar — furo 2; paga sai, inclusive antecipada), Fonte 2 (avulsa de fatura) = vencimento derivado > hoje (furo 1: `vencimento_avulsa` em `faturas.py` — `fatura_mes/ano` já são o mês de vencimento, o DIA vem do `dia_vencimento` do cartão; fallback fim do mês; +1 query de cartões só quando há avulsas); à vista/recorrência saem no ato → FORA (furo 3, mesmo com data futura). A Fonte 2 TAMBÉM passou a cortar o `realizado` do mês corrente pelo vencimento derivado (§1.3.2 fechado — antes era sempre-realizada). **`saldo` do topo confirmado como caixa projetado de fim de mês** (receitas − TODAS as saídas) — sem mudança. **FRONTEIRA do `pago`** (invariante, com teste-guarda em serviço E router): a marcação `a_pagar` é o ÚNICO ponto da camada de estatísticas que lê `pago`; projeção/realizado/a_vir/anual/consumo derivam só de data/competência — alternar `pago` não move nenhum outro campo. **`/projection` revisado:** começa em `inicio_projecao` = 1º mês FUTURO (≥ corrente+1) com fluxo, NUNCA o corrente (Bloco 1); fallback mês seguinte; `MesProjecao` virou `{mes, ano, receitas, despesas, a_pagar, saldo}` (`despesas` = o que antes se chamava `a_pagar` na série; `saldo = receitas − despesas`; `a_pagar` estrito, idêntico ao `/monthly` — fonte única). ⚠️ `pago` é gravável só via API (`PUT /installments/{id}`, sem UI) — parcela vencida fica em "a pagar" até ser marcada paga; pendência de produto registrada no PLANO. Suíte: **368 testes** (343 preservados + ajustes justificados + novos `TestAPagar`/`TestMonthlyAPagar`); validado E2E com uvicorn + SQLite isolado (caso do Lucas: jul a_pagar=0, saldo=6000).
 **Série de projeção do Bloco 2 — `GET /statistics/projection?meses=12` (07/07/2026):** Batch 1 do Dashboard em dois blocos (PLANO_DASHBOARD_DOIS_BLOCOS.md). Série de N meses (default 12, limites 1..60 = `HORIZONTE_MESES`) de **FLUXO** começando no **mês default de fluxo**: `{series: [{mes, ano, receitas, a_pagar, saldo}]}` — `series[0]` é o destaque do Bloco 2 por construção; meses sem fluxo entram com zeros (série contínua); `saldo = receitas − a_pagar`, mesma semântica do `/monthly`. 100% aditivo (`/monthly`, `/yearly`, `/default-month` intocados — o default-month perde o consumidor do Dashboard mas FICA). Reusa `mes_default` + `_lancamentos_ano` por ano-calendário coberto (virada dez→jan automática). Suíte: **349 testes** (342 + 7), todos verdes. Ver seção "Série de projeção (Bloco 2)" abaixo.
 **Mês default do Dashboard — `GET /statistics/default-month` (07/07/2026):** endpoint leve que responde **em que mês o Dashboard ABRE** (não trava navegação): `{fluxo: {mes, ano}, consumo: {mes, ano}}`. FLUXO: tem histórico (competência < corrente) → **corrente**; senão → **1º mês com fluxo** no horizonte de 60 meses; senão → **mês seguinte**. CONSUMO: sempre o corrente. Regra no PLANO_PROJECAO §"Mês default do Dashboard". Suíte: **342 testes** (331 + 11), todos verdes. Ver seção "Mês default do Dashboard" abaixo.
@@ -45,6 +46,60 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Teste de regressão round-trip parcelada→fatura concluído (26/06/2026, commitado `f3565c8`):** só testes — fecha o gap de cobertura do caminho de SUCESSO da criação parcelada (havia só atomicidade/FALHA do T-41). Suíte com **103 testes, todos verdes** — ver seção "Regressão round-trip" abaixo.
 **T-29 ordenação estável de transações concluído (26/06/2026, commitado):** desempate determinístico `data DESC, id DESC` em `GET /transactions` e nas avulsas do detalhe de fatura. Suíte com **106 testes, todos verdes** — ver seção "T-29" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
+
+---
+
+## Lente 3d — faturas de N cartões numa competência (10/07/2026)
+
+Visão **inversa** da existente ("1 cartão × N meses", `GET /cards/{id}/invoices`): dado um MÊS,
+quais faturas cada cartão tem — ex. "dez/2026: Itaú R$2.000 (vence 10/12), Nubank R$1.400
+(vence 05/12), total R$3.400". Suíte: **379 testes** (366 + 13), todos verdes; 100% aditivo.
+
+**Contrato — `GET /invoices/{ano}/{mes}` → `CompetenciaFaturas`:**
+`{ano, mes, total_geral, faturas: [{cartao_id, cartao_nome, total, data_vencimento}]}`
+([schemas/invoice.py](../app/schemas/invoice.py); Decimal→string, padrão do projeto).
+- **Uma linha por cartão COM fatura no mês** (`total > 0`) — cartões sem lançamento na competência
+  NÃO aparecem (não poluir com zeros). Competência vazia → `faturas: []`, `total_geral: "0.00"`.
+- **`total_geral`** = soma das faturas exibidas (agregado da competência).
+- **Ordenação por `data_vencimento` ascendente** (o que vence primeiro em cima); vencimento ausente
+  (cartão sem `dia_vencimento`) por último; desempate por `cartao_id`.
+- `ano/mes` validados por `Path` (`ano >= 2000`, `mes 1..12`) → **422** fora da faixa.
+
+**Fonte única da composição — `totais_fatura_por_cartao(session, uid, mes, ano)` em
+[services/faturas.py](../app/services/faturas.py):** `{cartao_id: total}` agregando NO BANCO
+(SUM GROUP BY `cartao_id`) com os **mesmos filtros** do `GET /cards/{id}/invoices/{ano}/{mes}`
+(`get_invoice`): parcelas não canceladas (`SUM valor_parcela`) + avulsas de cartão
+(`parcelado=False`, `tipo='despesa'`; `SUM valor`) com `fatura_mes/ano == (mes, ano)`. Só
+CARTÕES (`cartao_id != None`) — parcela sem cartão não pertence a fatura de cartão. A
+consistência com o endpoint por-cartão é **afirmada em teste** (não é código literalmente
+compartilhado — os endpoints existentes NÃO foram tocados). `data_vencimento` reusa
+`_fatura_vencimento` (o mesmo do detalhe por cartão).
+
+**Auxiliar — `GET /invoices/next-due` → `{ano, mes}` (próxima fatura a vencer):** mês em que a
+tela 3d ABRE. `proxima_fatura_a_vencer(session, uid, hoje)`: a **1ª competência** (do mês corrente
+para frente) com ao menos uma fatura de **vencimento >= hoje**. Competência **futura** qualifica de
+imediato; a **corrente** só se algum cartão com fatura no mês ainda não venceu (vencimento via
+`vencimento_avulsa` — reusa o helper da leva "A pagar", que trata `dia_vencimento` ausente como fim
+do mês); competências passadas nunca contam (já venceram = "vencidas", não "a vencer"). **Fallback:
+o mês corrente** (neutro — a tela sempre recebe um mês). Recomendação seguida: derivação no
+**backend** (regra "lógica de negócio mora no backend"; depende do `dia_vencimento` por cartão, que
+o frontend não deve reconstruir). Um único `hoje()` do produto (fuso America/Sao_Paulo).
+
+**Roteamento:** novo `router_competencia` (prefix `/invoices`) em
+[routers/invoices.py](../app/routers/invoices.py), registrado ao lado de `invoices.router` no
+[main.py](../main.py) (mesmo `_csrf`/`/api/v1`). `/invoices/next-due` (1 segmento) e
+`/invoices/{ano}/{mes}` (2 segmentos) não colidem.
+
+**Testes (`TestInvoicesByCompetencia` + `TestNextDueInvoice` em
+[test_invoices_router.py](../tests/routers/test_invoices_router.py), 13):** 2 cartões → 2 linhas +
+`total_geral` + ordem por vencimento; cartão sem fatura no mês não aparece; competência vazia →
+lista vazia/total 0; parcela cancelada não conta / avulsa conta; **consistência cruzada** (total e
+`data_vencimento` de um cartão == os do `/cards/{id}/invoices/{ano}/{mes}`); `mes/ano` inválidos →
+422; isolamento entre usuários. next-due: futuro puro → a competência futura; corrente ainda a
+vencer → corrente; corrente todo vencido → pula pro futuro; sem faturas → corrente (fallback).
+
+**Não incluído (fora de escopo, por decisão):** `PagamentoFatura`, status de fatura
+(paga/atrasada — Leva 2), frontend; endpoints existentes (`list_invoices`/`get_invoice`) intocados.
 
 ---
 

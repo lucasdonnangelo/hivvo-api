@@ -1,144 +1,99 @@
-# PLANO_3D_PAGAMENTO_FATURA.md — Leva 2: PagamentoFatura e o status de fatura
+# Hivvo — Lente 3d (faturas por cartão) + Pagamento de Fatura
 
-> Documento de design da **Leva 2 da lente 3d** (a Leva 1 — "1 mês × N cartões" — está no
-> SESSAO_ATUAL_API de 10/07/2026). Registrado A POSTERIORI da aprovação (o design foi fechado
-> em sessão de 10/07/2026 e implementado na mesma data) para valer como referência entre
-> sessões, no padrão dos PLANO_*.
->
-> Status: **IMPLEMENTADO no backend em 10/07/2026.** Migration `a3d9f4c2b7e1` aplicada ao dev.
-> Falta o frontend (consumir `status` + o PUT de pagamento — batch web).
+> Origem: investigação revelou que "fatura" NÃO é entidade no modelo — é uma agregação derivada
+> (`cartao_id` + `fatura_mes` + `fatura_ano`). E `Parcela` tem `pago`, mas `Transacao` (avulsa de
+> cartão) NÃO tem. Logo a decisão de produto ("o usuário marca a FATURA como paga") não é
+> implementável sem mudança de modelo.
+
+## SEPARAÇÃO EM DUAS LEVAS (decidido)
+- **Leva 1 — 3d SIMPLES (agora):** a lente cross-cartão "1 mês × N cartões" (ex.: "dezembro: Itaú
+  R$A, Nubank R$B). LEITURA PURA. Aditiva, sem decisão de modelo. 🟡.
+- **Leva 2 — Pagamento de fatura (depois):** mudança de modelo (`PagamentoFatura`), revisita o
+  `a_pagar`. 🔴, potente, design próprio.
 
 ---
 
-## 0. Motivação
+## LEVA 1 — Lente 3d (faturas por cartão, num mês)
 
-A leva "A pagar e Saldo" (09/07) deixou dois furos estruturais:
+### O que JÁ existe (não reconstruir)
+- `GET /cards/{id}/invoices` → lista de faturas do cartão (mes, ano, total, data_vencimento,
+  total_parcelas_pagas, total_itens).
+- `GET /cards/{id}/invoices/{ano}/{mes}` → detalhe (total, vencimento, parcelas[], avulsas[]).
+- `GET /cards` → já traz `fatura_aberta_total/mes/ano/vencimento` por cartão.
+- Frontend: `CardsPage` (1 cartão × N meses), `InvoiceMonthGrid` (grade de meses), `InvoiceDetail`
+  (detalhe da fatura), `CardVisual`.
 
-1. **Fonte 1 (parcela)** dependia de `Parcela.pago` — gravável só via API (`PUT
-   /installments/{id}`), sem UI. Na prática, parcela vencida ficava em "a pagar" para sempre.
-2. **Fonte 2 (avulsa de cartão)** presumia **"venceu = saiu"** (a `Transacao` não tem `pago`) —
-   uma fatura vencida e NÃO paga sumia do a_pagar sozinha, escondendo dívida.
+### O que FALTA (a lente 3d)
+Hoje a tela é **1 cartão × N meses**. A lente 3d é **1 mês × N cartões**.
+- **Backend:** endpoint por competência cruzando cartões, ex.
+  `GET /invoices/{ano}/{mes}` → `[{cartao_id, nome, total, data_vencimento, ...}, ...]`.
+  (Alternativa ruim: o front chamar `/cards/{id}/invoices` N vezes e cruzar no cliente.)
+- **Frontend:** tela/seção que mostra, para um mês escolhido, a fatura de cada cartão + o total
+  agregado. Navegação por mês.
 
-Além disso, o frontend da Leva 1 removeu o campo `status` FANTASMA das faturas (declarado e
-nunca retornado) esperando que ele voltasse REAL nesta leva.
+### Contrato meio-implementado a formalizar (achado)
+O frontend declara `InvoiceListItem.status: 'aberta'|'fechada'|'futura'` e o `InvoiceMonthGrid` usa
+`inv.status === 'futura'` — **mas o backend nunca retorna `status`** (sempre `undefined`; "futura"
+hoje = "mês sem dados" por acidente). Inversamente, o backend manda `total_parcelas_pagas`/
+`total_itens` que o frontend ignora. A lente 3d deve formalizar (ou remover) esse contrato.
 
-## 1. A entidade — PagamentoFatura
+---
 
-**Fonte única de "essa fatura foi paga"**, por fatura = (cartão, competência):
+## LEVA 2 — Pagamento de fatura (design decidido, implementar depois)
 
-- Tabela `pagamentos_fatura` ([models/pagamento_fatura.py](../app/models/pagamento_fatura.py)):
-  `id` (int PK), `usuario_id` (FK, index), `cartao_id` (FK), `fatura_mes`, `fatura_ano`,
-  `pago` (bool), `data_pagamento` (date, nullable), `criado_em`.
-- **Chave natural**: UNIQUE `(cartao_id, fatura_ano, fatura_mes)`. Escopo por `usuario_id` em
-  toda query (T-36).
-- **Semântica dos estados**: AUSÊNCIA de registro = não confirmado; `pago=False` = o usuário
-  disse "não paguei" (equivale à ausência no status; existe pela reversibilidade);
-  `pago=True` = paga.
-- Migration `a3d9f4c2b7e1`: tabela **VAZIA, SEM backfill** (não há base instalada). FKs ON
-  DELETE CASCADE (usuarios, cartoes), índice `(usuario_id, fatura_ano, fatura_mes)`.
-  Upgrade E downgrade testados no Postgres dev.
+### O problema
+- "Marcar fatura paga" hoje = marcar N `Parcela.pago` (uma a uma, sem bulk) **e as avulsas, que não
+  têm onde gravar** (`Transacao` não tem `pago`). Fatura com avulsa fica eternamente meio-paga.
+- `a_pagar` (Bloco 1) hoje usa `Parcela.pago` para parcelas e **presume "avulsa vencida = paga"**.
+  A presunção morreu para parcelas (furo 2, corrigido) mas continua viva para avulsas.
 
-## 2. Regra "a fatura JÁ FECHOU" (derivada, sem estado)
+### A DECISÃO (Lucas concordou integralmente)
+**1. `PagamentoFatura` como AGREGADO** — nova entidade:
+```
+PagamentoFatura(cartao_id, fatura_mes, fatura_ano) → {pago: bool, data_pagamento}
+```
+- A unidade de ação do usuário é a FATURA, não o componente. Ele paga "a fatura de dezembro do
+  Itaú", não "a parcela 3/10 e a compra do mercado".
+- Atômico: um clique = um registro. Evita o estado sem sentido de "fatura parcialmente paga".
+- Reversível: alterna a qualquer momento (requisito de produto).
 
-Invertendo a materialização (`_fatura_cartao_avulso`/`_data_vencimento_parcela`): competência
-= mês-base da compra + `mes_offset_vencimento`; compra com `dia > dia_fechamento` empurra o
-mês-base em +1. Logo (`data_fechamento_fatura` em [services/faturas.py](../app/services/faturas.py)):
+**2. `PagamentoFatura` SUBSTITUI `Parcela.pago` como fonte de "essa saída ocorreu".**
+- Manter os dois criaria DUAS fontes de verdade — exatamente o que o projeto evita.
+- `Parcela.pago` fica sem uso na projeção (ou é removido; decidir na implementação). Caso de uso
+  residual a avaliar: pagamento antecipado de parcela específica (raro).
+- **CONSEQUÊNCIA:** o `a_pagar` (feito na leva "eixo saiu/a-vencer") passa a consultar
+  `PagamentoFatura` em vez de `Parcela.pago` + presunção por data das avulsas. Isso UNIFICA: mata a
+  presunção para parcelas E avulsas de uma vez, porque o pagamento é da fatura (que contém ambos).
+  Revisitar o `a_pagar` faz parte desta leva — não é retrabalho gratuito, é o modelo ficando correto.
 
-> **fechamento da competência (m, a)** = dia `clamp(dia_fechamento)` do mês-base =
-> **(m, a) − mes_offset_vencimento**. Sem `dia_fechamento` → último dia do mês-base.
-> **FECHADA ⇔ hoje > data_fechamento** (no próprio dia do fechamento a compra ainda entra —
-> o `>` da materialização é estrito → a fatura ainda está ABERTA nesse dia).
+**3. Status "atrasada" = DERIVADO, nunca materializado.**
+- `atrasada = (sem registro OU pago=false) E data_vencimento < hoje`.
+- Mesma disciplina da projeção: estado derivado de fato + data, não estado manual duplicado.
+- O usuário nunca "marca como atrasada" — ele só não confirmou o pagamento, e o tempo passou.
 
-Depois do fechamento, nenhuma compra NOVA (data = hoje) cai na competência. Exceções aceitas
-e documentadas (decisão 3, §5): compra com **data retroativa** e o `PUT /installments`
-editando `data_vencimento` (que já não rederivava `fatura_mes` — inconsistência pré-existente,
-fora de escopo). Edge aceito: cartão sem `dia_vencimento` (parcelas `compra + i`, sem offset)
-usa o mesmo cálculo com o offset do cartão — aproximação para config incompleta.
+### Estados da fatura (todos derivados de PagamentoFatura + vencimento)
+| Estado | Condição | Conta em "A pagar"? |
+|---|---|---|
+| **Paga** | registro com `pago=true` | Não |
+| **Em aberto** | sem registro, vencimento no futuro | Sim |
+| **Atrasada** | sem registro (ou `pago=false`), vencimento < hoje | Sim, **destacada como atrasada** |
 
-## 3. Endpoint de confirmação
+### UX da confirmação (decisão de Lucas)
+- O sistema **NUNCA presume** pago pela data. Ele **pergunta**.
+- Ação **extremamente simples**: um clique por fatura, no momento natural (quando vence).
+- Se o usuário responde **"não paguei"** → a fatura continua visível em "A pagar", marcada
+  **ATRASADA**, e ele pode alterar a qualquer momento.
+- **Onde vive:** a tela de faturas por cartão (3d). Possivelmente um aviso discreto no Dashboard
+  quando há fatura vencida não resolvida.
+- **Cuidado de design:** nem intrusivo (modal bloqueando o Dashboard) nem escondido (ninguém
+  responde e o "A pagar" acumula lixo). A definir no design da Leva 2.
 
-**`PUT /invoices/{cartao_id}/{ano}/{mes}/pagamento`** body `{pago: bool}`
-([routers/invoices.py](../app/routers/invoices.py), `router_competencia`; `ano/mes` por `Path`).
-
-Validações: cartão de outro usuário/inexistente → **404**; fatura **não existe** (nenhuma
-parcela não cancelada nem avulsa na competência — `fatura_existe`) → **422** "Não há fatura
-nessa competência."; fatura **ainda aberta** (hoje <= fechamento) → **422** com a data.
-**Pagamento ANTECIPADO** (fechada, vencimento futuro) é permitido.
-
-Semântica: **upsert idempotente e reversível** pela chave natural. `pago=true` seta
-`data_pagamento = hoje()` **só na transição** (re-PUT preserva a data); `pago=false` mantém o
-registro com `data_pagamento=None`. Resposta:
-`{cartao_id, ano, mes, pago, data_pagamento, status}`.
-
-## 4. Status derivado (nunca materializado)
-
-`status_fatura` em [services/faturas.py](../app/services/faturas.py):
-
-| Status | Condição |
-|---|---|
-| `paga` | registro com `pago=true` (registro manda — vale mesmo se a composição mudou depois) |
-| `aberta` | hoje <= fechamento (ainda aceita compras) |
-| `a_vencer` | fechada, não confirmada, vencimento >= hoje |
-| `atrasada` | fechada, não confirmada, vencimento < hoje |
-
-Vencimento via `vencimento_avulsa` (nunca None — fallback fim do mês). O usuário NUNCA marca
-"atrasada" — é consequência de não confirmar + tempo. **Exposto (aditivo) nos 3 contratos**:
-`FaturaListItem` (`GET /cards/{id}/invoices`, +1 query fixa de pagamentos do cartão),
-`FaturaDetalhe` (detalhe, 1 lookup) e `FaturaCartaoItem` (`GET /invoices/{ano}/{mes}`, +1
-query da competência). Fecha o contrato `status` que o front declarou e o backend nunca
-cumpria.
-
-## 5. Decisões fechadas (com o Lucas, 10/07/2026)
-
-1. **Parcela SEM cartão** (carnê — `cartao_id=None`, legal via API): não tem fatura
-   confirmável → **presunção por vencimento** (`a_pagar = data_vencimento > hoje`, a regra da
-   antiga Fonte 2). A presunção por data morre SÓ para lançamentos COM cartão.
-2. **Superfícies de LEITURA do `pago` legado** (`ParcelaResponse.pago/data_pagamento`, filtro
-   `GET /installments?pago=`, `total_parcelas_pagas` do list_invoices): **mantidas intocadas**
-   — só o WRITE morreu. Remoção fica para batch cross-repo (SummaryPage do web lê `!p.pago`).
-3. **Compra retroativa em fatura já confirmada paga**: **aceitar e documentar** — o status
-   continua `paga` (registro manda); o usuário desmarca/remarca se quiser. Nenhuma validação
-   nova na criação de transações.
-
-## 6. Revisão do a_pagar ([services/estatisticas.py](../app/services/estatisticas.py))
-
-**Regra unificada**: lançamento de crédito COM cartão está PAGO ⇔ a fatura dele tem
-`PagamentoFatura.pago=true`. Senão → `a_pagar=True`, **a vencer OU atrasada**. Unifica
-parcelas e avulsas e MATA a presunção por data.
-
-- Helpers `_faturas_pagas_mes`/`_faturas_pagas_ano` (+1 query fixa, só quando há lançamento
-  de cartão) e `_parcela_a_pagar` (regra da Fonte 1, com o ramo sem-cartão).
-- **`realizado`/projeção integral: intactos** — o corte §1.3.1 segue por data/competência.
-- **FRONTEIRA (invariante, com testes-guarda em serviço E router)**: a marcação `a_pagar` é o
-  ÚNICO consumidor de `PagamentoFatura` na camada de estatísticas; alternar o pagamento não
-  move projeção/realizado/a_vir/anual/consumo. E **`Parcela.pago` está MORTO** na camada:
-  alternar a coluna obsoleta não move NADA (nem o a_pagar).
-- **Pontos que liam `pago` (reporte)**: `estatisticas.py` Fontes 1 mensal/anual →
-  **substituídos**; `invoices.py` `total_parcelas_pagas` → mantido (legado);
-  `installments.py` filtro `?pago=` → mantido (read-only); `installments.py` PUT (write) →
-  **REMOVIDO**; `ParcelaResponse`/`ParcelaFaturaResponse` → mantidos; `ai.py` → só comentário.
-- Colunas `Parcela.pago`/`data_pagamento` **NÃO dropadas** — marcadas OBSOLETAS no modelo.
-
-## 7. PUT /installments/{id} — o que saiu e o que ficou
-
-`ParcelaUpdate` perdeu `pago`/`data_pagamento` e ganhou `extra="forbid"` → mandar `pago` vira
-**422 explícito** (não um no-op silencioso). **Ficaram**: `cancelado` (rota viva, gatilho do
-§Fase 3b) e `data_vencimento`. O router perdeu o bloco de auto-preenchimento de
-`data_pagamento`.
-
-## 8. Helper único de composição de fatura
-
-`_cond_parcelas_fatura`/`_cond_avulsas_fatura` em [services/faturas.py](../app/services/faturas.py)
-— as MESMAS condições de "o que compõe uma fatura" usadas por `get_invoice`,
-`totais_fatura_por_cartao` e o novo `fatura_existe`. A consistência entre as lentes passa a
-ser **por construção** (o teste de consistência cruzada vira guarda do refactor).
-
-## 9. Riscos aceitos / consequências de produto
-
-- **Números do Dashboard mudam**: `a_pagar` de meses passados/corrente SOBE — avulsa vencida
-  não confirmada deixa de sumir por presunção. Intencional: pendência até o usuário confirmar.
-- **Zerar o a_pagar agora exige ação do usuário** (a pendência "marcar fatura paga" da leva
-  de 09/07 nasce aqui; o frontend é outro batch).
-- `delete_me` ganhou o delete explícito de `PagamentoFatura` (antes de `Cartao`). Gap
-  pré-existente observado, fora de escopo: Recorrencia/Vigencia não estão nos deletes
-  explícitos do delete_me (cobertas pelo CASCADE do Postgres).
+### Escopo da Leva 2 (quando chegar)
+- Migration: tabela `PagamentoFatura`.
+- Endpoint: marcar/desmarcar fatura paga (por `cartao_id` + competência), atômico.
+- Revisitar `a_pagar` (estatisticas.py) para consultar `PagamentoFatura` (fonte única).
+- Expor status derivado (paga/aberta/atrasada) nos endpoints de fatura — fecha o contrato
+  meio-implementado do `status` no frontend.
+- UI: a ação de confirmar + o destaque de atrasada.
+- Decidir o destino de `Parcela.pago`.
+- 🔴 modelo potente; design detalhado antes do código.

@@ -1,24 +1,38 @@
+import datetime as dt
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy import case, func
 from sqlmodel import Session, select
 
 from app.core.auth import get_current_user
 from app.core.database import get_session
+from app.core.dates import hoje
 from app.models.card import Cartao
 from app.models.installment import Parcela
 from app.models.transaction import Transacao
 from app.models.user import Usuario
 from app.schemas.invoice import (
+    CompetenciaFaturas,
+    FaturaCartaoItem,
     FaturaDetalhe,
     FaturaListItem,
     ParcelaFaturaResponse,
+    ProximaFaturaResponse,
     TransacaoFaturaResponse,
 )
-from app.services.faturas import _fatura_vencimento
+from app.services.faturas import (
+    _fatura_vencimento,
+    proxima_fatura_a_vencer,
+    totais_fatura_por_cartao,
+)
 
 router = APIRouter(prefix="/cards", tags=["invoices"])
+
+# Lente 3d (1 mês × N cartões): prefixo próprio /invoices. Registrado ao lado de
+# `router` no main.py. Rotas de 1 segmento (/next-due) e de 2 (/{ano}/{mes}) não
+# colidem.
+router_competencia = APIRouter(prefix="/invoices", tags=["invoices"])
 
 
 def _get_card_for_user(session: Session, card_id: int, usuario_id: int) -> Cartao:
@@ -149,3 +163,67 @@ def get_invoice(
         parcelas=[ParcelaFaturaResponse.model_validate(p) for p in parcelas],
         avulsas=[TransacaoFaturaResponse.model_validate(t) for t in avulsas],
     )
+
+
+@router_competencia.get("/next-due", response_model=ProximaFaturaResponse)
+def next_due_invoice(
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Mês em que a tela 3d ABRE = a próxima fatura a vencer (primeiro mês com
+    # fatura cujo vencimento >= hoje). Derivação de negócio no backend
+    # (vencimento depende do dia_vencimento por cartão). Um único hoje() do
+    # produto (fuso America/Sao_Paulo).
+    ano, mes = proxima_fatura_a_vencer(session, current_user.id, hoje())
+    return ProximaFaturaResponse(ano=ano, mes=mes)
+
+
+@router_competencia.get("/{ano}/{mes}", response_model=CompetenciaFaturas)
+def invoices_by_competencia(
+    ano: int = Path(..., ge=2000),
+    mes: int = Path(..., ge=1, le=12),
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Lente 3d: faturas de TODOS os cartões numa competência. Uma linha por
+    # cartão COM fatura no mês (total > 0) — cartões sem lançamento na
+    # competência não aparecem (sem zeros). Composição = fonte única
+    # (totais_fatura_por_cartao), idêntica ao GET /cards/{id}/invoices/{ano}/{mes}.
+    totais = totais_fatura_por_cartao(session, current_user.id, mes, ano)
+
+    if not totais:
+        return CompetenciaFaturas(ano=ano, mes=mes, total_geral=Decimal("0.00"), faturas=[])
+
+    cartoes = {
+        c.id: c
+        for c in session.exec(
+            select(Cartao).where(
+                Cartao.usuario_id == current_user.id,
+                Cartao.id.in_(list(totais)),  # type: ignore[attr-defined]
+            )
+        )
+    }
+
+    faturas = [
+        FaturaCartaoItem(
+            cartao_id=cid,
+            cartao_nome=cartoes[cid].nome,
+            total=total,
+            data_vencimento=_fatura_vencimento(cartoes[cid], mes, ano),
+        )
+        for cid, total in totais.items()
+        if cid in cartoes  # cartão apagado sob a fatura: defensivo, não deve ocorrer (FK)
+    ]
+
+    # Ordena por data_vencimento asc (o que vence primeiro em cima); vencimento
+    # ausente (cartão sem dia_vencimento) por último; desempate por cartao_id.
+    faturas.sort(
+        key=lambda f: (
+            f.data_vencimento is None,
+            f.data_vencimento or dt.date.max,
+            f.cartao_id,
+        )
+    )
+
+    total_geral = sum((f.total for f in faturas), Decimal("0.00"))
+    return CompetenciaFaturas(ano=ano, mes=mes, total_geral=total_geral, faturas=faturas)

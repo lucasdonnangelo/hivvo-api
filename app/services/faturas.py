@@ -1,8 +1,14 @@
 import calendar
 import datetime as dt
+from decimal import Decimal
 from typing import Optional
 
+from sqlalchemy import func
+from sqlmodel import Session, select
+
 from app.models.card import Cartao
+from app.models.installment import Parcela
+from app.models.transaction import Transacao
 
 
 def clamp_dia_no_mes(dia: int, ano: int, mes: int) -> int:
@@ -87,6 +93,137 @@ def vencimento_avulsa(
     return dt.date(
         fatura_ano, fatura_mes, calendar.monthrange(fatura_ano, fatura_mes)[1]
     )
+
+
+def totais_fatura_por_cartao(
+    session: Session, usuario_id: int, mes: int, ano: int
+) -> dict[int, Decimal]:
+    """{cartao_id: total} das faturas de TODOS os cartões na competência (mes, ano).
+
+    Fonte única da composição da fatura (a MESMA do GET
+    /cards/{id}/invoices/{ano}/{mes} — ver invoices.get_invoice): parcelas não
+    canceladas (SUM valor_parcela) + avulsas de cartão (parcelado=False,
+    tipo='despesa'; SUM valor) cuja fatura_mes/ano == (mes, ano). Agrega no
+    banco (SUM GROUP BY cartao_id), em vez de varrer objeto a objeto.
+
+    Só entram CARTÕES (cartao_id != None): a lente 3d é "1 mês × N cartões".
+    Parcela sem cartão (cartao_id None) não pertence à fatura de cartão algum.
+    Só cartões COM lançamento na competência aparecem no dict (sem zeros).
+    """
+    totais: dict[int, Decimal] = {}
+
+    parcelas_rows = session.exec(
+        select(
+            Parcela.cartao_id,
+            func.sum(Parcela.valor_parcela),
+        )
+        .where(
+            Parcela.usuario_id == usuario_id,
+            Parcela.cartao_id != None,  # noqa: E711
+            Parcela.fatura_mes == mes,
+            Parcela.fatura_ano == ano,
+            Parcela.cancelado == False,  # noqa: E712
+        )
+        .group_by(Parcela.cartao_id)
+    ).all()
+
+    avulsas_rows = session.exec(
+        select(
+            Transacao.cartao_id,
+            func.sum(Transacao.valor),
+        )
+        .where(
+            Transacao.usuario_id == usuario_id,
+            Transacao.cartao_id != None,  # noqa: E711
+            Transacao.fatura_mes == mes,
+            Transacao.fatura_ano == ano,
+            Transacao.parcelado == False,  # noqa: E712
+            Transacao.tipo == "despesa",
+        )
+        .group_by(Transacao.cartao_id)
+    ).all()
+
+    for cartao_id, total in parcelas_rows:
+        totais[cartao_id] = totais.get(cartao_id, Decimal("0.00")) + (total or Decimal("0.00"))
+    for cartao_id, total in avulsas_rows:
+        totais[cartao_id] = totais.get(cartao_id, Decimal("0.00")) + (total or Decimal("0.00"))
+
+    return totais
+
+
+def _competencias_com_fatura(session: Session, usuario_id: int) -> set[tuple[int, int]]:
+    """Conjunto de competências (ano, mes) que têm ao menos uma fatura de cartão.
+
+    Mesma composição de :func:`totais_fatura_por_cartao` (parcelas não
+    canceladas + avulsas de cartão), mas só as chaves distintas de competência
+    — barato (DISTINCT no banco), sem materializar totais.
+    """
+    parcelas = session.exec(
+        select(Parcela.fatura_ano, Parcela.fatura_mes)
+        .where(
+            Parcela.usuario_id == usuario_id,
+            Parcela.cartao_id != None,  # noqa: E711
+            Parcela.fatura_mes != None,  # noqa: E711
+            Parcela.cancelado == False,  # noqa: E712
+        )
+        .distinct()
+    ).all()
+    avulsas = session.exec(
+        select(Transacao.fatura_ano, Transacao.fatura_mes)
+        .where(
+            Transacao.usuario_id == usuario_id,
+            Transacao.cartao_id != None,  # noqa: E711
+            Transacao.fatura_mes != None,  # noqa: E711
+            Transacao.parcelado == False,  # noqa: E712
+            Transacao.tipo == "despesa",
+        )
+        .distinct()
+    ).all()
+    return {(ano, mes) for ano, mes in parcelas} | {(ano, mes) for ano, mes in avulsas}
+
+
+def proxima_fatura_a_vencer(
+    session: Session, usuario_id: int, today: dt.date
+) -> tuple[int, int]:
+    """(ano, mes) da PRÓXIMA fatura a vencer — mês em que o Dashboard 3d ABRE.
+
+    Regra: a primeira competência (varrendo do mês corrente para frente) que
+    tem ao menos UMA fatura com vencimento >= hoje.
+    - Competência FUTURA (> corrente): qualifica de imediato (todo vencimento
+      cai num mês à frente, logo >= hoje).
+    - Competência CORRENTE: qualifica só se algum cartão com fatura no mês tem
+      vencimento (derivado do dia_vencimento, via `vencimento_avulsa` — que
+      trata dia ausente como fim do mês) >= hoje. Se todas já venceram, segue
+      para a próxima competência.
+    Competências passadas (< corrente) nunca contam (já venceram — são
+    "vencidas", não "a vencer").
+
+    Fallback: o mês corrente (neutro) quando não há nenhuma fatura a vencer —
+    a tela sempre recebe um mês para abrir.
+    """
+    corrente = (today.year, today.month)
+    competencias = sorted(
+        c for c in _competencias_com_fatura(session, usuario_id) if c >= corrente
+    )
+    for ano, mes in competencias:
+        if (ano, mes) > corrente:
+            return ano, mes
+        # Competência corrente: precisa de ao menos um cartão a vencer.
+        totais = totais_fatura_por_cartao(session, usuario_id, mes, ano)
+        cartoes = {
+            c.id: c
+            for c in session.exec(
+                select(Cartao).where(
+                    Cartao.usuario_id == usuario_id,
+                    Cartao.id.in_(list(totais)),  # type: ignore[attr-defined]
+                )
+            )
+        }
+        if any(
+            vencimento_avulsa(cartoes.get(cid), mes, ano) >= today for cid in totais
+        ):
+            return ano, mes
+    return corrente
 
 
 def _current_open_fatura(card: Cartao, today: dt.date) -> tuple[int, int, Optional[dt.date]]:

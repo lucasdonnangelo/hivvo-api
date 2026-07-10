@@ -9,8 +9,11 @@ ficam de fora; parcelas+avulsas na MESMA fatura somam juntas.
 import datetime as dt
 from decimal import Decimal
 
+from sqlmodel import select
+
 from app.models.card import Cartao
 from app.models.installment import Parcela
+from app.models.pagamento_fatura import PagamentoFatura
 from app.models.transaction import Transacao
 
 
@@ -247,3 +250,240 @@ class TestNextDueInvoice:
 
         body = as_user(user_a).get("/invoices/next-due").json()
         assert (body["ano"], body["mes"]) == (2026, 7)
+
+
+HOJE_L2 = dt.date(2026, 7, 15)
+
+
+class TestPagamentoFatura:
+    """Leva 2 — PUT /invoices/{cartao_id}/{ano}/{mes}/pagamento: confirmar/negar
+    o pagamento de uma fatura FECHADA e EXISTENTE; upsert idempotente e
+    reversível; o a_pagar do /monthly reage (e só ele). hoje = 15/07/2026."""
+
+    def _clock(self, mocker, data=HOJE_L2):
+        # O endpoint lê app.routers.invoices.hoje; o a_pagar do /monthly lê
+        # app.services.estatisticas.hoje — o MESMO instante nos dois.
+        return (
+            mocker.patch("app.routers.invoices.hoje", return_value=data),
+            mocker.patch("app.services.estatisticas.hoje", return_value=data),
+        )
+
+    def _a_pagar(self, client, mes, ano):
+        body = client.get("/statistics/monthly", params={"mes": mes, "ano": ano}).json()
+        return Decimal(str(body["a_pagar"]))
+
+    def test_confirmar_fatura_fechada_some_do_a_pagar(self, session, users, as_user, mocker):
+        self._clock(mocker)
+        user_a, _ = users
+        # offset 0 + fechamento dia 1: competência jul fechou em 1/jul < hoje.
+        card = _card_venc(session, user_a.id, "Itaú", dia_vencimento=10)
+        _parcela(session, user_a.id, card.id, 1, 7, 2026, "100.00")
+        _avulsa(session, user_a.id, card.id, 7, 2026, "30.00")  # avulsa segue a fatura
+        session.commit()
+
+        client = as_user(user_a)
+        assert self._a_pagar(client, 7, 2026) == Decimal("130.00")
+
+        resp = client.put(f"/invoices/{card.id}/2026/7/pagamento", json={"pago": True})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pago"] is True
+        assert body["data_pagamento"] == "2026-07-15"
+        assert body["status"] == "paga"
+
+        # Parcela E avulsa saem juntas — o pagamento é da FATURA.
+        assert self._a_pagar(client, 7, 2026) == Decimal("0.00")
+
+    def test_desmarcar_volta_ao_a_pagar(self, session, users, as_user, mocker):
+        self._clock(mocker)
+        user_a, _ = users
+        card = _card_venc(session, user_a.id, "Itaú", dia_vencimento=10)
+        _parcela(session, user_a.id, card.id, 1, 7, 2026, "100.00")
+        session.commit()
+
+        client = as_user(user_a)
+        client.put(f"/invoices/{card.id}/2026/7/pagamento", json={"pago": True})
+        assert self._a_pagar(client, 7, 2026) == Decimal("0.00")
+
+        resp = client.put(f"/invoices/{card.id}/2026/7/pagamento", json={"pago": False})
+        assert resp.status_code == 200
+        assert resp.json()["pago"] is False
+        assert resp.json()["data_pagamento"] is None
+        assert self._a_pagar(client, 7, 2026) == Decimal("100.00")
+
+        # O registro FICA (pago=False = "não paguei" — reversível), não é apagado.
+        pagamento = session.exec(select(PagamentoFatura)).one()
+        assert pagamento.pago is False
+
+    def test_fatura_aberta_422(self, session, users, as_user, mocker):
+        self._clock(mocker)
+        user_a, _ = users
+        # Competência ago/2026 fecha em 1/ago — hoje (15/07) ainda não passou.
+        card = _card_venc(session, user_a.id, "Itaú", dia_vencimento=10)
+        _parcela(session, user_a.id, card.id, 1, 8, 2026, "100.00")
+        session.commit()
+
+        resp = as_user(user_a).put(
+            f"/invoices/{card.id}/2026/8/pagamento", json={"pago": True}
+        )
+        assert resp.status_code == 422
+        assert "aberta" in resp.json()["detail"]
+
+    def test_competencia_sem_lancamentos_422(self, session, users, as_user, mocker):
+        self._clock(mocker)
+        user_a, _ = users
+        card = _card_venc(session, user_a.id, "Itaú", dia_vencimento=10)
+        # Fatura de mar/2026 (fechada) não existe — nada foi lançado nela.
+        _parcela(session, user_a.id, card.id, 1, 7, 2026, "100.00")
+        session.commit()
+
+        resp = as_user(user_a).put(
+            f"/invoices/{card.id}/2026/3/pagamento", json={"pago": True}
+        )
+        assert resp.status_code == 422
+        assert "Não há fatura" in resp.json()["detail"]
+
+    def test_pagamento_antecipado_permitido(self, session, users, as_user, mocker):
+        self._clock(mocker)
+        user_a, _ = users
+        # Fechada (1/jul < hoje) mas vencimento 20/07 ainda no futuro.
+        card = _card_venc(session, user_a.id, "Itaú", dia_vencimento=20)
+        _parcela(session, user_a.id, card.id, 1, 7, 2026, "100.00")
+        session.commit()
+
+        resp = as_user(user_a).put(
+            f"/invoices/{card.id}/2026/7/pagamento", json={"pago": True}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "paga"
+
+    def test_idempotente_preserva_data_pagamento(self, session, users, as_user, mocker):
+        clock_router, _ = self._clock(mocker)
+        user_a, _ = users
+        card = _card_venc(session, user_a.id, "Itaú", dia_vencimento=10)
+        _parcela(session, user_a.id, card.id, 1, 7, 2026, "100.00")
+        session.commit()
+
+        client = as_user(user_a)
+        primeiro = client.put(f"/invoices/{card.id}/2026/7/pagamento", json={"pago": True})
+        assert primeiro.json()["data_pagamento"] == "2026-07-15"
+
+        clock_router.return_value = dt.date(2026, 7, 20)  # re-PUT dias depois
+        segundo = client.put(f"/invoices/{card.id}/2026/7/pagamento", json={"pago": True})
+        assert segundo.status_code == 200
+        assert segundo.json()["data_pagamento"] == "2026-07-15"  # transição manda
+
+        # E continua UM registro só (upsert pela chave natural).
+        assert len(session.exec(select(PagamentoFatura)).all()) == 1
+
+    def test_borda_do_fechamento(self, session, users, as_user, mocker):
+        # _card: dia_fechamento=3, offset=1 → competência ago fecha em 3/jul.
+        # No PRÓPRIO dia do fechamento a compra ainda entra → aberta (422);
+        # no dia seguinte, fechada → confirmável.
+        clock_router, _ = self._clock(mocker, dt.date(2026, 7, 3))
+        user_a, _ = users
+        card = _card(session, user_a.id)
+        _parcela(session, user_a.id, card.id, 1, 8, 2026, "100.00")
+        session.commit()
+
+        client = as_user(user_a)
+        url = f"/invoices/{card.id}/2026/8/pagamento"
+        assert client.put(url, json={"pago": True}).status_code == 422
+
+        clock_router.return_value = dt.date(2026, 7, 4)
+        assert client.put(url, json={"pago": True}).status_code == 200
+
+    def test_cartao_sem_dia_fechamento_fecha_no_fim_do_mes_base(
+        self, session, users, as_user, mocker
+    ):
+        clock_router, _ = self._clock(mocker, dt.date(2026, 7, 31))
+        user_a, _ = users
+        card = Cartao(
+            usuario_id=user_a.id, nome="Inter", tipo="Crédito",
+            dia_fechamento=None, dia_vencimento=10, mes_offset_vencimento=1,
+        )
+        session.add(card)
+        session.commit()
+        session.refresh(card)
+        # Competência ago (base = jul, sem dia de fechamento) → fecha em 31/07.
+        _parcela(session, user_a.id, card.id, 1, 8, 2026, "100.00")
+        session.commit()
+
+        client = as_user(user_a)
+        url = f"/invoices/{card.id}/2026/8/pagamento"
+        assert client.put(url, json={"pago": True}).status_code == 422  # 31/07: aberta
+
+        clock_router.return_value = dt.date(2026, 8, 1)
+        assert client.put(url, json={"pago": True}).status_code == 200
+
+    def test_cartao_de_outro_usuario_404(self, session, users, as_user, mocker):
+        self._clock(mocker)
+        user_a, user_b = users
+        card = _card_venc(session, user_a.id, "Itaú", dia_vencimento=10)
+        _parcela(session, user_a.id, card.id, 1, 7, 2026, "100.00")
+        session.commit()
+
+        resp = as_user(user_b).put(
+            f"/invoices/{card.id}/2026/7/pagamento", json={"pago": True}
+        )
+        assert resp.status_code == 404
+
+    def test_mes_ano_invalidos_422(self, session, users, as_user, mocker):
+        self._clock(mocker)
+        user_a, _ = users
+        card = _card_venc(session, user_a.id, "Itaú", dia_vencimento=10)
+        client = as_user(user_a)
+        assert client.put(f"/invoices/{card.id}/2026/13/pagamento", json={"pago": True}).status_code == 422
+        assert client.put(f"/invoices/{card.id}/1999/6/pagamento", json={"pago": True}).status_code == 422
+
+
+class TestStatusFatura:
+    """Leva 2 — o `status` derivado (paga/aberta/a_vencer/atrasada) exposto nos
+    3 endpoints de fatura. hoje = 15/07/2026; cartão offset 0, fecha dia 1,
+    vence dia 20: jun = atrasada (venceu 20/06), jul = a_vencer (vence 20/07),
+    ago = aberta (fecha 1/ago)."""
+
+    def _setup(self, session, users, mocker):
+        mocker.patch("app.routers.invoices.hoje", return_value=HOJE_L2)
+        user_a, _ = users
+        card = _card_venc(session, user_a.id, "Itaú", dia_vencimento=20)
+        for mes in (6, 7, 8):
+            _parcela(session, user_a.id, card.id, mes, mes, 2026, "100.00")
+        session.commit()
+        return user_a, card
+
+    def test_status_na_lista_por_cartao(self, session, users, as_user, mocker):
+        user_a, card = self._setup(session, users, mocker)
+        faturas = as_user(user_a).get(f"/cards/{card.id}/invoices").json()
+        status = {(f["mes"], f["ano"]): f["status"] for f in faturas}
+        assert status == {
+            (6, 2026): "atrasada",
+            (7, 2026): "a_vencer",
+            (8, 2026): "aberta",
+        }
+
+    def test_status_no_detalhe_e_vira_paga_ao_confirmar(self, session, users, as_user, mocker):
+        user_a, card = self._setup(session, users, mocker)
+        client = as_user(user_a)
+
+        assert client.get(f"/cards/{card.id}/invoices/2026/6").json()["status"] == "atrasada"
+        client.put(f"/invoices/{card.id}/2026/6/pagamento", json={"pago": True})
+        assert client.get(f"/cards/{card.id}/invoices/2026/6").json()["status"] == "paga"
+
+    def test_status_na_lente_por_competencia(self, session, users, as_user, mocker):
+        user_a, card = self._setup(session, users, mocker)
+        client = as_user(user_a)
+
+        body = client.get("/invoices/2026/6").json()
+        assert body["faturas"][0]["status"] == "atrasada"
+
+        client.put(f"/invoices/{card.id}/2026/6/pagamento", json={"pago": True})
+        body = client.get("/invoices/2026/6").json()
+        assert body["faturas"][0]["status"] == "paga"
+
+    def test_registro_pago_false_equivale_a_ausencia(self, session, users, as_user, mocker):
+        # "não paguei" explícito não muda o status derivado (atrasada segue).
+        user_a, card = self._setup(session, users, mocker)
+        client = as_user(user_a)
+        client.put(f"/invoices/{card.id}/2026/6/pagamento", json={"pago": False})
+        assert client.get(f"/cards/{card.id}/invoices/2026/6").json()["status"] == "atrasada"

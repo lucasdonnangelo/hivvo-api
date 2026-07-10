@@ -1,10 +1,10 @@
-"""T-27 — data de negócio "hoje" no fuso do produto (America/Sao_Paulo).
+"""PUT /installments/{id} — o write de `pago` MORREU na Leva 2.
 
-data_pagamento auto-preenchida ao marcar parcela como paga deve vir do
-helper app.core.dates.hoje (mockável) — não do relógio local do servidor.
+Pagamento agora é por FATURA (PUT /invoices/{cartao_id}/{ano}/{mes}/pagamento,
+PagamentoFatura); mandar `pago`/`data_pagamento` na parcela vira 422 explícito
+(extra="forbid" no ParcelaUpdate) — não um no-op silencioso sobre a coluna
+obsoleta. Os campos restantes (cancelado, data_vencimento) seguem funcionando.
 """
-
-import datetime as dt
 
 from sqlmodel import select
 
@@ -12,17 +12,48 @@ from app.models.installment import Parcela
 
 from .test_transactions_router import post_parcelada
 
-HOJE_FIXO = dt.date(2026, 6, 10)
 
-
-def test_marcar_pago_preenche_data_pagamento_com_hoje_do_produto(
-    session, users, as_user, mocker
-):
-    mocker.patch("app.routers.installments.hoje", return_value=HOJE_FIXO)
-    client = as_user(users[0])
+def _primeira_parcela(session, client):
     transacao_id = post_parcelada(client).json()["id"]
-    parcela = session.exec(select(Parcela).where(Parcela.transacao_id == transacao_id)).first()
+    return session.exec(
+        select(Parcela).where(Parcela.transacao_id == transacao_id)
+    ).first()
+
+
+def test_put_com_pago_rejeitado_422(session, users, as_user):
+    client = as_user(users[0])
+    parcela = _primeira_parcela(session, client)
 
     response = client.put(f"/installments/{parcela.id}", json={"pago": True})
+    assert response.status_code == 422
+
+    # E não gravou nada na coluna obsoleta.
+    session.refresh(parcela)
+    assert parcela.pago is False
+    assert parcela.data_pagamento is None
+
+
+def test_put_com_data_pagamento_rejeitado_422(session, users, as_user):
+    client = as_user(users[0])
+    parcela = _primeira_parcela(session, client)
+
+    response = client.put(
+        f"/installments/{parcela.id}", json={"data_pagamento": "2026-06-10"}
+    )
+    assert response.status_code == 422
+
+
+def test_campos_restantes_seguem_editaveis(session, users, as_user):
+    # cancelado e data_vencimento ficaram no ParcelaUpdate (rota viva).
+    client = as_user(users[0])
+    parcela = _primeira_parcela(session, client)
+
+    response = client.put(
+        f"/installments/{parcela.id}", json={"data_vencimento": "2026-09-05"}
+    )
     assert response.status_code == 200
-    assert response.json()["data_pagamento"] == HOJE_FIXO.isoformat()
+    assert response.json()["data_vencimento"] == "2026-09-05"
+
+    response = client.put(f"/installments/{parcela.id}", json={"cancelado": True})
+    assert response.status_code == 200
+    assert response.json()["cancelado"] is True

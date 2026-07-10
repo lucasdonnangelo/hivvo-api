@@ -2,22 +2,18 @@ import datetime as dt
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel
 
 
 class ParcelaUpdate(BaseModel):
-    pago: Optional[bool] = None
-    data_pagamento: Optional[dt.date] = None
+    # Leva 2 (PLANO_3D): `pago`/`data_pagamento` SAÍRAM do update — pagamento
+    # agora é por FATURA (PUT /invoices/{cartao_id}/{ano}/{mes}/pagamento).
+    # extra="forbid" faz mandar `pago` virar 422 explícito, não um no-op
+    # silencioso sobre a coluna obsoleta.
     cancelado: Optional[bool] = None
     data_vencimento: Optional[dt.date] = None
 
-    @model_validator(mode="after")
-    def pago_requer_data(self) -> "ParcelaUpdate":
-        # Se marcar como paga sem informar data, data_pagamento será preenchida
-        # pelo router com a data de hoje — sem necessidade de validação aqui.
-        if self.data_pagamento and not self.pago:
-            raise ValueError("data_pagamento só pode ser definida quando pago=True")
-        return self
+    model_config = {"extra": "forbid"}
 
 
 class ParcelaResponse(BaseModel):

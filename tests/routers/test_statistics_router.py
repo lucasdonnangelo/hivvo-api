@@ -12,6 +12,7 @@ import pytest
 from sqlmodel import select
 
 from app.models.installment import Parcela
+from app.models.pagamento_fatura import PagamentoFatura
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.transaction import Transacao
 
@@ -196,12 +197,36 @@ class TestMonthlyAPagar:
         assert _q(body["a_pagar"]) == Decimal("100.00")
         assert _q(body["a_pagar"]) <= _q(body["despesas"])
 
-    def test_marcar_pago_so_mexe_no_a_pagar(self, session, users, as_user):
-        # Fronteira do `pago` de ponta a ponta: marcar a parcela como paga não
-        # move NENHUM outro campo da resposta (projeção, realizado/a_vir,
-        # variações, consumo, donuts) — só o a_pagar.
+    def test_confirmar_fatura_so_mexe_no_a_pagar(self, session, users, as_user):
+        # Fronteira do pagamento de ponta a ponta (Leva 2): confirmar a FATURA
+        # (PagamentoFatura) não move NENHUM outro campo da resposta (projeção,
+        # realizado/a_vir, variações, consumo, donuts) — só o a_pagar.
         _add_parcelada(session, users[0].id)
         _add_recorrencia(session, users[0].id, dia=20)
+
+        def _monthly():
+            return as_user(users[0]).get(
+                "/statistics/monthly", params={"mes": 7, "ano": 2026}
+            ).json()
+
+        antes = _monthly()
+        session.add(
+            PagamentoFatura(
+                usuario_id=users[0].id, cartao_id=1, fatura_mes=7,
+                fatura_ano=2026, pago=True, data_pagamento=HOJE,
+            )
+        )
+        session.commit()
+        depois = _monthly()
+
+        assert _q(antes.pop("a_pagar")) == Decimal("100.00")
+        assert _q(depois.pop("a_pagar")) == Decimal("0.00")
+        assert antes == depois  # resto da resposta byte a byte igual
+
+    def test_parcela_pago_obsoleto_nao_mexe_em_nada(self, session, users, as_user):
+        # Parcela.pago está MORTO na camada de estatísticas: alternar a coluna
+        # obsoleta não muda a resposta INTEIRA do /monthly — nem o a_pagar.
+        _add_parcelada(session, users[0].id)
 
         def _monthly():
             return as_user(users[0]).get(
@@ -218,9 +243,8 @@ class TestMonthlyAPagar:
         session.commit()
         depois = _monthly()
 
-        assert _q(antes.pop("a_pagar")) == Decimal("100.00")
-        assert _q(depois.pop("a_pagar")) == Decimal("0.00")
-        assert antes == depois  # resto da resposta byte a byte igual
+        assert _q(antes["a_pagar"]) == Decimal("100.00")
+        assert antes == depois  # resposta byte a byte igual, a_pagar incluso
 
 
 class TestDefaultMonth:

@@ -8,6 +8,7 @@ from sqlmodel import Session, and_, or_, select
 from app.core.dates import hoje
 from app.models.card import Cartao
 from app.models.installment import Parcela
+from app.models.pagamento_fatura import PagamentoFatura
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.transaction import Transacao
 from app.schemas.statistics import CategoriaStats
@@ -43,15 +44,21 @@ class LancamentoFluxo:
     construção (marcação, não filtro — a projeção agrega TODOS os lançamentos).
 
     ``a_pagar`` (§"A pagar e Saldo" — eixo saída-já-ocorrida × a-ocorrer):
-    True só para CRÉDITO que ainda não saiu do caixa — parcela não paga
-    (Fonte 1, `not pago`) e avulsa de fatura cujo vencimento derivado ainda
-    não passou (Fonte 2, `venc > hoje`). À vista/receitas (Fonte 3) e
+    True só para CRÉDITO que ainda não saiu do caixa. Desde a Leva 2
+    (PLANO_3D_PAGAMENTO_FATURA), a fonte é a FATURA: um lançamento de cartão
+    (Fonte 1 parcela e Fonte 2 avulsa) está pago ⇔ a fatura dele
+    (cartao_id + fatura_mes/ano) tem PagamentoFatura com pago=True — senão
+    conta em a_pagar, esteja a vencer OU atrasada (a presunção "avulsa
+    vencida = paga" morreu; Parcela.pago está OBSOLETO e não é mais lido).
+    Parcela SEM cartão (carnê) não tem fatura confirmável → presunção por
+    vencimento (data_vencimento > hoje). À vista/receitas (Fonte 3) e
     recorrência (Fonte 4, à vista por definição) saem no ato → nunca a_pagar.
     Eixo INDEPENDENTE do `realizado` (tempo-no-mês-corrente ≠ dívida-de-
     crédito) e regra única por lançamento, sem olhar se o mês é corrente.
-    FRONTEIRA do `pago`: este flag é o ÚNICO consumidor de Parcela.pago em
-    toda a projeção — topo, realizado/a_vir, anual, série e consumo derivam
-    exclusivamente de data/competência (§1.3: pago não governa a projeção).
+    FRONTEIRA do pagamento: a marcação a_pagar é o ÚNICO consumidor de
+    PagamentoFatura em toda a projeção — topo, realizado/a_vir, anual, série
+    e consumo derivam exclusivamente de data/competência (§1.3: pagamento
+    não governa a projeção).
     """
 
     tipo: str
@@ -180,6 +187,49 @@ def _cartoes_por_id(session: Session, usuario_id: int) -> dict[int, Cartao]:
     }
 
 
+def _faturas_pagas_mes(
+    session: Session, usuario_id: int, mes: int, ano: int
+) -> set[int]:
+    """cartao_ids com fatura CONFIRMADA PAGA (PagamentoFatura.pago=True) na
+    competência — 1 query, só chamada quando há lançamentos de cartão."""
+    return set(
+        session.exec(
+            select(PagamentoFatura.cartao_id).where(
+                PagamentoFatura.usuario_id == usuario_id,
+                PagamentoFatura.fatura_mes == mes,
+                PagamentoFatura.fatura_ano == ano,
+                PagamentoFatura.pago == True,  # noqa: E712
+            )
+        ).all()
+    )
+
+
+def _faturas_pagas_ano(
+    session: Session, usuario_id: int, ano: int
+) -> dict[int, set[int]]:
+    """{fatura_mes: {cartao_ids pagos}} do ano — a variante anual de
+    _faturas_pagas_mes, em 1 query fixa (padrão do _lancamentos_ano)."""
+    pagas: dict[int, set[int]] = {m: set() for m in range(1, 13)}
+    for mes, cartao_id in session.exec(
+        select(PagamentoFatura.fatura_mes, PagamentoFatura.cartao_id).where(
+            PagamentoFatura.usuario_id == usuario_id,
+            PagamentoFatura.fatura_ano == ano,
+            PagamentoFatura.pago == True,  # noqa: E712
+        )
+    ).all():
+        pagas[mes].add(cartao_id)
+    return pagas
+
+
+def _parcela_a_pagar(parcela: Parcela, pagas: set[int], h) -> bool:
+    """Regra a_pagar da Fonte 1 (Leva 2): COM cartão, segue a fatura
+    (não confirmada = a_pagar, a vencer ou atrasada); SEM cartão (carnê,
+    sem fatura confirmável), presunção por vencimento."""
+    if parcela.cartao_id is not None:
+        return parcela.cartao_id not in pagas
+    return parcela.data_vencimento > h
+
+
 def _recorrencias_com_vigencias(
     session: Session, usuario_id: int
 ) -> list[tuple[Recorrencia, list[RecorrenciaVigencia]]]:
@@ -272,10 +322,11 @@ def _lancamentos_mes(
     por dia/vencimento <= hoje (marcação, não filtro — a lista completa é a
     projeção). A Fonte 3 é sempre realizada (§1.3.2).
 
-    Eixo a_pagar (§"A pagar e Saldo"): Fonte 1 marca `not pago` (parcela
-    atrasada — vencida e não paga — continua a pagar; paga sai, inclusive
-    antecipada); Fonte 2 marca vencimento derivado > hoje (Transacao não tem
-    `pago` — presunção venceu = saiu). Fontes 3/4 nunca (saem no ato).
+    Eixo a_pagar (§"A pagar e Saldo", regra da Leva 2): lançamento de cartão
+    (Fonte 1 e 2) segue a FATURA — a_pagar enquanto a fatura não tem
+    PagamentoFatura pago=True (atrasada CONTINUA a pagar; confirmada sai,
+    inclusive antecipada). Parcela sem cartão: presunção por vencimento.
+    Fontes 3/4 nunca (saem no ato). Parcela.pago está OBSOLETO — não é lido.
     """
     h = hoje()
     corrente = (ano, mes) == (h.year, h.month)
@@ -289,10 +340,18 @@ def _lancamentos_mes(
             continue  # pai parcelada → Fonte 1; avulsa faturada → Fonte 2
         lancamentos.append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
 
+    parcelas = _parcelas_competencia(session, usuario_id, mes, ano)
+    avulsas = _avulsas_cartao_competencia(session, usuario_id, mes, ano)
+    # Pagamentos confirmados da competência — 1 query, só quando há
+    # lançamento de cartão para marcar (ÚNICO ponto da projeção que lê
+    # PagamentoFatura — fronteira, ver LancamentoFluxo).
+    tem_cartao = bool(avulsas) or any(p.cartao_id is not None for p in parcelas)
+    pagas = _faturas_pagas_mes(session, usuario_id, mes, ano) if tem_cartao else set()
+
     # Fonte 1: parcelas na competência — realizado pelo VENCIMENTO real (dia
     # exato) no mês corrente, não pelo fatura_mes (§1.3.2); a_pagar enquanto
-    # não paga (ÚNICO ponto da projeção que lê `pago`).
-    for p in _parcelas_competencia(session, usuario_id, mes, ano):
+    # a fatura não está confirmada paga (sem cartão: vencimento).
+    for p in parcelas:
         realizado = (not corrente) or p.data_vencimento <= h
         lancamentos.append(
             LancamentoFluxo(
@@ -300,14 +359,13 @@ def _lancamentos_mes(
                 p.valor_parcela,
                 p.categoria,
                 realizado=realizado,
-                a_pagar=not p.pago,
+                a_pagar=_parcela_a_pagar(p, pagas, h),
             )
         )
 
     # Fonte 2: avulsas de cartão faturadas na competência — vencimento REAL
-    # derivado do dia_vencimento do cartão (furo 1 fechado): corta realizado
-    # no mês corrente e fica a_pagar enquanto não vence.
-    avulsas = _avulsas_cartao_competencia(session, usuario_id, mes, ano)
+    # derivado do dia_vencimento do cartão corta o realizado no mês corrente;
+    # a_pagar segue a fatura (não confirmada = a_pagar, mesmo vencida).
     cartoes = _cartoes_por_id(session, usuario_id) if avulsas else {}
     for t in avulsas:
         venc = vencimento_avulsa(cartoes.get(t.cartao_id), mes, ano)
@@ -317,7 +375,8 @@ def _lancamentos_mes(
                 t.valor,
                 t.categoria,
                 realizado=(not corrente) or venc <= h,
-                a_pagar=venc > h,
+                a_pagar=t.cartao_id not in pagas if t.cartao_id is not None
+                else venc > h,
             )
         )
 
@@ -412,24 +471,14 @@ def _lancamentos_ano(
         por_mes[t.data.month].append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
 
     # Fonte 1: parcelas com fatura no ano, agrupadas por fatura_mes.
-    for p in session.exec(
+    parcelas = session.exec(
         select(Parcela).where(
             Parcela.usuario_id == usuario_id,
             Parcela.fatura_ano == ano,
             Parcela.fatura_mes != None,  # noqa: E711
             Parcela.cancelado == False,  # noqa: E712
         )
-    ).all():
-        realizado = (ano, p.fatura_mes) != (h.year, h.month) or p.data_vencimento <= h
-        por_mes[p.fatura_mes].append(
-            LancamentoFluxo(
-                "despesa",
-                p.valor_parcela,
-                p.categoria,
-                realizado=realizado,
-                a_pagar=not p.pago,
-            )
-        )
+    ).all()
 
     # Fonte 2: avulsas de cartão faturadas no ano, agrupadas por fatura_mes —
     # mesmas marcações do mensal (vencimento derivado do cartão), para as
@@ -443,13 +492,41 @@ def _lancamentos_ano(
             Transacao.fatura_mes != None,  # noqa: E711
         )
     ).all()
+
+    # Pagamentos confirmados do ano — 1 query fixa, só quando há lançamento
+    # de cartão (mesma regra a_pagar do mensal: as flags nunca divergem).
+    tem_cartao = bool(avulsas) or any(p.cartao_id is not None for p in parcelas)
+    pagas_ano = (
+        _faturas_pagas_ano(session, usuario_id, ano)
+        if tem_cartao
+        else {m: set() for m in range(1, 13)}
+    )
+
+    for p in parcelas:
+        realizado = (ano, p.fatura_mes) != (h.year, h.month) or p.data_vencimento <= h
+        por_mes[p.fatura_mes].append(
+            LancamentoFluxo(
+                "despesa",
+                p.valor_parcela,
+                p.categoria,
+                realizado=realizado,
+                a_pagar=_parcela_a_pagar(p, pagas_ano[p.fatura_mes], h),
+            )
+        )
+
     cartoes = _cartoes_por_id(session, usuario_id) if avulsas else {}
     for t in avulsas:
         venc = vencimento_avulsa(cartoes.get(t.cartao_id), t.fatura_mes, ano)
         realizado = (ano, t.fatura_mes) != (h.year, h.month) or venc <= h
         por_mes[t.fatura_mes].append(
             LancamentoFluxo(
-                t.tipo, t.valor, t.categoria, realizado=realizado, a_pagar=venc > h
+                t.tipo,
+                t.valor,
+                t.categoria,
+                realizado=realizado,
+                a_pagar=t.cartao_id not in pagas_ano[t.fatura_mes]
+                if t.cartao_id is not None
+                else venc > h,
             )
         )
 

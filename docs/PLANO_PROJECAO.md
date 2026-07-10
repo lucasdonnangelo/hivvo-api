@@ -135,6 +135,14 @@ renda, multi-cartão) entende "já paguei" vs "vou pagar" — rótulos honestos 
 > A pagar e Saldo"). A FRONTEIRA permanece: projeção integral, realizado/a_vir, anual, série e
 > consumo derivam só de data/competência — nenhuma query nem flag lê `pago` fora dessa marcação
 > (garantido por teste-guarda: alternar `pago` só move `a_pagar`).
+>
+> **ATUALIZAÇÃO 2 (Leva 2 — PagamentoFatura, 10/07/2026, SUPERSEDE a anterior):** `Parcela.pago`
+> voltou a ser **OBSOLETO, agora de vez**: a marcação `a_pagar` passou a derivar de
+> **`PagamentoFatura`** (confirmação de pagamento POR FATURA — cartão + competência; ver
+> `docs/PLANO_3D_PAGAMENTO_FATURA.md`), que também MATOU a presunção "avulsa vencida = paga" da
+> Fonte 2. Parcela SEM cartão (carnê): presunção por vencimento. A FRONTEIRA agora é do
+> PagamentoFatura (mesmo teste-guarda, fonte nova); alternar `Parcela.pago` não move NADA — nem o
+> `a_pagar`. A coluna não foi dropada (respostas/filtros legados ainda a expõem).
 
 ---
 
@@ -470,8 +478,9 @@ parcelas; (3c) Resumo ambas + gráfico futuro; (3d) faturas por cartão (micro).
 **Decididas (trava do modelo):**
 1. ✅ **Campo `pago`:** deixa de ser fonte de verdade da PROJEÇÃO (§1.3). Realizado/projetado
    deriva de competência de vencimento vs. mês corrente. IA ajustada na Fase 1. NÃO é removido:
-   desde a leva "A pagar e Saldo" (09/07/2026) tem papel exclusivo na marcação `a_pagar` (ver
-   atualização no §1.3.2).
+   teve papel exclusivo na marcação `a_pagar` de 09/07 a 10/07/2026; desde a **Leva 2**
+   (PagamentoFatura) está **OBSOLETO de vez** — a marcação deriva da confirmação por fatura
+   (ver ATUALIZAÇÃO 2 no §1.3.2 e `docs/PLANO_3D_PAGAMENTO_FATURA.md`).
 2. ✅ **Recorrência:** **calculada** on-the-fly, não materializada (§3.3). Overrides como
    possibilidade futura.
 3. ✅ **Competência:** por **vencimento** (§2). Já materializado assim no banco — Fase 1 só lê.
@@ -574,6 +583,15 @@ corrente (esse é o Bloco 1, evita duplicação). Fallback: mês seguinte se nã
 - Aditivo onde possível; `despesas`/consumo/realizado/a_vir preservados.
 
 ## COMO FICOU (implementado 09/07/2026 — regras finais)
+
+> **⚠️ SUPERSEDIDO EM PARTE (Leva 2 — PagamentoFatura, 10/07/2026):** os itens abaixo sobre a
+> FONTE do `a_pagar` mudaram — Fonte 1 não lê mais `not pago` e a Fonte 2 não presume mais
+> "venceu = saiu": ambas seguem a FATURA (`PagamentoFatura.pago=True` = saiu; senão a_pagar, a
+> vencer OU atrasada). A "assimetria aceita" e a "implicação operacional do furo 2" foram
+> RESOLVIDAS (existe a operação "marcar fatura paga": `PUT
+> /invoices/{cartao_id}/{ano}/{mes}/pagamento`). A fronteira do `pago` virou fronteira do
+> PagamentoFatura. O que NÃO mudou: eixos, contrato do `a_pagar`/`MesProjecao`, `/projection`,
+> realizado/a_vir. Regras completas: `docs/PLANO_3D_PAGAMENTO_FATURA.md`.
 
 - **`LancamentoFluxo.a_pagar`** (marcação, não filtro — mesmo padrão do `realizado`): Fonte 1
   (parcela) = `not pago`; Fonte 2 (avulsa de fatura) = `vencimento_derivado > hoje`; Fontes 3/4

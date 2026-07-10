@@ -5,7 +5,6 @@ from sqlmodel import Session, select
 
 from app.core.auth import get_current_user
 from app.core.database import get_session
-from app.core.dates import hoje
 from app.models.installment import Parcela
 from app.models.user import Usuario
 from app.schemas.installment import ParcelaResponse, ParcelaUpdate
@@ -54,15 +53,9 @@ def update_installment(
     if parcela.cancelado:
         raise HTTPException(status_code=400, detail="Parcela cancelada não pode ser editada")
 
+    # Leva 2: `pago`/`data_pagamento` não são mais graváveis aqui (o schema
+    # rejeita com 422) — pagamento é por fatura, via PagamentoFatura.
     data = body.model_dump(exclude_unset=True)
-
-    # Ao marcar como paga, preenche data_pagamento com hoje se não informada
-    if data.get("pago") is True and "data_pagamento" not in data:
-        data["data_pagamento"] = hoje()
-
-    # Ao desmarcar como paga, limpa a data de pagamento
-    if data.get("pago") is False:
-        data["data_pagamento"] = None
 
     for field, value in data.items():
         setattr(parcela, field, value)

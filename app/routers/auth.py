@@ -26,6 +26,7 @@ from app.models.card import Cartao
 from app.models.category import CategoriaCustomizada
 from app.models.chat import ChatMessage
 from app.models.installment import Parcela
+from app.models.pagamento_fatura import PagamentoFatura
 from app.models.password_reset_token import PasswordResetToken
 from app.models.refresh_token import RefreshToken
 from app.models.transaction import Transacao
@@ -265,6 +266,7 @@ def delete_me(
     # transacoes aponta p/ cartoes). categorias/tokens/chat só apontam p/ usuarios.
     session.exec(delete(Parcela).where(Parcela.usuario_id == uid))
     session.exec(delete(Transacao).where(Transacao.usuario_id == uid))
+    session.exec(delete(PagamentoFatura).where(PagamentoFatura.usuario_id == uid))
     session.exec(delete(Cartao).where(Cartao.usuario_id == uid))
     session.exec(delete(CategoriaCustomizada).where(CategoriaCustomizada.usuario_id == uid))
     session.exec(delete(RefreshToken).where(RefreshToken.usuario_id == uid))

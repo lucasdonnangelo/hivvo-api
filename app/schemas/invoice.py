@@ -1,8 +1,14 @@
 import datetime as dt
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
+
+# Status derivado da fatura (Leva 2 — PLANO_3D_PAGAMENTO_FATURA), nunca
+# materializado: `paga` = PagamentoFatura pago=True; `aberta` = ainda aceita
+# compras (fechamento não passou); `a_vencer`/`atrasada` = fechada e não
+# confirmada, antes/depois do vencimento.
+StatusFatura = Literal["paga", "aberta", "a_vencer", "atrasada"]
 
 
 class ParcelaFaturaResponse(BaseModel):
@@ -37,8 +43,11 @@ class FaturaListItem(BaseModel):
     ano: int
     total: Decimal
     data_vencimento: Optional[dt.date] = None
+    # total_parcelas_pagas deriva de Parcela.pago (OBSOLETO desde a Leva 2);
+    # mantido como legado até o batch cross-repo de remoção.
     total_parcelas_pagas: int = 0
     total_itens: int = 0
+    status: StatusFatura
 
 
 class FaturaDetalhe(BaseModel):
@@ -46,6 +55,7 @@ class FaturaDetalhe(BaseModel):
     ano: int
     total: Decimal
     data_vencimento: Optional[dt.date] = None
+    status: StatusFatura
     parcelas: list[ParcelaFaturaResponse]
     avulsas: list[TransacaoFaturaResponse]
 
@@ -57,6 +67,7 @@ class FaturaCartaoItem(BaseModel):
     cartao_nome: str
     total: Decimal
     data_vencimento: Optional[dt.date] = None
+    status: StatusFatura
 
 
 class CompetenciaFaturas(BaseModel):
@@ -78,3 +89,22 @@ class ProximaFaturaResponse(BaseModel):
 
     ano: int
     mes: int
+
+
+class PagamentoFaturaUpdate(BaseModel):
+    """Body do PUT de pagamento — só a intenção; data_pagamento é do servidor."""
+
+    pago: bool
+
+    model_config = {"extra": "forbid"}
+
+
+class PagamentoFaturaResponse(BaseModel):
+    """Estado da confirmação + o status derivado resultante."""
+
+    cartao_id: int
+    ano: int
+    mes: int
+    pago: bool
+    data_pagamento: Optional[dt.date] = None
+    status: StatusFatura

@@ -17,6 +17,7 @@ from sqlmodel import select
 
 from app.models.card import Cartao
 from app.models.installment import Parcela
+from app.models.pagamento_fatura import PagamentoFatura
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.transaction import Transacao
 from app.routers.ai import _total_parcelas_proximo_mes
@@ -486,10 +487,11 @@ class TestRecorrenciaNaProjecao:
 
         assert len(selects) == 5, selects
 
-    def test_lancamentos_ano_com_avulsa_faz_uma_query_extra_de_cartoes(self, session):
+    def test_lancamentos_ano_com_avulsa_faz_queries_extras_fixas(self, session):
         # Com avulsa faturada, a Fonte 2 carrega os cartões do usuário para
-        # derivar o vencimento (§"A pagar e Saldo") — 1 SELECT a mais, fixo
-        # (sem N+1), e SÓ quando há avulsas.
+        # derivar o vencimento (§"A pagar e Saldo") e a marcação a_pagar busca
+        # os pagamentos confirmados do ano (Leva 2) — 2 SELECTs a mais, fixos
+        # (sem N+1), e SÓ quando há lançamento de cartão.
         _add_recorrencia(session)
         _add_recorrencia(session, tipo="despesa", categoria="Moradia", valor="2000.00")
         session.add(
@@ -515,7 +517,7 @@ class TestRecorrenciaNaProjecao:
         finally:
             event.remove(engine, "before_cursor_execute", _conta)
 
-        assert len(selects) == 6, selects
+        assert len(selects) == 7, selects
 
 
 HOJE_LEITURAS = dt.date(2026, 7, 15)
@@ -707,10 +709,11 @@ class TestLeiturasDoDia:
 
 
 class TestAPagar:
-    """§"A pagar e Saldo" — eixo saída-já-ocorrida × a-ocorrer: "a pagar" = só
-    CRÉDITO que ainda não saiu do caixa (parcela não paga + avulsa de fatura a
-    vencer). À vista e recorrência saem no ato → nunca a pagar. Regra única por
-    lançamento, sem olhar se o mês é corrente. hoje congelado em 15/07/2026."""
+    """§"A pagar e Saldo" (regra da Leva 2 — PLANO_3D): "a pagar" = só CRÉDITO
+    cuja FATURA não está confirmada paga (PagamentoFatura pago=True) — a vencer
+    OU atrasada, tanto faz; a presunção "venceu = saiu" morreu. Parcela sem
+    cartão (carnê): presunção por vencimento. À vista e recorrência saem no ato
+    → nunca a pagar. hoje congelado em 15/07/2026."""
 
     @pytest.fixture(autouse=True)
     def clock(self, mocker):
@@ -721,16 +724,27 @@ class TestAPagar:
     def _a_pagar(self, session, mes, ano, uid=1):
         return _q(_soma_a_pagar(_lancamentos_mes(session, uid, mes, ano)))
 
+    def _confirmar_fatura(self, session, cartao_id, mes, ano=2026, pago=True):
+        """Semeia a confirmação de pagamento da fatura (Leva 2)."""
+        session.add(
+            PagamentoFatura(
+                usuario_id=1, cartao_id=cartao_id, fatura_mes=mes,
+                fatura_ano=ano, pago=pago,
+                data_pagamento=HOJE_LEITURAS if pago else None,
+            )
+        )
+        session.commit()
+
     def _parcela_unica(self, session, mes, dia_venc, pago=False):
-        """Compra 1x com a única parcela na fatura de (mes)/2026."""
+        """Compra 1x com a única parcela na fatura de (mes)/2026 (cartão id=1).
+        pago=True = a FATURA do cartão foi confirmada paga (PagamentoFatura)."""
         _add_parcelada(session, "100.00", 1, mes, 2026)
         p = session.exec(select(Parcela)).one()
         p.data_vencimento = dt.date(2026, mes, dia_venc)
-        p.pago = pago
-        if pago:
-            p.data_pagamento = HOJE_LEITURAS
         session.add(p)
         session.commit()
+        if pago:
+            self._confirmar_fatura(session, p.cartao_id, mes)
 
     def _avulsa(self, session, dia_vencimento_cartao, fatura_mes=7):
         """Avulsa de cartão faturada em (fatura_mes)/2026; cartão com o dia dado
@@ -765,39 +779,65 @@ class TestAPagar:
                          valor="2000.00", dia=20)  # a vir (20 > 15), e ainda assim fora
         assert self._a_pagar(session, 7, 2026) == _ZERO
 
-    # ---- Fonte 1 (parcelas): `not pago` — único ponto que lê `pago`
+    # ---- Fonte 1 (parcelas): segue a FATURA (PagamentoFatura) — Leva 2
 
-    def test_parcela_a_vencer_nao_paga_dentro(self, session):
+    def test_parcela_a_vencer_nao_confirmada_dentro(self, session):
         self._parcela_unica(session, mes=7, dia_venc=20)
         assert self._a_pagar(session, 7, 2026) == Decimal("100.00")
 
-    def test_parcela_atrasada_vencida_e_nao_paga_continua_dentro(self, session):
-        # FURO 2: vencida (dia 10 <= hoje 15) mas não paga — NÃO some de a pagar.
+    def test_parcela_atrasada_vencida_nao_confirmada_continua_dentro(self, session):
+        # Vencida (dia 10 <= hoje 15) e fatura não confirmada — NÃO some.
         self._parcela_unica(session, mes=7, dia_venc=10)
         assert self._a_pagar(session, 7, 2026) == Decimal("100.00")
 
-    def test_parcela_vencida_e_paga_fora(self, session):
+    def test_parcela_vencida_com_fatura_confirmada_fora(self, session):
         self._parcela_unica(session, mes=7, dia_venc=10, pago=True)
         assert self._a_pagar(session, 7, 2026) == _ZERO
 
-    def test_parcela_paga_antecipada_fora(self, session):
-        # pago=True = a saída ocorreu, mesmo antes do vencimento (dia 20 > hoje).
+    def test_parcela_confirmada_antecipada_fora(self, session):
+        # Confirmação antecipada (fatura fechada, vencimento dia 20 > hoje 15):
+        # a saída ocorreu — sai do a_pagar.
         self._parcela_unica(session, mes=7, dia_venc=20, pago=True)
         assert self._a_pagar(session, 7, 2026) == _ZERO
 
-    # ---- Fonte 2 (avulsas): vencimento derivado do cartão (FURO 1)
+    def test_parcela_sem_cartao_presuncao_por_vencimento(self, session):
+        # Carnê (sem cartão) não tem fatura confirmável → presunção por
+        # vencimento (decisão da Leva 2): a vencer dentro, vencida fora.
+        self._parcela_unica(session, mes=7, dia_venc=20)
+        p = session.exec(select(Parcela)).one()
+        p.cartao_id = None
+        session.add(p)
+        session.commit()
+        assert self._a_pagar(session, 7, 2026) == Decimal("100.00")  # a vencer
 
-    def test_avulsa_a_vencer_dentro_com_o_dia_do_cartao(self, session):
+        p.data_vencimento = dt.date(2026, 7, 10)  # vencida → presumida paga
+        session.add(p)
+        session.commit()
+        assert self._a_pagar(session, 7, 2026) == _ZERO
+
+    # ---- Fonte 2 (avulsas): seguem a FATURA — a presunção por data morreu
+
+    def test_avulsa_nao_confirmada_dentro(self, session):
         self._avulsa(session, dia_vencimento_cartao=20)  # vence 20/jul > hoje 15
         assert self._a_pagar(session, 7, 2026) == Decimal("300.00")
 
-    def test_avulsa_vencida_fora_e_fronteira_no_proprio_dia(self, session):
-        self._avulsa(session, dia_vencimento_cartao=10)  # venceu dia 10
-        self._avulsa(session, dia_vencimento_cartao=15)  # vence HOJE → já saiu
+    def test_avulsa_vencida_sem_confirmacao_continua_dentro(self, session):
+        # Leva 2 INVERTE a regra antiga: avulsa vencida (dia 10) e a que vence
+        # hoje (15) NÃO somem mais por presunção — ficam até confirmar a fatura.
+        self._avulsa(session, dia_vencimento_cartao=10)
+        self._avulsa(session, dia_vencimento_cartao=15)
+        assert self._a_pagar(session, 7, 2026) == Decimal("600.00")
+
+    def test_avulsa_com_fatura_confirmada_fora(self, session):
+        self._avulsa(session, dia_vencimento_cartao=10)  # vencida e confirmada
+        t = session.exec(select(Transacao).where(Transacao.fatura_mes == 7)).one()
+        self._confirmar_fatura(session, t.cartao_id, 7)
         assert self._a_pagar(session, 7, 2026) == _ZERO
 
-    def test_avulsa_sem_cartao_fallback_fim_do_mes_dentro(self, session):
-        self._avulsa(session, dia_vencimento_cartao=None)  # venc 31/jul > hoje
+    def test_avulsa_de_cartao_apagado_nao_confirmada_dentro(self, session):
+        # Cartão sem row (id fantasma): sem confirmação possível → permanece
+        # a pagar (antes dependia do fallback fim-do-mês; agora é pela fatura).
+        self._avulsa(session, dia_vencimento_cartao=None)
         assert self._a_pagar(session, 7, 2026) == Decimal("300.00")
 
     # ---- Regra única para qualquer mês
@@ -815,32 +855,35 @@ class TestAPagar:
         assert _q(_soma_a_pagar(lanc)) == Decimal("400.00")
         assert _q(despesas) == Decimal("2410.00")  # projeção integral intacta
 
-    def test_mes_passado_parcela_nao_paga_permanece_avulsa_sai(self, session):
-        self._parcela_unica(session, mes=6, dia_venc=10)  # atrasada: dentro
-        self._avulsa(session, dia_vencimento_cartao=10, fatura_mes=6)  # venceu: fora
-        assert self._a_pagar(session, 6, 2026) == Decimal("100.00")
+    def test_mes_passado_nada_confirmado_tudo_permanece(self, session):
+        # Leva 2: sem confirmação, parcela E avulsa de mês passado continuam
+        # a pagar (a avulsa vencida não some mais por presunção).
+        self._parcela_unica(session, mes=6, dia_venc=10)
+        self._avulsa(session, dia_vencimento_cartao=10, fatura_mes=6)
+        assert self._a_pagar(session, 6, 2026) == Decimal("400.00")
 
-    # ---- Teste-guarda da FRONTEIRA: pago não governa a projeção
+    # ---- Testes-guarda da FRONTEIRA (Leva 2): pagamento não governa a
+    # projeção, e Parcela.pago está MORTO na camada de estatísticas
 
-    def test_alternar_pago_so_muda_o_a_pagar(self, session):
-        # A projeção integral, realizado/a_vir, consumo e o anual derivam de
-        # data/competência — alternar `pago` não pode mexer em NENHUM deles
-        # (PLANO §1.3 + §"A pagar e Saldo": pago só separa pago/a-pagar).
+    def _fotografia(self, session):
+        lanc = _lancamentos_mes(session, 1, 7, 2026)
+        anual = _lancamentos_ano(session, 1, 2026)
+        return (
+            _agregar(lanc),
+            _agregar([l for l in lanc if l.realizado]),
+            _agregar([l for l in lanc if not l.realizado]),
+            _agregar(_lancamentos_consumo_mes(session, 1, 7, 2026)),
+            [_agregar(anual[m]) for m in range(1, 13)],
+        )
+
+    def test_alternar_parcela_pago_nao_muda_nada(self, session):
+        # Parcela.pago está OBSOLETO: alternar não move NADA — nem o a_pagar
+        # (que agora deriva de PagamentoFatura), nem projeção/realizado/
+        # a_vir/consumo/anual.
         _add_parcelada(session, "1200.00", 12, 1, 2026)
         _add_recorrencia(session, dia=20)
 
-        def _fotografia():
-            lanc = _lancamentos_mes(session, 1, 7, 2026)
-            anual = _lancamentos_ano(session, 1, 2026)
-            return (
-                _agregar(lanc),
-                _agregar([l for l in lanc if l.realizado]),
-                _agregar([l for l in lanc if not l.realizado]),
-                _agregar(_lancamentos_consumo_mes(session, 1, 7, 2026)),
-                [_agregar(anual[m]) for m in range(1, 13)],
-            )
-
-        antes, a_pagar_antes = _fotografia(), self._a_pagar(session, 7, 2026)
+        antes, a_pagar_antes = self._fotografia(session), self._a_pagar(session, 7, 2026)
 
         parcela_jul = session.exec(
             select(Parcela).where(Parcela.fatura_mes == 7, Parcela.fatura_ano == 2026)
@@ -850,10 +893,34 @@ class TestAPagar:
         session.add(parcela_jul)
         session.commit()
 
-        depois, a_pagar_depois = _fotografia(), self._a_pagar(session, 7, 2026)
+        depois, a_pagar_depois = self._fotografia(session), self._a_pagar(session, 7, 2026)
+        assert antes == depois
+        assert a_pagar_antes == a_pagar_depois == Decimal("100.00")
+
+    def test_alternar_pagamento_fatura_so_muda_o_a_pagar(self, session):
+        # O guarda da fronteira, agora sobre a fonte NOVA: a projeção
+        # integral, realizado/a_vir, consumo e o anual derivam de data/
+        # competência — alternar PagamentoFatura não pode mexer em NENHUM
+        # deles; só o a_pagar reage, nos dois sentidos (confirmar/desmarcar).
+        _add_parcelada(session, "1200.00", 12, 1, 2026)
+        _add_recorrencia(session, dia=20)
+
+        antes = self._fotografia(session)
+        assert self._a_pagar(session, 7, 2026) == Decimal("100.00")
+
+        self._confirmar_fatura(session, 1, 7)  # cartão 1, jul/2026
+        depois = self._fotografia(session)
         assert antes == depois  # nada da projeção se moveu
-        assert a_pagar_antes == Decimal("100.00")
-        assert a_pagar_depois == _ZERO  # só o a_pagar reagiu
+        assert self._a_pagar(session, 7, 2026) == _ZERO  # só o a_pagar reagiu
+
+        # Desmarcar (pago=False) → volta ao a_pagar, projeção segue imóvel.
+        pagamento = session.exec(select(PagamentoFatura)).one()
+        pagamento.pago = False
+        pagamento.data_pagamento = None
+        session.add(pagamento)
+        session.commit()
+        assert self._fotografia(session) == antes
+        assert self._a_pagar(session, 7, 2026) == Decimal("100.00")
 
 
 class TestConsumoMensal:

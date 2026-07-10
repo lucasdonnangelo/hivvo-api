@@ -40,6 +40,10 @@ class Parcela(SQLModel, table=True):
     categoria: str
     cartao_id: Optional[int] = Field(default=None, foreign_key="cartoes.id")
 
+    # OBSOLETO (Leva 2 — PLANO_3D_PAGAMENTO_FATURA): pagamento agora é por
+    # FATURA (PagamentoFatura); nenhuma query de estatística/projeção lê mais
+    # `pago`/`data_pagamento` e o PUT /installments não os grava. As colunas
+    # ficam (drop é irreversível; respostas/filtros legados ainda as expõem).
     pago: bool = False
     cancelado: bool = False
     criado_em: dt.date = Field(default_factory=hoje)

@@ -136,3 +136,80 @@ class TestCartaoDebitoSemFatura:
         response = as_user(user_a).post("/cards", json={"nome": "Nubank", "tipo": "Crédito"})
         assert response.status_code == 201
         assert response.json()["tipo"] == "Crédito"
+
+
+class TestBloqueioEdicaoDatasComCompras:
+    """PUT /cards/{id}: dia_fechamento/dia_vencimento só mudam se o cartão NÃO
+    tem compras — alterá-los com fatura já materializada causaria incoerência
+    silenciosa (fatura_mes congelado vs. leituras que usam o dia novo)."""
+
+    def test_editar_datas_sem_compras_200(self, session, users, as_user):
+        user_a, _ = users
+        card = make_card(session, user_a.id)  # fechamento 25, vencimento 5
+        resp = as_user(user_a).put(
+            f"/cards/{card.id}", json={"dia_fechamento": 20, "dia_vencimento": 8}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["dia_fechamento"] == 20
+        assert resp.json()["dia_vencimento"] == 8
+
+    def test_editar_datas_com_parcela_422(self, session, users, as_user):
+        user_a, _ = users
+        card = make_card(session, user_a.id)
+        add_parcela(session, user_a.id, card.id, "100.00")
+        resp = as_user(user_a).put(f"/cards/{card.id}", json={"dia_fechamento": 20})
+        assert resp.status_code == 422
+        assert "novo cartão" in resp.json()["detail"]
+
+    def test_editar_datas_com_avulsa_422(self, session, users, as_user):
+        user_a, _ = users
+        card = make_card(session, user_a.id)
+        add_avulsa(session, user_a.id, card.id, "50.00")
+        resp = as_user(user_a).put(f"/cards/{card.id}", json={"dia_vencimento": 9})
+        assert resp.status_code == 422
+
+    def test_editar_offset_com_compras_422(self, session, users, as_user):
+        # mes_offset_vencimento corrompe a materialização igual aos dias → bloqueado.
+        user_a, _ = users
+        card = make_card(session, user_a.id)  # offset 1
+        add_parcela(session, user_a.id, card.id, "100.00")
+        resp = as_user(user_a).put(f"/cards/{card.id}", json={"mes_offset_vencimento": 0})
+        assert resp.status_code == 422
+
+    def test_editar_outros_campos_com_compras_200(self, session, users, as_user):
+        # Datas AUSENTES no body (só nome): compras não bloqueiam outros campos.
+        user_a, _ = users
+        card = make_card(session, user_a.id)
+        add_parcela(session, user_a.id, card.id, "100.00")
+        resp = as_user(user_a).put(f"/cards/{card.id}", json={"nome": "Renomeado"})
+        assert resp.status_code == 200
+        assert resp.json()["nome"] == "Renomeado"
+
+    def test_datas_iguais_as_atuais_com_compras_200(self, session, users, as_user):
+        # Reenviar os MESMOS valores de data (edição de outro campo no form) não
+        # é "mudar" → passa mesmo com compras.
+        user_a, _ = users
+        card = make_card(session, user_a.id)
+        add_parcela(session, user_a.id, card.id, "100.00")
+        resp = as_user(user_a).put(
+            f"/cards/{card.id}",
+            json={"nome": "Novo", "dia_fechamento": 25, "dia_vencimento": 5},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["nome"] == "Novo"
+
+
+class TestTemLancamentosNoGetCards:
+    """GET /cards expõe `tem_lancamentos` para o front desabilitar os campos de
+    data no form de edição (mesma composição do bloqueio, sem query extra)."""
+
+    def test_tem_lancamentos_true_com_compra_false_sem(self, session, users, as_user, mocker):
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        com = make_card(session, user_a.id)
+        add_parcela(session, user_a.id, com.id, "100.00")
+        sem = make_card(session, user_a.id)
+
+        cards = {c["id"]: c for c in as_user(user_a).get("/cards").json()}
+        assert cards[com.id]["tem_lancamentos"] is True
+        assert cards[sem.id]["tem_lancamentos"] is False

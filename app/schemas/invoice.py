@@ -5,10 +5,12 @@ from typing import Literal, Optional
 from pydantic import BaseModel
 
 # Status derivado da fatura (Leva 2 — PLANO_3D_PAGAMENTO_FATURA), nunca
-# materializado: `paga` = PagamentoFatura pago=True; `aberta` = ainda aceita
-# compras (fechamento não passou); `a_vencer`/`atrasada` = fechada e não
-# confirmada, antes/depois do vencimento.
-StatusFatura = Literal["paga", "aberta", "a_vencer", "atrasada"]
+# materializado: `vazia` = competência SEM lançamento (nada a pagar, status
+# neutro — não é atrasada); `paga` = PagamentoFatura pago=True; `aberta` =
+# ainda aceita compras (fechamento não passou); `a_vencer`/`atrasada` = fechada
+# e não confirmada, antes/depois do vencimento. Só `FaturaDetalhe` chega a
+# emitir `vazia` (detalhe de uma competência que pode não ter lançamento).
+StatusFatura = Literal["vazia", "paga", "aberta", "a_vencer", "atrasada"]
 
 
 class ParcelaFaturaResponse(BaseModel):

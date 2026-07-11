@@ -102,9 +102,16 @@ def status_fatura(
     fatura_ano: int,
     pagamento: Optional[PagamentoFatura],
     today: dt.date,
+    vazia: bool = False,
 ) -> str:
     """Status derivado da fatura (PLANO_3D — NUNCA materializado):
 
+    - `vazia`: a competência NÃO tem lançamento algum (nenhuma parcela/avulsa) —
+      não há o que pagar, logo não é "atrasada" nem "a_vencer". Status neutro:
+      o frontend não deve pintar badge de alerta. Checa AUSÊNCIA de lançamento,
+      não pagamento — distinto de `paga` (tem lançamento + pago=True). Só o
+      detalhe por cartão (`get_invoice`) chega aqui vazio; as demais lentes só
+      chamam para faturas que existem.
     - `paga`: registro de pagamento com pago=True (registro manda — vale
       inclusive se a composição mudou depois, ex. compra retroativa).
     - `aberta`: a competência ainda aceita compras (hoje <= fechamento).
@@ -115,6 +122,8 @@ def status_fatura(
 
     Vencimento via `vencimento_avulsa` (nunca None — fallback fim do mês).
     """
+    if vazia:
+        return "vazia"
     if pagamento is not None and pagamento.pago:
         return "paga"
     if today <= data_fechamento_fatura(card, fatura_mes, fatura_ano):
@@ -207,6 +216,44 @@ def fatura_existe(
     avulsa = (
         select(Transacao.id)
         .where(*_cond_avulsas_fatura(usuario_id, mes, ano, cartao_id))
+        .limit(1)
+    )
+    return (
+        session.exec(parcela).first() is not None
+        or session.exec(avulsa).first() is not None
+    )
+
+
+def cartao_tem_lancamentos(session: Session, usuario_id: int, cartao_id: int) -> bool:
+    """O cartão tem ao menos uma compra lançada (em QUALQUER competência)?
+
+    "Compra" = a MESMA composição da fatura, sem o filtro de competência:
+    parcela não cancelada OU avulsa de cartão (parcelado=False, tipo='despesa')
+    vinculada ao cartão. Espelho de :func:`fatura_existe` sem mes/ano (2 EXISTS
+    com curto-circuito).
+
+    Usado para BLOQUEAR a edição de dia_fechamento/dia_vencimento de um cartão
+    com compras (mudar as datas congelaria o `fatura_mes` já materializado das
+    compras enquanto as leituras que invertem a materialização passariam a usar
+    o dia novo → incoerência silenciosa). Cartão SEM compras edita livremente.
+    """
+    parcela = (
+        select(Parcela.id)
+        .where(
+            Parcela.usuario_id == usuario_id,
+            Parcela.cartao_id == cartao_id,
+            Parcela.cancelado == False,  # noqa: E712
+        )
+        .limit(1)
+    )
+    avulsa = (
+        select(Transacao.id)
+        .where(
+            Transacao.usuario_id == usuario_id,
+            Transacao.cartao_id == cartao_id,
+            Transacao.parcelado == False,  # noqa: E712
+            Transacao.tipo == "despesa",
+        )
         .limit(1)
     )
     return (

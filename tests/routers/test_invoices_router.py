@@ -487,3 +487,17 @@ class TestStatusFatura:
         client = as_user(user_a)
         client.put(f"/invoices/{card.id}/2026/6/pagamento", json={"pago": False})
         assert client.get(f"/cards/{card.id}/invoices/2026/6").json()["status"] == "atrasada"
+
+    def test_competencia_sem_lancamento_e_vazia_nao_atrasada(self, session, users, as_user, mocker):
+        # Competência SEM nenhum lançamento (mai/2026 — o cartão só tem jun/jul/ago):
+        # detalhe da fatura vem "vazia" (neutro), NUNCA "atrasada", mesmo já vencida.
+        user_a, card = self._setup(session, users, mocker)
+        body = as_user(user_a).get(f"/cards/{card.id}/invoices/2026/5").json()
+        assert body["status"] == "vazia"
+        assert Decimal(str(body["total"])) == Decimal("0.00")
+
+    def test_competencia_com_lancamento_vencida_continua_atrasada(self, session, users, as_user, mocker):
+        # Guarda de regressão: fatura COM lançamento, vencida e não paga, segue
+        # "atrasada" (o fix de fatura vazia não regrediu o caso legítimo).
+        user_a, card = self._setup(session, users, mocker)
+        assert as_user(user_a).get(f"/cards/{card.id}/invoices/2026/6").json()["status"] == "atrasada"

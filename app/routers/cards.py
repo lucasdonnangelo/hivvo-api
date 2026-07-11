@@ -16,7 +16,7 @@ from app.schemas.card import (
     CartaoResponse,
     CartaoUpdate,
 )
-from app.services.faturas import _current_open_fatura
+from app.services.faturas import _current_open_fatura, cartao_tem_lancamentos
 
 router = APIRouter(prefix="/cards", tags=["cards"])
 
@@ -78,6 +78,13 @@ def list_cards(
         ).all()
     }
 
+    # `tem_lancamentos` sai de graça dos mesmos maps (parcela não cancelada +
+    # avulsa despesa) — MESMA composição de cartao_tem_lancamentos, por
+    # construção, sem query extra. Presença do cartao_id em qualquer competência.
+    cartoes_com_lancamento = {cid for (cid, _, _) in parcelas_map} | {
+        cid for (cid, _, _) in avulsas_map
+    }
+
     result = []
     for card in cards:
         fatura_mes, fatura_ano, venc = abertas[card.id]
@@ -97,6 +104,7 @@ def list_cards(
                 fatura_aberta_mes=fatura_mes,
                 fatura_aberta_ano=fatura_ano,
                 fatura_aberta_vencimento=venc,
+                tem_lancamentos=card.id in cartoes_com_lancamento,
             )
         )
 
@@ -135,7 +143,34 @@ def update_card(
     if not card or card.usuario_id != current_user.id:
         raise HTTPException(status_code=404, detail="Cartão não encontrado")
 
-    for field, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+
+    # Bloqueio: alterar dia_fechamento/dia_vencimento/mes_offset_vencimento de um
+    # cartão COM compras congelaria o fatura_mes já materializado enquanto as
+    # leituras que invertem a materialização passariam a usar o valor novo →
+    # incoerência silenciosa (reprocessar mudaria faturas pagas indetectavelmente;
+    # decisão: bloquear e o usuário cria um novo cartão). mes_offset_vencimento
+    # entra na mesma inversão (data_fechamento_fatura via _competencia_menos), logo
+    # corrompe igual. Só barra quando o valor MUDA de fato — valores iguais aos
+    # atuais (edição de outros campos) passam; cartão SEM compras edita livremente.
+    muda_datas = (
+        ("dia_fechamento" in data and data["dia_fechamento"] != card.dia_fechamento)
+        or ("dia_vencimento" in data and data["dia_vencimento"] != card.dia_vencimento)
+        or (
+            "mes_offset_vencimento" in data
+            and data["mes_offset_vencimento"] != card.mes_offset_vencimento
+        )
+    )
+    if muda_datas and cartao_tem_lancamentos(session, current_user.id, card.id):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Não é possível alterar o fechamento ou vencimento de um cartão "
+                "com compras lançadas. Crie um novo cartão."
+            ),
+        )
+
+    for field, value in data.items():
         setattr(card, field, value)
 
     session.add(card)

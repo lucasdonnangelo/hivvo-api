@@ -86,3 +86,8 @@ class CartaoComFaturaResponse(CartaoResponse):
     fatura_aberta_mes: Optional[int] = None
     fatura_aberta_ano: Optional[int] = None
     fatura_aberta_vencimento: Optional[dt.date] = None
+    # True quando o cartão tem compra lançada (parcela não cancelada ou avulsa
+    # de cartão) em qualquer competência → o frontend desabilita os campos de
+    # data (dia_fechamento/dia_vencimento) no form de edição, pois o backend os
+    # bloqueia (alterá-los corromperia o fatura_mes já materializado).
+    tem_lancamentos: bool = False

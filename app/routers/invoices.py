@@ -188,6 +188,7 @@ def get_invoice(
             card, mes, ano,
             _get_pagamento(session, current_user.id, card_id, mes, ano),
             hoje(),
+            vazia=not parcelas and not avulsas,
         ),
         parcelas=[ParcelaFaturaResponse.model_validate(p) for p in parcelas],
         avulsas=[TransacaoFaturaResponse.model_validate(t) for t in avulsas],

@@ -9,6 +9,7 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 
 **Fase atual:** Dashboard em dois blocos (PLANO_DASHBOARD_DOIS_BLOCOS.md) — Batch 1 (API) pronto; batches 2–3 (frontend) a seguir.
 **Status:** App deployado e no ar (Railway + Vercel; Supabase de produção = `hivvo-prod`, ref `kufbqivycqjkydnfvgee`, us-west-2). Hardening pré-deploy (Batches 1–11) concluído e o backend da projeção Fase 1–2 completo: competência/fluxo, recorrência on-the-fly versionada por vigências, §1.3.1 (corte por dia: projeção/realizado/a-vir), §3.1.2 (operações de erro), Bugs 1/2. O backend da Fase 3 avançou: **3b-backend (visão CONSUMO no `/statistics/monthly`, commit `8ac6db5`)**, o **mês default do Dashboard (`GET /statistics/default-month`)**, a **série de projeção do Bloco 2 (`GET /statistics/projection`)** e a **leva "A pagar e Saldo"** (abaixo) prontos; a lente 3d tem as duas levas de BACKEND completas (Leva 1 em 10/07 e a **Leva 2 — PagamentoFatura**, abaixo). **399 testes verdes.** Próximo: **frontend dos dois blocos** (batches 2–3) e o **frontend da 3d Leva 2** (status + marcar fatura paga).
+**Integridade de fatura — bloqueio de edição de datas + status de fatura vazia (11/07/2026):** dois ajustes de coerência. **(1)** `PUT /cards/{id}` passa a **BLOQUEAR (422)** a alteração de `dia_fechamento`/`dia_vencimento` quando o cartão **TEM compras** — mudar essas datas congelaria o `fatura_mes` já materializado das compras enquanto as leituras que invertem a materialização (`data_fechamento_fatura`, `status_fatura`, `vencimento_avulsa`) passariam a usar o dia NOVO → incoerência silenciosa; reprocessar foi DESCARTADO (mexeria em faturas pagas indetectavelmente). Bloqueio estendido a **`mes_offset_vencimento`** (entra na MESMA inversão via `_competencia_menos` — corrompe igual; decisão do Lucas nesta sessão). Só barra quando o valor MUDA de fato (valores iguais aos atuais, ou edição de outros campos, passam); cartão SEM compras edita livremente (nada a corromper — cobre "errei o cadastro"). "TEM compras" = novo helper `cartao_tem_lancamentos` (parcela não cancelada OU avulsa de cartão despesa, qualquer competência — espelho de `fatura_existe` sem mes/ano). Demais campos (nome, limite…) sempre editáveis. **`GET /cards` ganhou `tem_lancamentos: bool`** (em `CartaoComFaturaResponse`) para o front desabilitar os campos de data no form — derivado **sem query extra** dos maps de agregação que o endpoint já carrega (MESMA composição do bloqueio, consistente por construção). **(2)** Competência **SEM lançamento algum** deixa de vir "atrasada": `status_fatura` ganhou `vazia: bool` → status neutro **`"vazia"`** (novo valor no Literal `StatusFatura`); o front NÃO deve pintar badge de alerta. Só `get_invoice` (`GET /cards/{id}/invoices/{ano}/{mes}`) chega vazio (passa `vazia=not parcelas and not avulsas`); as outras 3 lentes só chamam para faturas que existem. `vazia` checa AUSÊNCIA de lançamento (distinto de `paga` = tem lançamento + pago=True) e vem antes de qualquer regra. Suíte: **408 testes** (399 + 9), todos verdes; E2E não re-rodado. Ver seção "Integridade de fatura" abaixo.
 **Leva 2 (lente 3d) — PagamentoFatura: fonte única de "essa fatura foi paga" + status derivado (10/07/2026):** nova entidade `PagamentoFatura` (`pagamentos_fatura`, migration `a3d9f4c2b7e1` — tabela VAZIA, SEM backfill; UNIQUE `(cartao_id, fatura_ano, fatura_mes)`; FKs CASCADE; índice `(usuario_id, fatura_ano, fatura_mes)`) substitui `Parcela.pago` na marcação `a_pagar` e MATA a presunção "avulsa vencida = paga" da Fonte 2 — lançamento de cartão está pago ⇔ a FATURA dele tem `pago=True`; senão conta em a_pagar, a vencer OU atrasada (parcela SEM cartão: presunção por vencimento — decisão registrada). **`PUT /invoices/{cartao_id}/{ano}/{mes}/pagamento`** `{pago: bool}` — upsert idempotente/reversível; só fatura que EXISTE (`fatura_existe`) e JÁ FECHOU (`data_fechamento_fatura`: fechamento = `dia_fechamento` clampado do mês-base = competência − `mes_offset_vencimento`; sem dia → fim do mês-base; FECHADA ⇔ hoje > fechamento) → senão 422; antecipado permitido; 404 cartão alheio. **`status` derivado on-the-fly** (`status_fatura`: paga/aberta/a_vencer/atrasada) exposto nos 3 endpoints de fatura (list por cartão, detalhe, lente 3d) — fecha o contrato que o front declarou na Leva 1. **Helper único de composição** (`_cond_parcelas_fatura`/`_cond_avulsas_fatura` em `faturas.py`) — `get_invoice`, `totais_fatura_por_cartao` e `fatura_existe` usam as MESMAS condições (consistência por construção). **`PUT /installments` perdeu o write de `pago`/`data_pagamento`** (`extra="forbid"` → 422 explícito; ficam `cancelado`/`data_vencimento`); leituras legadas (`ParcelaResponse.pago`, `?pago=`, `total_parcelas_pagas`) mantidas p/ batch cross-repo. `Parcela.pago` OBSOLETO (coluna fica, marcada). Fronteira re-ancorada com testes-guarda (serviço E router): alternar PagamentoFatura só move `a_pagar`; alternar `Parcela.pago` não move NADA. `delete_me` ganhou o delete de PagamentoFatura. ⚠️ Números mudam: a_pagar passado/corrente SOBE (pendência até confirmar — intencional). Suíte: **399 testes** (7 ajustados com justificativa + novos `TestPagamentoFatura`/`TestStatusFatura`); migration upgrade+downgrade+upgrade no Postgres dev; E2E 23/23 com uvicorn + SQLite isolado. Design/decisões: `docs/PLANO_3D_PAGAMENTO_FATURA.md`. Ver seção "Leva 2" abaixo.
 **Lente 3d — faturas de N cartões numa competência (`GET /invoices/{ano}/{mes}` + `/invoices/next-due`) (10/07/2026):** visão inversa da existente "1 cartão × N meses": dado um mês, quais faturas cada cartão tem. `GET /invoices/{ano}/{mes}` → `{ano, mes, total_geral, faturas: [{cartao_id, cartao_nome, total, data_vencimento}]}` — **uma linha por cartão COM fatura no mês** (total > 0; cartões sem lançamento na competência NÃO aparecem, sem zeros), ordenada por `data_vencimento` asc (o que vence primeiro em cima; vencimento ausente por último). Composição = **fonte única** `totais_fatura_por_cartao` em `faturas.py` (SUM GROUP BY `cartao_id`, mesmos filtros do `GET /cards/{id}/invoices/{ano}/{mes}`: parcelas não canceladas + avulsas de cartão despesa; `cartao_id != None`) — consistência cruzada afirmada em teste. `data_vencimento` reusa `_fatura_vencimento`. Auxiliar `GET /invoices/next-due` → `{ano, mes}` = **próxima fatura a vencer** (1ª competência, do mês corrente para frente, com fatura de vencimento >= hoje; competência futura qualifica direto, a corrente só se algum cartão ainda não venceu — via `vencimento_avulsa`; fallback = mês corrente) — derivação de negócio no backend (regra do projeto; depende do `dia_vencimento` por cartão). Novo `router_competencia` (prefix `/invoices`) em `invoices.py`, registrado no `main.py`; `ano/mes` validados por `Path` (422 fora de `2000+`/`1..12`). 100% aditivo (`list_invoices`/`get_invoice` intocados). Suíte: **379 testes** (366 + 13), todos verdes. Ver seção "Lente 3d" abaixo.
 **Leva "A pagar e Saldo" — eixo já-saiu × a-vencer, B completo (09/07/2026):** implementa a decisão do PLANO_PROJECAO §"Decisão — A pagar e Saldo" (regras finais no §"COMO FICOU" de lá). `MensalResponse` ganhou **`a_pagar: Decimal`** (aditivo): só CRÉDITO cuja saída ainda não ocorreu — Fonte 1 (parcela) = `not pago` (atrasada CONTINUA a pagar — furo 2; paga sai, inclusive antecipada), Fonte 2 (avulsa de fatura) = vencimento derivado > hoje (furo 1: `vencimento_avulsa` em `faturas.py` — `fatura_mes/ano` já são o mês de vencimento, o DIA vem do `dia_vencimento` do cartão; fallback fim do mês; +1 query de cartões só quando há avulsas); à vista/recorrência saem no ato → FORA (furo 3, mesmo com data futura). A Fonte 2 TAMBÉM passou a cortar o `realizado` do mês corrente pelo vencimento derivado (§1.3.2 fechado — antes era sempre-realizada). **`saldo` do topo confirmado como caixa projetado de fim de mês** (receitas − TODAS as saídas) — sem mudança. **FRONTEIRA do `pago`** (invariante, com teste-guarda em serviço E router): a marcação `a_pagar` é o ÚNICO ponto da camada de estatísticas que lê `pago`; projeção/realizado/a_vir/anual/consumo derivam só de data/competência — alternar `pago` não move nenhum outro campo. **`/projection` revisado:** começa em `inicio_projecao` = 1º mês FUTURO (≥ corrente+1) com fluxo, NUNCA o corrente (Bloco 1); fallback mês seguinte; `MesProjecao` virou `{mes, ano, receitas, despesas, a_pagar, saldo}` (`despesas` = o que antes se chamava `a_pagar` na série; `saldo = receitas − despesas`; `a_pagar` estrito, idêntico ao `/monthly` — fonte única). ⚠️ `pago` é gravável só via API (`PUT /installments/{id}`, sem UI) — parcela vencida fica em "a pagar" até ser marcada paga; pendência de produto registrada no PLANO. Suíte: **368 testes** (343 preservados + ajustes justificados + novos `TestAPagar`/`TestMonthlyAPagar`); validado E2E com uvicorn + SQLite isolado (caso do Lucas: jul a_pagar=0, saldo=6000).
@@ -47,6 +48,66 @@ Leia `docs/Hivvo_Referencia.md`, `docs/SESSAO_ATUAL.md`, `docs/AUDITORIA_SEGURAN
 **Teste de regressão round-trip parcelada→fatura concluído (26/06/2026, commitado `f3565c8`):** só testes — fecha o gap de cobertura do caminho de SUCESSO da criação parcelada (havia só atomicidade/FALHA do T-41). Suíte com **103 testes, todos verdes** — ver seção "Regressão round-trip" abaixo.
 **T-29 ordenação estável de transações concluído (26/06/2026, commitado):** desempate determinístico `data DESC, id DESC` em `GET /transactions` e nas avulsas do detalhe de fatura. Suíte com **106 testes, todos verdes** — ver seção "T-29" abaixo.
 **Última construção concluída:** Assistente IA com persistência e memória (`chat_messages`, sessões, histórico 24h, contexto de 50 mensagens, retry Gemini 5x). Validação de UX do histórico ainda pendente (bloqueada pelos 503 do Gemini).
+
+---
+
+## Integridade de fatura — bloqueio de edição de datas + fatura vazia (11/07/2026)
+
+Dois itens de coerência sobre a materialização de fatura. Suíte: **408 testes** (399 + 9),
+todos verdes.
+
+**Item 1 — `PUT /cards/{id}` bloqueia datas de fatura de cartão COM compras
+([routers/cards.py](../app/routers/cards.py)):**
+- **Por quê:** `dia_fechamento`/`dia_vencimento` entram na materialização do `fatura_mes` das
+  compras (gravado na criação) E na sua INVERSÃO nas leituras (`data_fechamento_fatura`,
+  `status_fatura`, `vencimento_avulsa`). Editar as datas com compras já lançadas congela o
+  `fatura_mes` antigo enquanto as leituras passam a usar o dia novo → **incoerência silenciosa**.
+  Reprocessar o `fatura_mes` está DESCARTADO (mudaria faturas pagas de forma indetectável).
+  Decisão: **bloquear**; o usuário cria um cartão novo.
+- **Regra:** se o body tenta MUDAR `dia_fechamento`, `dia_vencimento` e/ou `mes_offset_vencimento`
+  (valor **diferente** do atual) E o cartão **tem compras** → **422** "Não é possível alterar o
+  fechamento ou vencimento de um cartão com compras lançadas. Crie um novo cartão.". Valores IGUAIS
+  aos atuais (edição de outros campos, datas reenviadas inalteradas) → passa. Cartão SEM compras →
+  passa (não há fatura a corromper — cobre "errei o cadastro de um cartão vazio"). Demais campos
+  (nome, limite, tipo, `ativo`) sempre editáveis. `mes_offset_vencimento` entra no bloqueio porque
+  participa da mesma inversão da materialização (`data_fechamento_fatura` via `_competencia_menos`).
+- **"TEM compras"** = novo helper `cartao_tem_lancamentos(session, uid, cartao_id)` em
+  [services/faturas.py](../app/services/faturas.py): EXISTS de **parcela não cancelada** OU **avulsa
+  de cartão** (`parcelado=False`, `tipo='despesa'`) vinculada ao cartão, em QUALQUER competência
+  (2 EXISTS com `limit(1)`/curto-circuito — espelho de `fatura_existe` sem o filtro de mes/ano; a
+  MESMA composição da fatura).
+- **`GET /cards` expõe `tem_lancamentos: bool`** (`CartaoComFaturaResponse`) para o front desabilitar
+  os campos de data no form de edição. **Custo zero de query:** derivado dos `parcelas_map`/
+  `avulsas_map` que `list_cards` já monta (mesmos filtros → consistente com o bloqueio por
+  construção; presença do `cartao_id` em qualquer competência).
+
+**Item 2 — fatura VAZIA não é "atrasada"
+([services/faturas.py](../app/services/faturas.py) `status_fatura`):**
+- **Por quê:** uma competência SEM nenhum lançamento mostrava total R$0 mas status "atrasada"
+  (observado no E2E) — fatura sem nada a pagar não pode estar atrasada.
+- **Regra:** `status_fatura` ganhou `vazia: bool = False`; se `vazia` → retorna o status neutro
+  **`"vazia"`** ANTES de qualquer outra regra. Novo valor no Literal `StatusFatura`
+  ([schemas/invoice.py](../app/schemas/invoice.py)). `vazia` checa **AUSÊNCIA de lançamento**
+  (distinto de `paga` = tem lançamento + `PagamentoFatura.pago=True`).
+- **Único emissor:** `get_invoice` (`GET /cards/{id}/invoices/{ano}/{mes}`) passa
+  `vazia = not parcelas and not avulsas` — é o único endpoint que chama `status_fatura` para uma
+  competência que pode não ter lançamento. As outras 3 lentes (`list_invoices`,
+  `invoices_by_competencia`, `set_invoice_payment`) só chamam para faturas que existem → nunca
+  emitem `"vazia"`.
+- **Front:** tratar `"vazia"` como "sem fatura" — **não** pintar badge de alerta.
+
+**Decisão de contrato:** status vazio = string **`"vazia"`** (não `null`) — mantém `status`
+não-nulo nos schemas (sem tornar Optional em 3 lugares), tipos do front intactos.
+
+**Testes (9 novos):** `TestBloqueioEdicaoDatasComCompras` + `TestTemLancamentosNoGetCards` em
+[test_cards_router.py](../tests/routers/test_cards_router.py) (editar datas sem compras→200; com
+parcela→422; com avulsa→422; offset com compras→422; outros campos com compras→200; datas iguais
+reenviadas com compras→200; `tem_lancamentos` true/false);
+`test_competencia_sem_lancamento_e_vazia_nao_atrasada` +
+`test_competencia_com_lancamento_vencida_continua_atrasada` (guarda de regressão: fatura vencida COM
+lançamento segue "atrasada") em [test_invoices_router.py](../tests/routers/test_invoices_router.py).
+
+**Fora de escopo (não feito):** frontend, reprocessar `fatura_mes`, versionar fechamento.
 
 ---
 

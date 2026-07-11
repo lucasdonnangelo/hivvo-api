@@ -91,11 +91,22 @@ por competência de fatura.
 - Bugs corrigidos: cartão de débito, Salvar travado (o selo `✦ IA` pintava de âmbar sem selecionar),
   `inicioManual` morto, cartão sem defaults de dia, limite opcional, preview consumo×impacto.
 
-## PRÓXIMO PASSO IMEDIATO
-**Frontend da Leva 2** — badge de status (paga/aberta/a_vencer/atrasada, atrasada destacada) +
-ação "marcar paga" (um clique, reversível) na tela de Cartões. **Urgente:** o backend já conta
-faturas vencidas não confirmadas em "A pagar", e **não há UI para quitar**. Atenção: confirmar
-pagamento muda o `a_pagar` → **invalidar as queries de statistics**, não só as de fatura.
+## LEVA 2 — COMPLETA E VALIDADA E2E (11/07)
+Frontend (badge de status + marcar/desmarcar paga) implementado e commitado. **Teste E2E pelo Claude
+Code passou ponta a ponta:**
+- Fatura de crédito vencida não confirmada → conta em "A pagar" (Bloco 1) + badge "atrasada".
+- "Marcar como paga" → toast, status vira "paga", botão vira "Desmarcar".
+- **PONTO CRÍTICO passou:** ao voltar ao Dashboard SEM refresh, "A pagar" caiu de R$500 → R$0
+  (refetch automático de /statistics/monthly, invalidação do ['statistics'] funcionando).
+- Reversível: desmarcar → R$0 volta a R$500, também sem refresh.
+- Fatura "aberta" corretamente NÃO oferece a ação (guard client-side).
+- **O modelo do "A pagar" está fechado:** validou-se que consumo (Despesas, por data) e fluxo
+  (A pagar, por vencimento) se separam corretamente numa mesma compra — compra de 15/07 conta em
+  Despesas de julho mas seu vencimento (fatura de agosto) só aparece em "A pagar" de agosto.
+
+## PRÓXIMO PASSO (a decidir na próxima sessão)
+Ver "Por onde ir" ao fim. Candidatos: 3c (Resumo, precisa redesenho) · importação de fatura ·
+bugs visuais + CardFormModal (vitórias rápidas).
 
 ## BACKLOG (por peso)
 1. **3c — Resumo.** Precisa **redesenho conceitual**: o design antigo ("ambas as visões + gráfico
@@ -108,6 +119,18 @@ pagamento muda o `a_pagar` → **invalidar as queries de statistics**, não só 
 3. **Backend expor a competência da compra** — mata a degradação do preview no caso `mes_offset=0`.
 4. **`CardFormModal`**: botão sempre clicável + erro inline (consistência com o AddTransactionPage).
 5. **Dívidas registradas:**
+   - **Editar dia_fechamento/dia_vencimento de cartão COM compras** (investigado 11/07): o PUT
+     /cards/{id} NÃO reprocessa — as compras antigas ficam CONGELADAS com o fatura_mes calculado sob
+     o fechamento antigo, enquanto as leituras que "invertem" a materialização (data_fechamento_
+     fatura, status_fatura, vencimento_avulsa) passam a usar o dia NOVO → incoerência (status/
+     vencimento de faturas antigas ficam errados). REPROCESSAR está DESCARTADO (mudaria a composição
+     de faturas já pagas de forma indetectável — PagamentoFatura não acompanha os lançamentos).
+     Soluções: (a) barata — guardar o dia_fechamento HISTÓRICO no lançamento, e as leituras usarem
+     ele; (b) correta/cara — versionar o fechamento por data. (c) mínima — avisar/confirmar na
+     edição. DECISÃO: deixado como dívida (borda rara; único usuário; vira risco só com base
+     instalada). Sem validação hoje que impeça a edição.
+   - **Fatura VAZIA com badge "atrasada"** (observado 11/07): competência sem lançamentos mostra
+     R$0 mas status "atrasada". Fatura vazia não deveria ter status de atraso — conferir o cálculo.
    - **Compra retroativa em fatura paga**: aceita, status continua `paga` — o pagamento confirmado
      não cobre o lançamento novo. Furo silencioso. Decidir: invalidar a confirmação, ou sinalizar.
    - `editar data_vencimento` de parcela não rederiva `fatura_mes` (pré-existente).
@@ -115,6 +138,7 @@ pagamento muda o `a_pagar` → **invalidar as queries de statistics**, não só 
      em FK. Hoje a UI só desativa.
    - `Parcela.pago` obsoleto (não dropado). `total_parcelas_pagas`, `?pago=` e `ParcelaResponse.pago`
      mantidos como legado (o SummaryPage ainda lê `!p.pago`).
+   - 4 lint warnings pré-existentes (AddTransactionPage/AssistantPage/SettingsPage).
 6. **Bugs visuais**: o "+" (FAB) cortado no mobile; o segundo retângulo/badge duplicado no cartão.
 7. UI pendentes: favicon + Open Graph, redirect apex hivvo.app → app.hivvo.app, e-mail de reset com
    template HTML.

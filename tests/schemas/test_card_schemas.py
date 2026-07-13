@@ -49,6 +49,20 @@ class TestMesOffset:
         with pytest.raises(ValidationError, match="mes_offset_vencimento deve ser >= 0"):
             CartaoCreate(nome="Nubank", tipo="Crédito", mes_offset_vencimento=-1)
 
+    def test_criacao_debito_com_null_cai_no_default(self):
+        # Regressão: débito manda null nos 4 campos de fatura. mes_offset era int
+        # não-anulável → null dava 422 e travava a criação de cartão de débito.
+        # Agora null cai no default 1 (inócuo, débito não usa offset).
+        card = CartaoCreate(
+            nome="Nu Débito",
+            tipo="Débito",
+            limite=None,
+            dia_fechamento=None,
+            dia_vencimento=None,
+            mes_offset_vencimento=None,
+        )
+        assert card.mes_offset_vencimento == 1
+
 
 def test_update_parcial_vazio_continua_valido():
     update = CartaoUpdate()

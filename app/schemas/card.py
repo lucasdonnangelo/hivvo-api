@@ -27,10 +27,18 @@ class CartaoCreate(BaseModel):
             raise ValueError("dia deve estar entre 1 e 31")
         return v
 
-    @field_validator("mes_offset_vencimento")
+    @field_validator("mes_offset_vencimento", mode="before")
     @classmethod
-    def offset_nao_negativo(cls, v: int) -> int:
-        if v < 0:
+    def offset_nao_negativo(cls, v):
+        # Débito não tem fatura: o frontend manda null nos 4 campos de fatura.
+        # limite/dias são Optional e engolem o null; mes_offset é int não-anulável,
+        # então um null explícito dava 422 ("Input should be a valid integer") e
+        # travava a criação de cartão de débito. Coagir None → default 1 (inócuo,
+        # débito nunca usa offset) mantém a coluna int não-anulável do DB e alinha o
+        # campo aos irmãos, sem afrouxar validação (negativo continua rejeitado).
+        if v is None:
+            return 1
+        if int(v) < 0:
             raise ValueError("mes_offset_vencimento deve ser >= 0")
         return v
 

@@ -638,3 +638,144 @@ class TestEvolutionCategories:
         body = self._get(as_user, users[0])
         assert len(body["meses"]) == 3
         assert body["categorias"] == []
+
+
+class TestComparison:
+    """GET /statistics/comparison — Seção 2 do Resumo: atual vs anterior vs
+    média, totais e por categoria, base CONSUMO. `meses=N` = meses FECHADOS
+    (o baseline da média); o corrente NUNCA entra na média (comparação não
+    circular). hoje congelado em 15/07/2026 (fixture clock)."""
+
+    def _get(self, as_user, user, **params):
+        resp = as_user(user).get("/statistics/comparison", params=params)
+        assert resp.status_code == 200
+        return resp.json()
+
+    def _gastos_mai_jun_jul(self, session, uid):
+        """Despesas à vista: mai=100, jun=200 (fechados), jul=600 (corrente)."""
+        _add_avista(session, uid, dt.date(2026, 5, 10), valor="100.00",
+                    categoria="Mercado")
+        _add_avista(session, uid, dt.date(2026, 6, 10), valor="200.00",
+                    categoria="Mercado")
+        _add_avista(session, uid, dt.date(2026, 7, 10), valor="600.00",
+                    categoria="Mercado")
+
+    def test_media_so_dos_meses_fechados_nao_inclui_o_corrente(
+        self, session, users, as_user
+    ):
+        # O teste do AJUSTE 1: com hoje=jul e meses=2, media = média de
+        # mai+jun = 150.00 — NÃO (mai+jun+jul)/3 = 300.00.
+        self._gastos_mai_jun_jul(session, users[0].id)
+
+        totais = self._get(as_user, users[0], meses=2)["totais"]
+        assert _q(totais["media"]["despesas"]) == Decimal("150.00")
+        assert _q(totais["atual"]["despesas"]) == Decimal("600.00")
+        assert _q(totais["anterior"]["despesas"]) == Decimal("200.00")  # jun
+
+    def test_variacoes_vs_anterior_e_vs_media(self, session, users, as_user):
+        self._gastos_mai_jun_jul(session, users[0].id)
+
+        totais = self._get(as_user, users[0], meses=2)["totais"]
+        # (600−200)/200 = +200%; (600−150)/150 = +300%
+        assert _q(totais["variacao_vs_anterior"]["despesas"]) == Decimal("200.00")
+        assert _q(totais["variacao_vs_media"]["despesas"]) == Decimal("300.00")
+        # sem receitas: base zero → variação None (nunca inventa %)
+        assert totais["variacao_vs_anterior"]["receitas"] is None
+        assert totais["variacao_vs_media"]["receitas"] is None
+
+    def test_ancora_e_consistencia_com_o_consumo_do_monthly(
+        self, session, users, as_user
+    ):
+        # endpoint-vs-endpoint: `atual` == campo consumo do /monthly corrente.
+        self._gastos_mai_jun_jul(session, users[0].id)
+        _add_recorrencia(session, users[0].id, dia=5)  # receita em todos os meses
+
+        body = self._get(as_user, users[0])
+        assert (body["mes"], body["ano"]) == (7, 2026)
+        monthly = as_user(users[0]).get(
+            "/statistics/monthly", params={"mes": 7, "ano": 2026}
+        ).json()
+        for campo in ("receitas", "despesas", "saldo"):
+            assert _q(body["totais"]["atual"][campo]) == _q(monthly["consumo"][campo])
+
+    def test_receitas_nos_totais_e_invariante_do_saldo_da_media(
+        self, session, users, as_user
+    ):
+        self._gastos_mai_jun_jul(session, users[0].id)
+        _add_recorrencia(session, users[0].id, dia=5)  # 10000/mês desde jan
+
+        totais = self._get(as_user, users[0], meses=2)["totais"]
+        assert _q(totais["media"]["receitas"]) == Decimal("10000.00")
+        assert _q(totais["variacao_vs_media"]["receitas"]) == Decimal("0.00")
+        # saldo da média = receitas − despesas da média (invariante preservada)
+        assert _q(totais["media"]["saldo"]) == (
+            _q(totais["media"]["receitas"]) - _q(totais["media"]["despesas"])
+        )
+
+    def test_categoria_que_sumiu_atual_zero_variacao_menos_100(
+        self, session, users, as_user
+    ):
+        # Transporte só em jun: no corrente é base alinhada em zero.
+        _add_avista(session, users[0].id, dt.date(2026, 6, 10), valor="80.00",
+                    categoria="Transporte")
+
+        (transporte,) = self._get(as_user, users[0], meses=2)["categorias"]
+        assert transporte["categoria"] == "Transporte"
+        assert _q(transporte["atual"]) == Decimal("0.00")
+        assert _q(transporte["anterior"]) == Decimal("80.00")
+        assert _q(transporte["media"]) == Decimal("40.00")  # 80/2 (N fixo)
+        assert _q(transporte["variacao_vs_anterior"]) == Decimal("-100.00")
+        assert _q(transporte["variacao_vs_media"]) == Decimal("-100.00")
+
+    def test_categoria_que_surgiu_base_zero_variacao_none(
+        self, session, users, as_user
+    ):
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="90.00",
+                    categoria="Lazer")
+
+        (lazer,) = self._get(as_user, users[0], meses=2)["categorias"]
+        assert _q(lazer["atual"]) == Decimal("90.00")
+        assert _q(lazer["anterior"]) == _q(lazer["media"]) == Decimal("0.00")
+        assert lazer["variacao_vs_anterior"] is None  # base zero — nunca "+∞"
+        assert lazer["variacao_vs_media"] is None
+
+    def test_media_denominador_fixo_e_quantize(self, session, users, as_user):
+        # Gasto em 1 dos 3 fechados (mai): media = 100/3 = 33.33 (HALF_UP),
+        # não 100/1 — mês ausente conta como zero no denominador fixo.
+        _add_avista(session, users[0].id, dt.date(2026, 5, 10), valor="100.00",
+                    categoria="Mercado")
+
+        (mercado,) = self._get(as_user, users[0], meses=3)["categorias"]
+        assert _q(mercado["media"]) == Decimal("33.33")
+
+    def test_categorias_ordenadas_por_atual_desc(self, session, users, as_user):
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="50.00",
+                    categoria="Transporte")
+        _add_avista(session, users[0].id, dt.date(2026, 7, 11), valor="300.00",
+                    categoria="Mercado")
+
+        nomes = [c["categoria"] for c in self._get(as_user, users[0])["categorias"]]
+        assert nomes == ["Mercado", "Transporte"]
+
+    def test_meses_1_media_igual_ao_unico_fechado(self, session, users, as_user):
+        # ge=1: com 1 mês fechado, media == anterior (jun) — o mínimo válido.
+        self._gastos_mai_jun_jul(session, users[0].id)
+
+        totais = self._get(as_user, users[0], meses=1)["totais"]
+        assert _q(totais["media"]["despesas"]) == _q(
+            totais["anterior"]["despesas"]
+        ) == Decimal("200.00")
+
+    def test_sem_dados_zeros_e_variacoes_none(self, users, as_user):
+        body = self._get(as_user, users[0])
+        assert body["categorias"] == []
+        assert _q(body["totais"]["atual"]["despesas"]) == Decimal("0.00")
+        assert body["totais"]["variacao_vs_anterior"]["despesas"] is None
+
+    def test_limites_ge_1_le_60(self, users, as_user):
+        assert len(self._get(as_user, users[0], meses=60)) == 4  # 200 OK
+        for invalido in (0, 61):
+            resp = as_user(users[0]).get(
+                "/statistics/comparison", params={"meses": invalido}
+            )
+            assert resp.status_code == 422

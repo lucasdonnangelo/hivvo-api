@@ -158,6 +158,58 @@ class EvolucaoCategoriasResponse(BaseModel):
     categorias: list[SerieCategoria]
 
 
+class VariacaoTripla(BaseModel):
+    """Variação % (via _variacao) de receitas/despesas/saldo entre duas
+    leituras — None quando a base é zero (sem dado anterior)."""
+
+    receitas: Optional[Decimal] = None
+    despesas: Optional[Decimal] = None
+    saldo: Optional[Decimal] = None
+
+
+class TotaisComparacao(BaseModel):
+    """Totais do /comparison: mês atual vs anterior vs média dos fechados.
+
+    `media` = média dos N meses FECHADOS anteriores ao corrente (o corrente,
+    parcial, NÃO entra — é o baseline contra o qual `atual` é comparado;
+    incluí-lo tornaria a comparação circular). Denominador N fixo, quantize
+    0.01 HALF_UP; saldo da média = receitas − despesas (invariante preservada).
+    """
+
+    atual: LeituraMes
+    anterior: LeituraMes
+    media: LeituraMes
+    variacao_vs_anterior: VariacaoTripla
+    variacao_vs_media: VariacaoTripla
+
+
+class CategoriaComparacao(BaseModel):
+    """Uma categoria (despesa, CONSUMO) alinhada entre atual/anterior/média.
+
+    Valores ABSOLUTOS + variações. Categoria ausente num mês = base zero:
+    surgiu → variação None (nunca "+∞"); sumiu → atual 0, variação −100%.
+    `media` divide pelo N fixo de meses fechados, mesmo ausente em alguns.
+    """
+
+    categoria: str
+    atual: Decimal
+    anterior: Decimal
+    media: Decimal
+    variacao_vs_anterior: Optional[Decimal] = None
+    variacao_vs_media: Optional[Decimal] = None
+
+
+class ComparacaoResponse(BaseModel):
+    """Seção 2 do Resumo (PLANO_RESUMO): as duas leituras de comparação —
+    vs mês anterior (intuitiva) e vs média (robusta a meses atípicos) — num
+    só lugar, base CONSUMO. (mes, ano) = âncora (mês corrente)."""
+
+    mes: int
+    ano: int
+    totais: TotaisComparacao
+    categorias: list[CategoriaComparacao]  # despesas, ordenadas por atual desc
+
+
 class MesDefaultResponse(BaseModel):
     """Mês default de abertura do Dashboard (PLANO §"Mês default do Dashboard").
 

@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session
@@ -8,7 +8,9 @@ from app.core.database import get_session
 from app.models.user import Usuario
 from app.schemas.statistics import (
     AnualResponse,
+    CategoriaComparacao,
     CategoriasResponse,
+    ComparacaoResponse,
     EvolucaoCategoriasResponse,
     EvolucaoResponse,
     LeituraMes,
@@ -20,6 +22,8 @@ from app.schemas.statistics import (
     MesProjecao,
     ProjecaoResponse,
     SerieCategoria,
+    TotaisComparacao,
+    VariacaoTripla,
 )
 from app.services.estatisticas import (
     _agregar,
@@ -44,6 +48,22 @@ def _mes_anterior(mes: int, ano: int) -> tuple[int, int]:
     if mes == 1:
         return 12, ano - 1
     return mes - 1, ano
+
+
+def _despesas_por_categoria(lancamentos) -> dict[str, Decimal]:
+    """Total de despesas por categoria de uma lista de lançamentos — a célula
+    básica do /evolution/categories e do /comparison (só despesa: categoria é
+    dimensão de gasto, como no donut)."""
+    grupos: dict[str, Decimal] = {}
+    for lanc in lancamentos:
+        if lanc.tipo == "despesa":
+            grupos[lanc.categoria] = grupos.get(lanc.categoria, _ZERO) + lanc.valor
+    return grupos
+
+
+def _media(valores: list[Decimal], n: int) -> Decimal:
+    """Média com denominador FIXO n (mês ausente = zero), quantize 0.01."""
+    return (sum(valores, _ZERO) / n).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 @router.get("/monthly", response_model=MensalResponse)
@@ -195,14 +215,7 @@ def evolution_categories_stats(
     # no donut). Mesma fonte única do /evolution: as duas séries nunca
     # divergem. Categoria ausente num mês = 0.00 (série alinhada ao eixo).
     serie = _lancamentos_consumo_horizonte(session, current_user.id, meses)
-
-    grupos_mes: list[dict[str, Decimal]] = []
-    for _, _, lancamentos in serie:
-        grupos: dict[str, Decimal] = {}
-        for l in lancamentos:
-            if l.tipo == "despesa":
-                grupos[l.categoria] = grupos.get(l.categoria, _ZERO) + l.valor
-        grupos_mes.append(grupos)
+    grupos_mes = [_despesas_por_categoria(lanc) for _, _, lanc in serie]
 
     categorias = sorted(
         (
@@ -219,6 +232,72 @@ def evolution_categories_stats(
         meses=[MesAno(mes=m, ano=a) for m, a, _ in serie],
         categorias=categorias,
     )
+
+
+@router.get("/comparison", response_model=ComparacaoResponse)
+def comparison_stats(
+    meses: int = Query(3, ge=1, le=60),
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Seção 2 do Resumo (PLANO_RESUMO) — mês ATUAL vs ANTERIOR vs MÉDIA,
+    # totais e por categoria, base CONSUMO. `meses=N` conta meses FECHADOS:
+    # a média é o BASELINE dos N meses anteriores ao corrente (o corrente,
+    # parcial, não a contamina — a comparação não é circular); o horizonte
+    # buscado é N+1 (os N fechados + o corrente). anterior = o último fechado.
+    # Mesma fonte única do /evolution → as telas nunca divergem.
+    serie = _lancamentos_consumo_horizonte(session, current_user.id, meses + 1)
+    mes, ano = serie[-1][0], serie[-1][1]
+
+    agregados = [_agregar(lancamentos) for _, _, lancamentos in serie]
+    fechados = agregados[:-1]
+    rec_atual, desp_atual = agregados[-1]
+    rec_ant, desp_ant = agregados[-2]
+    media_rec = _media([r for r, _ in fechados], meses)
+    media_desp = _media([d for _, d in fechados], meses)
+
+    def _leitura(rec: Decimal, desp: Decimal) -> LeituraMes:
+        return LeituraMes(receitas=rec, despesas=desp, saldo=rec - desp)
+
+    def _tripla(base: LeituraMes) -> VariacaoTripla:
+        return VariacaoTripla(
+            receitas=_variacao(rec_atual, base.receitas),
+            despesas=_variacao(desp_atual, base.despesas),
+            saldo=_variacao(rec_atual - desp_atual, base.saldo),
+        )
+
+    anterior = _leitura(rec_ant, desp_ant)
+    media = _leitura(media_rec, media_desp)
+    totais = TotaisComparacao(
+        atual=_leitura(rec_atual, desp_atual),
+        anterior=anterior,
+        media=media,
+        variacao_vs_anterior=_tripla(anterior),
+        variacao_vs_media=_tripla(media),
+    )
+
+    # Por categoria (despesas): alinhamento pela UNIÃO dos nomes com gasto em
+    # qualquer mês do horizonte — ausente num mês = base zero (_variacao trata:
+    # surgiu → None, sumiu → −100%); a média divide pelo N fixo de fechados.
+    grupos_mes = [_despesas_por_categoria(lanc) for _, _, lanc in serie]
+    categorias = []
+    for nome in {nome for g in grupos_mes for nome in g}:
+        atual = grupos_mes[-1].get(nome, _ZERO)
+        ant = grupos_mes[-2].get(nome, _ZERO)
+        med = _media([g.get(nome, _ZERO) for g in grupos_mes[:-1]], meses)
+        categorias.append(
+            CategoriaComparacao(
+                categoria=nome,
+                atual=atual,
+                anterior=ant,
+                media=med,
+                variacao_vs_anterior=_variacao(atual, ant),
+                variacao_vs_media=_variacao(atual, med),
+            )
+        )
+    categorias.sort(key=lambda c: (-c.atual, c.categoria))
+
+    return ComparacaoResponse(mes=mes, ano=ano, totais=totais, categorias=categorias)
 
 
 @router.get("/yearly", response_model=AnualResponse)

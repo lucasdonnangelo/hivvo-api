@@ -902,3 +902,90 @@ class TestHighlights:
                        {"mes": 7, "ano": 1999}, {"mes": 7}, {}):
             resp = as_user(users[0]).get("/statistics/highlights", params=params)
             assert resp.status_code == 422, params
+
+
+class TestCoverage:
+    """GET /statistics/coverage — competências DISTINTAS com dado de CONSUMO
+    até o corrente (florescimento do Resumo: ≥2 → S2, ≥3 → S3). Base consumo:
+    parcelada 12x = UM mês (o da compra); vigência de recorrência expande em
+    competências, clampada no corrente; futuro não conta. hoje congelado em
+    15/07/2026 (fixture clock)."""
+
+    def _coverage(self, as_user, user):
+        resp = as_user(user).get("/statistics/coverage")
+        assert resp.status_code == 200
+        return resp.json()["meses_com_dados"]
+
+    def test_sem_dados_zero(self, users, as_user):
+        assert self._coverage(as_user, users[0]) == 0
+
+    def test_competencias_distintas_nao_transacoes(self, session, users, as_user):
+        # 2 transações no mesmo mês = 1 competência; + 1 noutro mês = 2.
+        _add_avista(session, users[0].id, dt.date(2026, 6, 5))
+        _add_avista(session, users[0].id, dt.date(2026, 6, 20))
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10))
+
+        assert self._coverage(as_user, users[0]) == 2
+
+    def test_parcelada_12x_conta_um_mes_nao_doze(self, session, users, as_user):
+        # A justificativa da base CONSUMO: por fluxo seriam 12 competências
+        # de fatura; o gasto aconteceu num mês só — o da compra.
+        _add_parcelada(session, users[0].id, mes0=1)  # 12x desde jan/2026
+
+        assert self._coverage(as_user, users[0]) == 1
+
+    def test_vigencia_aberta_expande_ate_o_corrente(self, session, users, as_user):
+        # desde abr/2026, sem fim: abr, mai, jun, jul (corrente) = 4 — o
+        # futuro que a vigência aberta geraria NÃO conta.
+        _add_recorrencia(session, users[0].id, dia=5, mes_inicio=4)
+
+        assert self._coverage(as_user, users[0]) == 4
+
+    def test_vigencia_fechada_no_passado_conta_o_periodo(self, session, users, as_user):
+        _add_recorrencia(session, users[0].id, dia=5, mes_inicio=1,
+                         mes_fim=3, ano_fim=2026)  # jan–mar
+
+        assert self._coverage(as_user, users[0]) == 3
+
+    def test_clamp_no_corrente_futuro_nao_conta(self, session, users, as_user):
+        # Pós-datada DENTRO do corrente (20/jul > hoje 15) conta — a
+        # competência é o corrente; ago/2026 e vigência a partir de out, não.
+        _add_avista(session, users[0].id, dt.date(2026, 7, 20))
+        _add_avista(session, users[0].id, dt.date(2026, 8, 10))
+        _add_recorrencia(session, users[0].id, dia=5, mes_inicio=10)
+
+        assert self._coverage(as_user, users[0]) == 1  # só jul
+
+    def test_uniao_transacao_e_vigencia_sem_dupla_contagem(
+        self, session, users, as_user
+    ):
+        # vigência mai–jun + transação em jun: {mai, jun} = 2, não 3.
+        _add_recorrencia(session, users[0].id, dia=5, mes_inicio=5,
+                         mes_fim=6, ano_fim=2026)
+        _add_avista(session, users[0].id, dt.date(2026, 6, 10))
+
+        assert self._coverage(as_user, users[0]) == 2
+
+    def test_vigencia_fechada_no_futuro_clampa_no_corrente(
+        self, session, users, as_user
+    ):
+        # jun–set: conta jun e jul (corrente); ago/set ficam para quando chegarem.
+        _add_recorrencia(session, users[0].id, dia=5, mes_inicio=6,
+                         mes_fim=9, ano_fim=2026)
+
+        assert self._coverage(as_user, users[0]) == 2
+
+    def test_isolamento_entre_usuarios(self, session, users, as_user):
+        _add_avista(session, users[1].id, dt.date(2026, 6, 10))
+
+        assert self._coverage(as_user, users[0]) == 0
+        assert self._coverage(as_user, users[1]) == 1
+
+    def test_florescimento_cresce_com_o_historico(self, session, users, as_user):
+        # A régua do front na prática: 1 mês → só S1; 2 → S2; 3 → S3.
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10))
+        assert self._coverage(as_user, users[0]) == 1
+        _add_avista(session, users[0].id, dt.date(2026, 6, 10))
+        assert self._coverage(as_user, users[0]) == 2
+        _add_avista(session, users[0].id, dt.date(2026, 3, 10))
+        assert self._coverage(as_user, users[0]) == 3

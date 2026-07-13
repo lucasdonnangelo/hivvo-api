@@ -248,6 +248,15 @@ class HighlightsResponse(BaseModel):
     num_recorrentes: int       # só ocorrências de recorrência do mês
 
 
+class CoverageResponse(BaseModel):
+    """Nº de meses (competências) DISTINTOS com dado de CONSUMO até o mês
+    corrente — a régua do florescimento do Resumo (PLANO_RESUMO §Limiares):
+    o front mostra a Seção 2 com ≥2 e a Seção 3 com ≥3. Parcelada 12x = UM
+    mês (o da compra); competência futura não conta."""
+
+    meses_com_dados: int
+
+
 class MesDefaultResponse(BaseModel):
     """Mês default de abertura do Dashboard (PLANO §"Mês default do Dashboard").
 

@@ -11,6 +11,7 @@ from app.schemas.statistics import (
     CategoriaComparacao,
     CategoriasResponse,
     ComparacaoResponse,
+    CoverageResponse,
     DiaMaiorGasto,
     EvolucaoCategoriasResponse,
     EvolucaoResponse,
@@ -31,6 +32,7 @@ from app.schemas.statistics import (
 from app.services.estatisticas import (
     _agregar,
     _categorias,
+    _competencias_com_consumo,
     _lancamentos_ano,
     _lancamentos_consumo_horizonte,
     _lancamentos_consumo_mes,
@@ -341,6 +343,19 @@ def highlights_stats(
         num_transacoes_total=len(lancamentos),
         num_lancadas=len(lancamentos) - num_recorrentes,
         num_recorrentes=num_recorrentes,
+    )
+
+
+@router.get("/coverage", response_model=CoverageResponse)
+def coverage_stats(
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Florescimento do Resumo (PLANO_RESUMO §Limiares): o backend só conta —
+    # quem decide as seções é o front (≥2 → S2, ≥3 → S3). Base CONSUMO com
+    # clamp no mês corrente — ver _competencias_com_consumo.
+    return CoverageResponse(
+        meses_com_dados=_competencias_com_consumo(session, current_user.id)
     )
 
 

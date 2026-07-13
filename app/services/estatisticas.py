@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Union
 
+from sqlalchemy import extract
 from sqlmodel import Session, and_, or_, select
 
 from app.core.dates import hoje
@@ -651,6 +652,51 @@ def _lancamentos_consumo_horizonte(
         serie.append((mes, ano, por_mes[mes]))
         mes, ano = _mes_seguinte(mes, ano)
     return serie
+
+
+def _competencias_com_consumo(session: Session, usuario_id: int) -> int:
+    """Nº de competências (ano, mes) DISTINTAS com dado de CONSUMO, até o corrente.
+
+    A régua do FLORESCIMENTO do Resumo (PLANO_RESUMO §Limiares): ≥2 meses →
+    Seção 2 (comparação); ≥3 → Seção 3 (evolução) — quem decide é o front.
+
+    Base CONSUMO (decisão da revisão do plano), não as fontes de fluxo do
+    _tem_historico: as seções que o coverage libera são de consumo, e contar
+    por fluxo inflaria o histórico (uma parcelada 12x viraria "12 meses de
+    dados" — aqui é UM: o mês da compra). Fontes = a mesma trilha do donut:
+      - Transacao pela DATA (todas — pai parcelada, avulsa, à vista, receita),
+        em 1 query DISTINCT (extract vira strftime no SQLite, EXTRACT no
+        Postgres);
+      - vigências de recorrência expandidas em competências em memória
+        (toda competência coberta por vigência tem ocorrência — valor > 0
+        por CHECK).
+    Clamp no corrente: competência FUTURA (transação pós-datada, vigência
+    ainda por começar) não desbloqueia análise de HISTÓRICO.
+    """
+    h = hoje()
+    corrente = (h.year, h.month)
+    competencias: set[tuple[int, int]] = set()
+
+    for ano_mes in session.exec(
+        select(extract("year", Transacao.data), extract("month", Transacao.data))
+        .where(Transacao.usuario_id == usuario_id)
+        .distinct()
+    ).all():
+        competencia = (int(ano_mes[0]), int(ano_mes[1]))
+        if competencia <= corrente:
+            competencias.add(competencia)
+
+    for _, vigencias in _recorrencias_com_vigencias(session, usuario_id):
+        for v in vigencias:
+            mes, ano = v.mes_inicio, v.ano_inicio
+            fim = corrente
+            if v.ano_fim is not None:
+                fim = min((v.ano_fim, v.mes_fim), corrente)
+            while (ano, mes) <= fim:
+                competencias.add((ano, mes))
+                mes, ano = _mes_seguinte(mes, ano)
+
+    return len(competencias)
 
 
 def _tem_historico(session: Session, usuario_id: int, mes: int, ano: int) -> bool:

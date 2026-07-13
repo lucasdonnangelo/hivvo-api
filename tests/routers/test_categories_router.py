@@ -71,3 +71,53 @@ class TestCreateCategoryGuard:
         assert post_cat(as_user(users[1]), "Pets").status_code == 201
         assert len(_rows(session, users[0].id)) == 1
         assert len(_rows(session, users[1].id)) == 1
+
+
+class TestListCategoriesFilter:
+    """GET /categories?tipo= — filtro opcional aplicado a padrão + customizadas."""
+
+    def test_sem_param_retorna_tudo(self, session, users, as_user):
+        client = as_user(users[0])
+        nomes = [c["nome"] for c in client.get("/categories").json()]
+        # padrão tem despesa e receita; sem filtro, ambos os "Outros" aparecem
+        assert "Salário" in nomes  # receita
+        assert "Alimentação" in nomes  # despesa
+        assert {c["tipo"] for c in client.get("/categories").json()} == {
+            "receita",
+            "despesa",
+        }
+
+    def test_tipo_despesa_so_despesa(self, session, users, as_user):
+        client = as_user(users[0])
+        body = client.get("/categories", params={"tipo": "despesa"}).json()
+        assert all(c["tipo"] == "despesa" for c in body)
+        assert "Alimentação" in [c["nome"] for c in body]
+        # o "Outros" de despesa entra; nenhuma receita (ex. Salário) aparece
+        assert "Salário" not in [c["nome"] for c in body]
+        assert any(c["nome"] == "Outros" for c in body)
+
+    def test_tipo_receita_so_receita(self, session, users, as_user):
+        client = as_user(users[0])
+        body = client.get("/categories", params={"tipo": "receita"}).json()
+        assert all(c["tipo"] == "receita" for c in body)
+        assert "Salário" in [c["nome"] for c in body]
+        assert "Alimentação" not in [c["nome"] for c in body]
+        # o "Outros" de receita entra
+        assert any(c["nome"] == "Outros" for c in body)
+
+    def test_customizada_respeita_filtro(self, session, users, as_user):
+        client = as_user(users[0])
+        assert post_cat(client, "Dividendos", icone="📈", tipo="receita").status_code == 201
+
+        receita_nomes = [
+            c["nome"] for c in client.get("/categories", params={"tipo": "receita"}).json()
+        ]
+        despesa_nomes = [
+            c["nome"] for c in client.get("/categories", params={"tipo": "despesa"}).json()
+        ]
+        assert "Dividendos" in receita_nomes
+        assert "Dividendos" not in despesa_nomes
+
+    def test_tipo_invalido_retorna_422(self, session, users, as_user):
+        client = as_user(users[0])
+        assert client.get("/categories", params={"tipo": "xpto"}).status_code == 422

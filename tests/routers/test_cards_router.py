@@ -113,10 +113,10 @@ class TestT36IsolamentoEntreUsuarios:
 class TestCartaoDebitoSemFatura:
     """Cartão de débito não tem fatura: limite/fechamento/vencimento não se aplicam.
 
-    O bug reportado (form exigindo esses campos no débito) é do frontend
-    (hivvo-web). Estes testes fixam o contrato do backend: POST /cards de um
-    débito SEM esses campos já é aceito e os grava como None — nenhuma mudança
-    de código foi necessária aqui.
+    Estes testes fixam o contrato do backend para os dois jeitos que o débito
+    pode chegar: campos AUSENTES e campos EXPLICITAMENTE null (é assim que o
+    form do hivvo-web manda). O caso null quebrava com 422 em mes_offset_vencimento
+    (int não-anulável) — ver test_criar_debito_com_campos_null_retorna_201.
     """
 
     def test_criar_debito_sem_campos_de_fatura_retorna_201(self, users, as_user):
@@ -128,6 +128,27 @@ class TestCartaoDebitoSemFatura:
         assert body["limite"] is None
         assert body["dia_fechamento"] is None
         assert body["dia_vencimento"] is None
+
+    def test_criar_debito_com_campos_null_retorna_201(self, users, as_user):
+        # Payload EXATO do form de débito: null nos 4 campos de fatura. Antes do fix,
+        # mes_offset_vencimento (int não-anulável) rejeitava o null com 422 e o toast
+        # genérico do front escondia o motivo. Agora null cai no default 1.
+        (user_a, _) = users
+        response = as_user(user_a).post(
+            "/cards",
+            json={
+                "nome": "Nubank Débito",
+                "tipo": "Débito",
+                "limite": None,
+                "dia_fechamento": None,
+                "dia_vencimento": None,
+                "mes_offset_vencimento": None,
+            },
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["tipo"] == "Débito"
+        assert body["mes_offset_vencimento"] == 1
 
     def test_criar_credito_sem_campos_de_fatura_continua_aceito(self, users, as_user):
         # Comportamento atual da API preservado: crédito sem os campos ainda é

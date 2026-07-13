@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Union
 
+from sqlalchemy import extract
 from sqlmodel import Session, and_, or_, select
 
 from app.core.dates import hoje
@@ -59,6 +60,12 @@ class LancamentoFluxo:
     PagamentoFatura em toda a projeção — topo, realizado/a_vir, anual, série
     e consumo derivam exclusivamente de data/competência (§1.3: pagamento
     não governa a projeção).
+
+    ``data``/``descricao`` (PLANO_RESUMO, /highlights): preenchidos APENAS
+    pela trilha CONSUMO mensal (_lancamentos_consumo_mes — C1 pela Transacao,
+    C4 pela ocorrência da recorrência), para os destaques do mês derivarem da
+    MESMA lista do donut (fonte única). Nas demais trilhas ficam None; a
+    agregação (_agregar/_categorias) os ignora.
     """
 
     tipo: str
@@ -67,6 +74,8 @@ class LancamentoFluxo:
     recorrente: bool = False
     realizado: bool = True
     a_pagar: bool = False
+    data: Optional[dt.date] = None
+    descricao: Optional[str] = None
 
 
 # _agregar/_categorias operam por duck typing em .tipo/.valor/.categoria — servem
@@ -266,6 +275,7 @@ def _ocorrencias_recorrentes(
     mes: int,
     ano: int,
     limite_realizado: Optional[dt.date] = None,
+    detalhado: bool = False,
 ) -> list[LancamentoFluxo]:
     """Fonte 4 (pura, sem I/O): ocorrências de recorrência na competência (mes, ano).
 
@@ -278,15 +288,17 @@ def _ocorrencias_recorrentes(
     corrente — marca realizado = data_ocorrencia (dia clampado) <= hoje.
     None (mês não-corrente) = tudo realizado. NÃO filtra: a ocorrência entra
     na lista de qualquer forma (a projeção é integral).
+
+    `detalhado` (PLANO_RESUMO, /highlights): True só na trilha CONSUMO mensal
+    — carrega data (a ocorrência clampada) e descricao no lançamento, para a
+    recorrência concorrer aos destaques do mês. Trilhas de fluxo não pedem.
     """
     lancamentos: list[LancamentoFluxo] = []
     for recorrencia, vigencias in recs_com_vigencias:
         valor = valor_no_mes(recorrencia, vigencias, mes, ano)
         if valor is not None:
-            realizado = (
-                limite_realizado is None
-                or data_ocorrencia(recorrencia, mes, ano) <= limite_realizado
-            )
+            ocorrencia = data_ocorrencia(recorrencia, mes, ano)
+            realizado = limite_realizado is None or ocorrencia <= limite_realizado
             lancamentos.append(
                 LancamentoFluxo(
                     recorrencia.tipo,
@@ -294,6 +306,8 @@ def _ocorrencias_recorrentes(
                     recorrencia.categoria,
                     recorrente=True,
                     realizado=realizado,
+                    data=ocorrencia if detalhado else None,
+                    descricao=recorrencia.descricao if detalhado else None,
                 )
             )
     return lancamentos
@@ -422,17 +436,67 @@ def _lancamentos_consumo_mes(
     parcelas somem juntas); diverge só sob cancelamento de parcela individual.
     ⚠️ Se cancelamento por-parcela virar operação de usuário (UI + rota viva),
     revisitar (Opção B) — ver §Fase 3b.
+
+    Única trilha DETALHADA (PLANO_RESUMO): carrega data/descricao em cada
+    lançamento (C1 pela Transacao, C4 pela ocorrência) para o /highlights
+    derivar os destaques do mês da MESMA lista do donut — fonte única.
     """
     lancamentos: list[LancamentoFluxo] = [
-        LancamentoFluxo(t.tipo, t.valor, t.categoria)
+        LancamentoFluxo(t.tipo, t.valor, t.categoria, data=t.data, descricao=t.descricao)
         for t in _buscar_mes(session, usuario_id, mes, ano)
     ]
     lancamentos.extend(
         _ocorrencias_recorrentes(
-            _recorrencias_com_vigencias(session, usuario_id), mes, ano
+            _recorrencias_com_vigencias(session, usuario_id), mes, ano, detalhado=True
         )
     )
     return lancamentos
+
+
+def _lancamentos_consumo_ano(
+    session: Session,
+    usuario_id: int,
+    ano: int,
+    recs_com_vigencias: Optional[
+        list[tuple[Recorrencia, list[RecorrenciaVigencia]]]
+    ] = None,
+) -> dict[int, list[LancamentoFluxo]]:
+    """Lançamentos da visão CONSUMO do ano inteiro, agrupados por mês da compra.
+
+    O espelho consumo de :func:`_lancamentos_ano`: mesma semântica de 2 fontes
+    de :func:`_lancamentos_consumo_mes` (C1 = TODAS as transações por `data` —
+    a pai parcelada pelo valor cheio, a avulsa de cartão pela data, sem o
+    `continue` do fluxo; C4 = ocorrências de recorrência), escopada ao ano em
+    **3 queries fixas** (1 de transações + 2 da recorrência) — evita o N+1 de
+    chamar _lancamentos_consumo_mes N vezes no horizonte do Resumo
+    (PLANO_RESUMO §Backend). Consumo é integral (§Fase 3b D2): sem marcação
+    de realizado/a_pagar. Herda a limitação da Opção A (cancelamento
+    por-parcela não reflete — a pai não tem flag).
+
+    `recs_com_vigencias` opcional: quem varre vários anos (o horizonte) busca
+    as recorrências UMA vez e as reaproveita entre os anos.
+    """
+    por_mes: dict[int, list[LancamentoFluxo]] = {m: [] for m in range(1, 13)}
+
+    # C1: todas as transações do ano pela data (range sargável, padrão T-10).
+    inicio = dt.date(ano, 1, 1)
+    fim = dt.date(ano + 1, 1, 1)
+    for t in session.exec(
+        select(Transacao).where(
+            Transacao.usuario_id == usuario_id,
+            Transacao.data >= inicio,
+            Transacao.data < fim,
+        )
+    ).all():
+        por_mes[t.data.month].append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
+
+    # C4: recorrências buscadas uma vez; os 12 meses aplicados em memória.
+    if recs_com_vigencias is None:
+        recs_com_vigencias = _recorrencias_com_vigencias(session, usuario_id)
+    for m in range(1, 13):
+        por_mes[m].extend(_ocorrencias_recorrentes(recs_com_vigencias, m, ano))
+
+    return por_mes
 
 
 def _lancamentos_ano(
@@ -547,6 +611,92 @@ def _mes_seguinte(mes: int, ano: int) -> tuple[int, int]:
     if mes == 12:
         return 1, ano + 1
     return mes + 1, ano
+
+
+def _mes_atras(mes: int, ano: int, n: int) -> tuple[int, int]:
+    """Competência n meses antes de (mes, ano), por aritmética de competência."""
+    total = ano * 12 + (mes - 1) - n
+    return total % 12 + 1, total // 12
+
+
+def _lancamentos_consumo_horizonte(
+    session: Session, usuario_id: int, meses: int
+) -> list[tuple[int, int, list[LancamentoFluxo]]]:
+    """Série CONSUMO dos últimos `meses` — o espelho PRA TRÁS do /projection.
+
+    Âncora = mês corrente (hoje()), INCLUÍDO: `meses=N` cobre o corrente +
+    (N−1) pra trás (PLANO_RESUMO §Backend). Retorna [(mes, ano, lançamentos)]
+    em ordem CRONOLÓGICA (o mais antigo primeiro; [-1] = corrente), série
+    contínua — mês sem dado vem com lista vazia (vira zeros na agregação).
+
+    Mesmo cache por ano do loop do /projection: itera pra frente, do início
+    ao corrente, e carrega _lancamentos_consumo_ano quando o ano muda — cada
+    ano no máximo 1 vez (≤ ceil(N/12)+1 anos), recorrências buscadas UMA vez
+    para o horizonte inteiro. Sem N+1. FONTE ÚNICA do Resumo: todos os
+    endpoints de análise temporal derivam daqui → zero drift entre eles e vs
+    o donut de consumo do Dashboard (/monthly).
+    """
+    h = hoje()
+    mes, ano = _mes_atras(h.month, h.year, meses - 1)
+    recs_com_vigencias = _recorrencias_com_vigencias(session, usuario_id)
+
+    serie: list[tuple[int, int, list[LancamentoFluxo]]] = []
+    por_mes: dict[int, list[LancamentoFluxo]] = {}
+    ano_carregado: Optional[int] = None
+    for _ in range(meses):
+        if ano != ano_carregado:
+            por_mes = _lancamentos_consumo_ano(
+                session, usuario_id, ano, recs_com_vigencias
+            )
+            ano_carregado = ano
+        serie.append((mes, ano, por_mes[mes]))
+        mes, ano = _mes_seguinte(mes, ano)
+    return serie
+
+
+def _competencias_com_consumo(session: Session, usuario_id: int) -> int:
+    """Nº de competências (ano, mes) DISTINTAS com dado de CONSUMO, até o corrente.
+
+    A régua do FLORESCIMENTO do Resumo (PLANO_RESUMO §Limiares): ≥2 meses →
+    Seção 2 (comparação); ≥3 → Seção 3 (evolução) — quem decide é o front.
+
+    Base CONSUMO (decisão da revisão do plano), não as fontes de fluxo do
+    _tem_historico: as seções que o coverage libera são de consumo, e contar
+    por fluxo inflaria o histórico (uma parcelada 12x viraria "12 meses de
+    dados" — aqui é UM: o mês da compra). Fontes = a mesma trilha do donut:
+      - Transacao pela DATA (todas — pai parcelada, avulsa, à vista, receita),
+        em 1 query DISTINCT (extract vira strftime no SQLite, EXTRACT no
+        Postgres);
+      - vigências de recorrência expandidas em competências em memória
+        (toda competência coberta por vigência tem ocorrência — valor > 0
+        por CHECK).
+    Clamp no corrente: competência FUTURA (transação pós-datada, vigência
+    ainda por começar) não desbloqueia análise de HISTÓRICO.
+    """
+    h = hoje()
+    corrente = (h.year, h.month)
+    competencias: set[tuple[int, int]] = set()
+
+    for ano_mes in session.exec(
+        select(extract("year", Transacao.data), extract("month", Transacao.data))
+        .where(Transacao.usuario_id == usuario_id)
+        .distinct()
+    ).all():
+        competencia = (int(ano_mes[0]), int(ano_mes[1]))
+        if competencia <= corrente:
+            competencias.add(competencia)
+
+    for _, vigencias in _recorrencias_com_vigencias(session, usuario_id):
+        for v in vigencias:
+            mes, ano = v.mes_inicio, v.ano_inicio
+            fim = corrente
+            if v.ano_fim is not None:
+                fim = min((v.ano_fim, v.mes_fim), corrente)
+            while (ano, mes) <= fim:
+                competencias.add((ano, mes))
+                mes, ano = _mes_seguinte(mes, ano)
+
+    return len(competencias)
 
 
 def _tem_historico(session: Session, usuario_id: int, mes: int, ano: int) -> bool:

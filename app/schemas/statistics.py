@@ -1,3 +1,4 @@
+import datetime as dt
 from decimal import Decimal
 from typing import Optional
 
@@ -104,6 +105,156 @@ class ProjecaoResponse(BaseModel):
     """
 
     series: list[MesProjecao]
+
+
+class MesEvolucaoConsumo(BaseModel):
+    """Um mês da série do /evolution (Resumo, Seção 3 — PLANO_RESUMO).
+
+    Base CONSUMO (gasto pela DATA da compra, o mesmo do donut do Dashboard),
+    integral (sem realizado/a_vir). Tem `ano` porque o horizonte relativo
+    cruza a virada de ano (diferente do MesEvolucao do /yearly, ano fixo).
+    """
+
+    mes: int
+    ano: int
+    receitas: Decimal
+    despesas: Decimal
+    saldo: Decimal
+
+
+class EvolucaoResponse(BaseModel):
+    """Série CONSUMO dos últimos N meses — o espelho PRA TRÁS do /projection.
+
+    Cronológica: series[0] é o mês mais antigo, series[-1] é o corrente
+    (âncora, incluída). Contínua — mês sem dado entra com zeros, não é
+    omitido.
+    """
+
+    series: list[MesEvolucaoConsumo]
+
+
+class SerieCategoria(BaseModel):
+    """Série de uma categoria no horizonte do /evolution/categories.
+
+    `serie` é alinhada por ÍNDICE ao eixo `meses` da resposta (0.00 nos meses
+    em que a categoria não teve gasto); `total` = soma no horizonte (critério
+    de ordenação).
+    """
+
+    categoria: str
+    total: Decimal
+    serie: list[Decimal]
+
+
+class EvolucaoCategoriasResponse(BaseModel):
+    """Gasto por categoria mês a mês nos últimos N meses (Resumo, Seção 3).
+
+    CONSUMO, só despesas (categoria é dimensão de gasto, como no donut) —
+    formato categoria-major: o front plota uma categoria contra o eixo
+    `meses` sem pivotar. Categorias ordenadas por total desc (desempate
+    alfabético). Eixo cronológico, o mesmo do /evolution.
+    """
+
+    meses: list[MesAno]
+    categorias: list[SerieCategoria]
+
+
+class VariacaoTripla(BaseModel):
+    """Variação % (via _variacao) de receitas/despesas/saldo entre duas
+    leituras — None quando a base é zero (sem dado anterior)."""
+
+    receitas: Optional[Decimal] = None
+    despesas: Optional[Decimal] = None
+    saldo: Optional[Decimal] = None
+
+
+class TotaisComparacao(BaseModel):
+    """Totais do /comparison: mês atual vs anterior vs média dos fechados.
+
+    `media` = média dos N meses FECHADOS anteriores ao corrente (o corrente,
+    parcial, NÃO entra — é o baseline contra o qual `atual` é comparado;
+    incluí-lo tornaria a comparação circular). Denominador N fixo, quantize
+    0.01 HALF_UP; saldo da média = receitas − despesas (invariante preservada).
+    """
+
+    atual: LeituraMes
+    anterior: LeituraMes
+    media: LeituraMes
+    variacao_vs_anterior: VariacaoTripla
+    variacao_vs_media: VariacaoTripla
+
+
+class CategoriaComparacao(BaseModel):
+    """Uma categoria (despesa, CONSUMO) alinhada entre atual/anterior/média.
+
+    Valores ABSOLUTOS + variações. Categoria ausente num mês = base zero:
+    surgiu → variação None (nunca "+∞"); sumiu → atual 0, variação −100%.
+    `media` divide pelo N fixo de meses fechados, mesmo ausente em alguns.
+    """
+
+    categoria: str
+    atual: Decimal
+    anterior: Decimal
+    media: Decimal
+    variacao_vs_anterior: Optional[Decimal] = None
+    variacao_vs_media: Optional[Decimal] = None
+
+
+class ComparacaoResponse(BaseModel):
+    """Seção 2 do Resumo (PLANO_RESUMO): as duas leituras de comparação —
+    vs mês anterior (intuitiva) e vs média (robusta a meses atípicos) — num
+    só lugar, base CONSUMO. (mes, ano) = âncora (mês corrente)."""
+
+    mes: int
+    ano: int
+    totais: TotaisComparacao
+    categorias: list[CategoriaComparacao]  # despesas, ordenadas por atual desc
+
+
+class MaiorDespesa(BaseModel):
+    """A maior despesa do mês (CONSUMO — recorrência concorre, pela data da
+    ocorrência). Empate: valor → data mais recente → descrição."""
+
+    valor: Decimal
+    descricao: str
+    categoria: str
+    data: dt.date
+
+
+class DiaMaiorGasto(BaseModel):
+    """O dia com maior soma de despesas de consumo no mês. Empate: o dia
+    mais recente."""
+
+    data: dt.date
+    total: Decimal
+
+
+class HighlightsResponse(BaseModel):
+    """Destaques do mês (Resumo, Seção 1 — PLANO_RESUMO), base CONSUMO.
+
+    Mês sem despesa → maior_despesa/dia_maior_gasto None (200, nunca 404 —
+    o florescimento é decisão do front). Contagem DECOMPOSTA para o front
+    mostrar "total · N recorrentes": conta receitas E despesas
+    (movimentações do mês); invariante num_transacoes_total ==
+    num_lancadas + num_recorrentes.
+    """
+
+    mes: int
+    ano: int
+    maior_despesa: Optional[MaiorDespesa] = None
+    dia_maior_gasto: Optional[DiaMaiorGasto] = None
+    num_transacoes_total: int  # Transacao + ocorrências de recorrência
+    num_lancadas: int          # só Transacao (o que o usuário registrou)
+    num_recorrentes: int       # só ocorrências de recorrência do mês
+
+
+class CoverageResponse(BaseModel):
+    """Nº de meses (competências) DISTINTOS com dado de CONSUMO até o mês
+    corrente — a régua do florescimento do Resumo (PLANO_RESUMO §Limiares):
+    o front mostra a Seção 2 com ≥2 e a Seção 3 com ≥3. Parcelada 12x = UM
+    mês (o da compra); competência futura não conta."""
+
+    meses_com_dados: int
 
 
 class MesDefaultResponse(BaseModel):

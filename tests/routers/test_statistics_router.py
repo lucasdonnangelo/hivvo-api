@@ -29,10 +29,10 @@ def clock(mocker):
 
 
 def _add_recorrencia(session, uid, dia, valor="10000.00", mes_inicio=1, ano_inicio=2026,
-                     mes_fim=None, ano_fim=None):
+                     mes_fim=None, ano_fim=None, tipo="receita", categoria="Salário"):
     rec = Recorrencia(
-        usuario_id=uid, tipo="receita", categoria="Salário",
-        forma_pagamento="Pix", dia_do_mes=dia, descricao="Salário",
+        usuario_id=uid, tipo=tipo, categoria=categoria,
+        forma_pagamento="Pix", dia_do_mes=dia, descricao=categoria,
     )
     session.add(rec)
     session.flush()
@@ -155,12 +155,12 @@ class TestMonthlyConsumo:
         assert body["categorias_consumo"] == []
 
 
-def _add_avista(session, uid, data, tipo="despesa", valor="50.00"):
+def _add_avista(session, uid, data, tipo="despesa", valor="50.00", categoria="Outros"):
     """Transação à vista/receita (não parcelada, não faturada) — Fonte 3."""
     session.add(
         Transacao(
             usuario_id=uid, tipo=tipo, data=data, descricao="à vista",
-            valor=Decimal(valor), categoria="Outros", forma_pagamento="Pix",
+            valor=Decimal(valor), categoria=categoria, forma_pagamento="Pix",
         )
     )
     session.commit()
@@ -467,3 +467,525 @@ class TestProjection:
                 "/statistics/projection", params={"meses": invalido}
             )
             assert resp.status_code == 422
+
+
+class TestEvolution:
+    """GET /statistics/evolution — série CONSUMO dos últimos N meses (Resumo,
+    Seção 3, PLANO_RESUMO): o espelho PRA TRÁS do /projection. Âncora = mês
+    corrente INCLUÍDO (meses=N = corrente + N−1 pra trás), cronológica, zeros
+    para mês sem dado. hoje congelado em 15/07/2026 (fixture clock)."""
+
+    def _series(self, as_user, user, **params):
+        resp = as_user(user).get("/statistics/evolution", params=params)
+        assert resp.status_code == 200
+        return resp.json()["series"]
+
+    def test_default_3_meses_cronologico_terminando_no_corrente(self, users, as_user):
+        series = self._series(as_user, users[0])
+        assert [(i["mes"], i["ano"]) for i in series] == [
+            (5, 2026), (6, 2026), (7, 2026)
+        ]
+        for item in series:  # sem dados → zeros, série contínua
+            assert _q(item["receitas"]) == Decimal("0.00")
+            assert _q(item["despesas"]) == Decimal("0.00")
+            assert _q(item["saldo"]) == Decimal("0.00")
+
+    def test_consumo_parcelada_inteira_no_mes_da_compra(self, session, users, as_user):
+        # compra 12x em 15/jun: consumo conta R$1200 em jun; a parcela de jul
+        # NÃO conta (é fatia de fluxo — o /evolution é a lente do gasto).
+        _add_parcelada(session, users[0].id, mes0=6)
+
+        series = self._series(as_user, users[0])
+        assert _q(series[0]["despesas"]) == Decimal("0.00")     # mai
+        assert _q(series[1]["despesas"]) == Decimal("1200.00")  # jun: valor cheio
+        assert _q(series[2]["despesas"]) == Decimal("0.00")     # jul: sem compra
+
+    def test_bate_com_o_consumo_do_monthly_mes_a_mes(self, session, users, as_user):
+        # endpoint-vs-endpoint: a fonte única não diverge do Dashboard — cada
+        # item da série == campo `consumo` do /monthly do mesmo mês.
+        _add_recorrencia(session, users[0].id, dia=5)
+        _add_parcelada(session, users[0].id, mes0=5)
+        _add_avista(session, users[0].id, dt.date(2026, 6, 10))
+
+        for item in self._series(as_user, users[0], meses=4):
+            monthly = as_user(users[0]).get(
+                "/statistics/monthly", params={"mes": item["mes"], "ano": item["ano"]}
+            ).json()
+            assert _q(item["receitas"]) == _q(monthly["consumo"]["receitas"])
+            assert _q(item["despesas"]) == _q(monthly["consumo"]["despesas"])
+            assert _q(item["saldo"]) == _q(monthly["consumo"]["saldo"])
+
+    def test_virada_de_ano_no_horizonte(self, mocker, session, users, as_user):
+        # hoje = fev/2027; meses=4 cruza a virada: nov/2026..fev/2027
+        mocker.patch(
+            "app.services.estatisticas.hoje", return_value=dt.date(2027, 2, 15)
+        )
+        _add_avista(session, users[0].id, dt.date(2026, 12, 10), valor="70.00")
+
+        series = self._series(as_user, users[0], meses=4)
+        assert [(i["mes"], i["ano"]) for i in series] == [
+            (11, 2026), (12, 2026), (1, 2027), (2, 2027)
+        ]
+        assert _q(series[1]["despesas"]) == Decimal("70.00")
+
+    def test_mes_vazio_no_meio_entra_com_zeros(self, session, users, as_user):
+        _add_avista(session, users[0].id, dt.date(2026, 5, 10), tipo="receita",
+                    valor="100.00")
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="30.00")
+
+        series = self._series(as_user, users[0])
+        assert _q(series[0]["saldo"]) == Decimal("100.00")
+        assert _q(series[1]["receitas"]) == Decimal("0.00")  # jun vazio
+        assert _q(series[1]["despesas"]) == Decimal("0.00")
+        assert _q(series[2]["saldo"]) == Decimal("-30.00")
+
+    def test_isolamento_entre_usuarios(self, session, users, as_user):
+        _add_avista(session, users[1].id, dt.date(2026, 7, 10))
+
+        series = self._series(as_user, users[0])
+        assert _q(series[2]["despesas"]) == Decimal("0.00")
+
+    def test_meses_1_e_limites_1_a_60(self, users, as_user):
+        series = self._series(as_user, users[0], meses=1)
+        assert [(i["mes"], i["ano"]) for i in series] == [(7, 2026)]
+        assert len(self._series(as_user, users[0], meses=60)) == 60
+        for invalido in (0, 61):
+            resp = as_user(users[0]).get(
+                "/statistics/evolution", params={"meses": invalido}
+            )
+            assert resp.status_code == 422
+
+
+class TestEvolutionCategories:
+    """GET /statistics/evolution/categories — série por categoria (CONSUMO, só
+    despesas), categoria-major: cada `serie` alinhada por índice ao eixo
+    `meses`, zeros onde a categoria não teve gasto. hoje congelado em
+    15/07/2026 (fixture clock)."""
+
+    def _get(self, as_user, user, **params):
+        resp = as_user(user).get("/statistics/evolution/categories", params=params)
+        assert resp.status_code == 200
+        return resp.json()
+
+    def test_series_alinhadas_ao_eixo_com_zeros_e_ordenacao(
+        self, session, users, as_user
+    ):
+        _add_avista(session, users[0].id, dt.date(2026, 5, 10), valor="100.00",
+                    categoria="Mercado")
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="40.00",
+                    categoria="Mercado")
+        _add_avista(session, users[0].id, dt.date(2026, 6, 10), valor="60.00",
+                    categoria="Transporte")
+
+        body = self._get(as_user, users[0])
+        assert body["meses"] == [
+            {"mes": 5, "ano": 2026}, {"mes": 6, "ano": 2026}, {"mes": 7, "ano": 2026}
+        ]
+        # ordenação por total desc: Mercado (140) antes de Transporte (60)
+        assert [c["categoria"] for c in body["categorias"]] == ["Mercado", "Transporte"]
+        por_nome = {c["categoria"]: c for c in body["categorias"]}
+        assert [_q(v) for v in por_nome["Mercado"]["serie"]] == [
+            Decimal("100.00"), Decimal("0.00"), Decimal("40.00")
+        ]
+        assert [_q(v) for v in por_nome["Transporte"]["serie"]] == [
+            Decimal("0.00"), Decimal("60.00"), Decimal("0.00")
+        ]
+        assert _q(por_nome["Mercado"]["total"]) == Decimal("140.00")
+
+    def test_ultima_coluna_bate_com_o_donut_de_consumo_do_monthly(
+        self, session, users, as_user
+    ):
+        # endpoint-vs-endpoint: a coluna do mês corrente == categorias_consumo
+        # do /monthly (o Resumo é o aprofundamento do MESMO donut).
+        _add_parcelada(session, users[0].id, mes0=7)  # Eletrônicos 1200 em jul
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="80.00",
+                    categoria="Mercado")
+        _add_recorrencia(session, users[0].id, dia=5, tipo="despesa",
+                         categoria="Moradia", valor="2000.00")
+
+        body = self._get(as_user, users[0])
+        monthly = as_user(users[0]).get(
+            "/statistics/monthly", params={"mes": 7, "ano": 2026}
+        ).json()
+        ultima_coluna = {
+            c["categoria"]: _q(c["serie"][-1])
+            for c in body["categorias"]
+            if _q(c["serie"][-1]) != Decimal("0.00")
+        }
+        donut = {c["categoria"]: _q(c["total"]) for c in monthly["categorias_consumo"]}
+        assert ultima_coluna == donut
+
+    def test_receita_nao_vira_categoria(self, session, users, as_user):
+        _add_recorrencia(session, users[0].id, dia=5)  # receita Salário
+        _add_avista(session, users[0].id, dt.date(2026, 7, 3), tipo="receita",
+                    valor="500.00")
+
+        assert self._get(as_user, users[0])["categorias"] == []
+
+    def test_recorrencia_despesa_presente_em_todos_os_meses(
+        self, session, users, as_user
+    ):
+        _add_recorrencia(session, users[0].id, dia=5, tipo="despesa",
+                         categoria="Moradia", valor="2000.00")
+
+        body = self._get(as_user, users[0], meses=3)
+        (moradia,) = body["categorias"]
+        assert moradia["categoria"] == "Moradia"
+        assert [_q(v) for v in moradia["serie"]] == [Decimal("2000.00")] * 3
+        assert _q(moradia["total"]) == Decimal("6000.00")
+
+    def test_sem_dados_eixo_presente_categorias_vazias(self, users, as_user):
+        body = self._get(as_user, users[0])
+        assert len(body["meses"]) == 3
+        assert body["categorias"] == []
+
+
+class TestComparison:
+    """GET /statistics/comparison — Seção 2 do Resumo: atual vs anterior vs
+    média, totais e por categoria, base CONSUMO. `meses=N` = meses FECHADOS
+    (o baseline da média); o corrente NUNCA entra na média (comparação não
+    circular). hoje congelado em 15/07/2026 (fixture clock)."""
+
+    def _get(self, as_user, user, **params):
+        resp = as_user(user).get("/statistics/comparison", params=params)
+        assert resp.status_code == 200
+        return resp.json()
+
+    def _gastos_mai_jun_jul(self, session, uid):
+        """Despesas à vista: mai=100, jun=200 (fechados), jul=600 (corrente)."""
+        _add_avista(session, uid, dt.date(2026, 5, 10), valor="100.00",
+                    categoria="Mercado")
+        _add_avista(session, uid, dt.date(2026, 6, 10), valor="200.00",
+                    categoria="Mercado")
+        _add_avista(session, uid, dt.date(2026, 7, 10), valor="600.00",
+                    categoria="Mercado")
+
+    def test_media_so_dos_meses_fechados_nao_inclui_o_corrente(
+        self, session, users, as_user
+    ):
+        # O teste do AJUSTE 1: com hoje=jul e meses=2, media = média de
+        # mai+jun = 150.00 — NÃO (mai+jun+jul)/3 = 300.00.
+        self._gastos_mai_jun_jul(session, users[0].id)
+
+        totais = self._get(as_user, users[0], meses=2)["totais"]
+        assert _q(totais["media"]["despesas"]) == Decimal("150.00")
+        assert _q(totais["atual"]["despesas"]) == Decimal("600.00")
+        assert _q(totais["anterior"]["despesas"]) == Decimal("200.00")  # jun
+
+    def test_variacoes_vs_anterior_e_vs_media(self, session, users, as_user):
+        self._gastos_mai_jun_jul(session, users[0].id)
+
+        totais = self._get(as_user, users[0], meses=2)["totais"]
+        # (600−200)/200 = +200%; (600−150)/150 = +300%
+        assert _q(totais["variacao_vs_anterior"]["despesas"]) == Decimal("200.00")
+        assert _q(totais["variacao_vs_media"]["despesas"]) == Decimal("300.00")
+        # sem receitas: base zero → variação None (nunca inventa %)
+        assert totais["variacao_vs_anterior"]["receitas"] is None
+        assert totais["variacao_vs_media"]["receitas"] is None
+
+    def test_ancora_e_consistencia_com_o_consumo_do_monthly(
+        self, session, users, as_user
+    ):
+        # endpoint-vs-endpoint: `atual` == campo consumo do /monthly corrente.
+        self._gastos_mai_jun_jul(session, users[0].id)
+        _add_recorrencia(session, users[0].id, dia=5)  # receita em todos os meses
+
+        body = self._get(as_user, users[0])
+        assert (body["mes"], body["ano"]) == (7, 2026)
+        monthly = as_user(users[0]).get(
+            "/statistics/monthly", params={"mes": 7, "ano": 2026}
+        ).json()
+        for campo in ("receitas", "despesas", "saldo"):
+            assert _q(body["totais"]["atual"][campo]) == _q(monthly["consumo"][campo])
+
+    def test_receitas_nos_totais_e_invariante_do_saldo_da_media(
+        self, session, users, as_user
+    ):
+        self._gastos_mai_jun_jul(session, users[0].id)
+        _add_recorrencia(session, users[0].id, dia=5)  # 10000/mês desde jan
+
+        totais = self._get(as_user, users[0], meses=2)["totais"]
+        assert _q(totais["media"]["receitas"]) == Decimal("10000.00")
+        assert _q(totais["variacao_vs_media"]["receitas"]) == Decimal("0.00")
+        # saldo da média = receitas − despesas da média (invariante preservada)
+        assert _q(totais["media"]["saldo"]) == (
+            _q(totais["media"]["receitas"]) - _q(totais["media"]["despesas"])
+        )
+
+    def test_categoria_que_sumiu_atual_zero_variacao_menos_100(
+        self, session, users, as_user
+    ):
+        # Transporte só em jun: no corrente é base alinhada em zero.
+        _add_avista(session, users[0].id, dt.date(2026, 6, 10), valor="80.00",
+                    categoria="Transporte")
+
+        (transporte,) = self._get(as_user, users[0], meses=2)["categorias"]
+        assert transporte["categoria"] == "Transporte"
+        assert _q(transporte["atual"]) == Decimal("0.00")
+        assert _q(transporte["anterior"]) == Decimal("80.00")
+        assert _q(transporte["media"]) == Decimal("40.00")  # 80/2 (N fixo)
+        assert _q(transporte["variacao_vs_anterior"]) == Decimal("-100.00")
+        assert _q(transporte["variacao_vs_media"]) == Decimal("-100.00")
+
+    def test_categoria_que_surgiu_base_zero_variacao_none(
+        self, session, users, as_user
+    ):
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="90.00",
+                    categoria="Lazer")
+
+        (lazer,) = self._get(as_user, users[0], meses=2)["categorias"]
+        assert _q(lazer["atual"]) == Decimal("90.00")
+        assert _q(lazer["anterior"]) == _q(lazer["media"]) == Decimal("0.00")
+        assert lazer["variacao_vs_anterior"] is None  # base zero — nunca "+∞"
+        assert lazer["variacao_vs_media"] is None
+
+    def test_media_denominador_fixo_e_quantize(self, session, users, as_user):
+        # Gasto em 1 dos 3 fechados (mai): media = 100/3 = 33.33 (HALF_UP),
+        # não 100/1 — mês ausente conta como zero no denominador fixo.
+        _add_avista(session, users[0].id, dt.date(2026, 5, 10), valor="100.00",
+                    categoria="Mercado")
+
+        (mercado,) = self._get(as_user, users[0], meses=3)["categorias"]
+        assert _q(mercado["media"]) == Decimal("33.33")
+
+    def test_categorias_ordenadas_por_atual_desc(self, session, users, as_user):
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="50.00",
+                    categoria="Transporte")
+        _add_avista(session, users[0].id, dt.date(2026, 7, 11), valor="300.00",
+                    categoria="Mercado")
+
+        nomes = [c["categoria"] for c in self._get(as_user, users[0])["categorias"]]
+        assert nomes == ["Mercado", "Transporte"]
+
+    def test_meses_1_media_igual_ao_unico_fechado(self, session, users, as_user):
+        # ge=1: com 1 mês fechado, media == anterior (jun) — o mínimo válido.
+        self._gastos_mai_jun_jul(session, users[0].id)
+
+        totais = self._get(as_user, users[0], meses=1)["totais"]
+        assert _q(totais["media"]["despesas"]) == _q(
+            totais["anterior"]["despesas"]
+        ) == Decimal("200.00")
+
+    def test_sem_dados_zeros_e_variacoes_none(self, users, as_user):
+        body = self._get(as_user, users[0])
+        assert body["categorias"] == []
+        assert _q(body["totais"]["atual"]["despesas"]) == Decimal("0.00")
+        assert body["totais"]["variacao_vs_anterior"]["despesas"] is None
+
+    def test_limites_ge_1_le_60(self, users, as_user):
+        assert len(self._get(as_user, users[0], meses=60)) == 4  # 200 OK
+        for invalido in (0, 61):
+            resp = as_user(users[0]).get(
+                "/statistics/comparison", params={"meses": invalido}
+            )
+            assert resp.status_code == 422
+
+
+class TestHighlights:
+    """GET /statistics/highlights — destaques do mês (Resumo, Seção 1), base
+    CONSUMO: a MESMA lista do donut (recorrência concorre, pela data da
+    ocorrência). Contagem decomposta lançadas/recorrentes, com o invariante
+    total == lancadas + recorrentes. hoje congelado em 15/07/2026."""
+
+    def _get(self, as_user, user, mes=7, ano=2026):
+        resp = as_user(user).get(
+            "/statistics/highlights", params={"mes": mes, "ano": ano}
+        )
+        assert resp.status_code == 200
+        return resp.json()
+
+    def _add_despesa(self, session, uid, data, valor, descricao, categoria="Mercado"):
+        session.add(
+            Transacao(
+                usuario_id=uid, tipo="despesa", data=data, descricao=descricao,
+                valor=Decimal(valor), categoria=categoria, forma_pagamento="Pix",
+            )
+        )
+        session.commit()
+
+    def test_maior_despesa_com_descricao_categoria_e_data(
+        self, session, users, as_user
+    ):
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 10), "80.00",
+                          "feira")
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 12), "250.00",
+                          "tênis", categoria="Vestuário")
+
+        maior = self._get(as_user, users[0])["maior_despesa"]
+        assert _q(maior["valor"]) == Decimal("250.00")
+        assert maior["descricao"] == "tênis"
+        assert maior["categoria"] == "Vestuário"
+        assert maior["data"] == "2026-07-12"
+
+    def test_dia_de_maior_gasto_soma_o_dia_inteiro(self, session, users, as_user):
+        # dia 10 soma 110 (50+60) e ganha do dia 12 (100), mesmo sem ter a
+        # maior despesa individual.
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 10), "50.00", "a")
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 10), "60.00", "b")
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 12), "100.00", "c")
+
+        body = self._get(as_user, users[0])
+        assert body["dia_maior_gasto"]["data"] == "2026-07-10"
+        assert _q(body["dia_maior_gasto"]["total"]) == Decimal("110.00")
+        assert _q(body["maior_despesa"]["valor"]) == Decimal("100.00")  # a do dia 12
+
+    def test_recorrencia_concorre_aos_destaques(self, session, users, as_user):
+        _add_recorrencia(session, users[0].id, dia=5, tipo="despesa",
+                         categoria="Moradia", valor="2000.00")
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 10), "80.00", "feira")
+
+        body = self._get(as_user, users[0])
+        assert body["maior_despesa"]["descricao"] == "Moradia"
+        assert body["maior_despesa"]["data"] == "2026-07-05"  # ocorrência clampada
+        assert body["dia_maior_gasto"]["data"] == "2026-07-05"
+        assert _q(body["dia_maior_gasto"]["total"]) == Decimal("2000.00")
+
+    def test_invariante_total_igual_lancadas_mais_recorrentes(
+        self, session, users, as_user
+    ):
+        # O teste do AJUSTE 2, com AMBAS as fontes: 2 Transacao (receita E
+        # despesa — a contagem é de movimentações, não só gasto) + 2
+        # ocorrências de recorrência.
+        _add_avista(session, users[0].id, dt.date(2026, 7, 3), tipo="receita",
+                    valor="500.00")
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 10), "80.00", "feira")
+        _add_recorrencia(session, users[0].id, dia=5)  # receita recorrente
+        _add_recorrencia(session, users[0].id, dia=8, tipo="despesa",
+                         categoria="Moradia", valor="2000.00")
+
+        body = self._get(as_user, users[0])
+        assert body["num_transacoes_total"] == 4
+        assert body["num_lancadas"] == 2
+        assert body["num_recorrentes"] == 2
+        assert body["num_transacoes_total"] == (
+            body["num_lancadas"] + body["num_recorrentes"]
+        )
+
+    def test_empate_de_valor_ganha_a_data_mais_recente(self, session, users, as_user):
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 5), "100.00", "antiga")
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 20), "100.00", "recente")
+
+        body = self._get(as_user, users[0])
+        assert body["maior_despesa"]["descricao"] == "recente"
+        # empate no total do dia também: ganha o dia mais recente
+        assert body["dia_maior_gasto"]["data"] == "2026-07-20"
+
+    def test_consumo_parcelada_destaca_no_mes_da_compra(self, session, users, as_user):
+        _add_parcelada(session, users[0].id, mes0=6)  # compra 15/jun, 12x
+
+        jun = self._get(as_user, users[0], mes=6)
+        assert _q(jun["maior_despesa"]["valor"]) == Decimal("1200.00")  # valor cheio
+        assert jun["num_lancadas"] == 1  # a pai conta UMA vez
+
+        jul = self._get(as_user, users[0], mes=7)  # a parcela de jul NÃO conta
+        assert jul["maior_despesa"] is None
+        assert jul["num_transacoes_total"] == 0
+
+    def test_mes_vazio_campos_none_e_contagens_zero(self, users, as_user):
+        body = self._get(as_user, users[0])
+        assert body["maior_despesa"] is None
+        assert body["dia_maior_gasto"] is None
+        assert body["num_transacoes_total"] == 0
+        assert body["num_lancadas"] == body["num_recorrentes"] == 0
+
+    def test_mes_so_com_receitas_sem_destaques_mas_conta(self, session, users, as_user):
+        _add_avista(session, users[0].id, dt.date(2026, 7, 3), tipo="receita",
+                    valor="500.00")
+
+        body = self._get(as_user, users[0])
+        assert body["maior_despesa"] is None  # destaque é de DESPESA
+        assert body["dia_maior_gasto"] is None
+        assert body["num_transacoes_total"] == 1  # mas a movimentação conta
+
+    def test_validacao_de_parametros(self, users, as_user):
+        for params in ({"mes": 0, "ano": 2026}, {"mes": 13, "ano": 2026},
+                       {"mes": 7, "ano": 1999}, {"mes": 7}, {}):
+            resp = as_user(users[0]).get("/statistics/highlights", params=params)
+            assert resp.status_code == 422, params
+
+
+class TestCoverage:
+    """GET /statistics/coverage — competências DISTINTAS com dado de CONSUMO
+    até o corrente (florescimento do Resumo: ≥2 → S2, ≥3 → S3). Base consumo:
+    parcelada 12x = UM mês (o da compra); vigência de recorrência expande em
+    competências, clampada no corrente; futuro não conta. hoje congelado em
+    15/07/2026 (fixture clock)."""
+
+    def _coverage(self, as_user, user):
+        resp = as_user(user).get("/statistics/coverage")
+        assert resp.status_code == 200
+        return resp.json()["meses_com_dados"]
+
+    def test_sem_dados_zero(self, users, as_user):
+        assert self._coverage(as_user, users[0]) == 0
+
+    def test_competencias_distintas_nao_transacoes(self, session, users, as_user):
+        # 2 transações no mesmo mês = 1 competência; + 1 noutro mês = 2.
+        _add_avista(session, users[0].id, dt.date(2026, 6, 5))
+        _add_avista(session, users[0].id, dt.date(2026, 6, 20))
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10))
+
+        assert self._coverage(as_user, users[0]) == 2
+
+    def test_parcelada_12x_conta_um_mes_nao_doze(self, session, users, as_user):
+        # A justificativa da base CONSUMO: por fluxo seriam 12 competências
+        # de fatura; o gasto aconteceu num mês só — o da compra.
+        _add_parcelada(session, users[0].id, mes0=1)  # 12x desde jan/2026
+
+        assert self._coverage(as_user, users[0]) == 1
+
+    def test_vigencia_aberta_expande_ate_o_corrente(self, session, users, as_user):
+        # desde abr/2026, sem fim: abr, mai, jun, jul (corrente) = 4 — o
+        # futuro que a vigência aberta geraria NÃO conta.
+        _add_recorrencia(session, users[0].id, dia=5, mes_inicio=4)
+
+        assert self._coverage(as_user, users[0]) == 4
+
+    def test_vigencia_fechada_no_passado_conta_o_periodo(self, session, users, as_user):
+        _add_recorrencia(session, users[0].id, dia=5, mes_inicio=1,
+                         mes_fim=3, ano_fim=2026)  # jan–mar
+
+        assert self._coverage(as_user, users[0]) == 3
+
+    def test_clamp_no_corrente_futuro_nao_conta(self, session, users, as_user):
+        # Pós-datada DENTRO do corrente (20/jul > hoje 15) conta — a
+        # competência é o corrente; ago/2026 e vigência a partir de out, não.
+        _add_avista(session, users[0].id, dt.date(2026, 7, 20))
+        _add_avista(session, users[0].id, dt.date(2026, 8, 10))
+        _add_recorrencia(session, users[0].id, dia=5, mes_inicio=10)
+
+        assert self._coverage(as_user, users[0]) == 1  # só jul
+
+    def test_uniao_transacao_e_vigencia_sem_dupla_contagem(
+        self, session, users, as_user
+    ):
+        # vigência mai–jun + transação em jun: {mai, jun} = 2, não 3.
+        _add_recorrencia(session, users[0].id, dia=5, mes_inicio=5,
+                         mes_fim=6, ano_fim=2026)
+        _add_avista(session, users[0].id, dt.date(2026, 6, 10))
+
+        assert self._coverage(as_user, users[0]) == 2
+
+    def test_vigencia_fechada_no_futuro_clampa_no_corrente(
+        self, session, users, as_user
+    ):
+        # jun–set: conta jun e jul (corrente); ago/set ficam para quando chegarem.
+        _add_recorrencia(session, users[0].id, dia=5, mes_inicio=6,
+                         mes_fim=9, ano_fim=2026)
+
+        assert self._coverage(as_user, users[0]) == 2
+
+    def test_isolamento_entre_usuarios(self, session, users, as_user):
+        _add_avista(session, users[1].id, dt.date(2026, 6, 10))
+
+        assert self._coverage(as_user, users[0]) == 0
+        assert self._coverage(as_user, users[1]) == 1
+
+    def test_florescimento_cresce_com_o_historico(self, session, users, as_user):
+        # A régua do front na prática: 1 mês → só S1; 2 → S2; 3 → S3.
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10))
+        assert self._coverage(as_user, users[0]) == 1
+        _add_avista(session, users[0].id, dt.date(2026, 6, 10))
+        assert self._coverage(as_user, users[0]) == 2
+        _add_avista(session, users[0].id, dt.date(2026, 3, 10))
+        assert self._coverage(as_user, users[0]) == 3

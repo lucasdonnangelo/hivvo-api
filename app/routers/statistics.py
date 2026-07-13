@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session
@@ -8,19 +8,33 @@ from app.core.database import get_session
 from app.models.user import Usuario
 from app.schemas.statistics import (
     AnualResponse,
+    CategoriaComparacao,
     CategoriasResponse,
+    ComparacaoResponse,
+    CoverageResponse,
+    DiaMaiorGasto,
+    EvolucaoCategoriasResponse,
+    EvolucaoResponse,
+    HighlightsResponse,
     LeituraMes,
+    MaiorDespesa,
     MensalResponse,
     MesAno,
     MesDefaultResponse,
     MesEvolucao,
+    MesEvolucaoConsumo,
     MesProjecao,
     ProjecaoResponse,
+    SerieCategoria,
+    TotaisComparacao,
+    VariacaoTripla,
 )
 from app.services.estatisticas import (
     _agregar,
     _categorias,
+    _competencias_com_consumo,
     _lancamentos_ano,
+    _lancamentos_consumo_horizonte,
     _lancamentos_consumo_mes,
     _lancamentos_mes,
     _mes_seguinte,
@@ -39,6 +53,22 @@ def _mes_anterior(mes: int, ano: int) -> tuple[int, int]:
     if mes == 1:
         return 12, ano - 1
     return mes - 1, ano
+
+
+def _despesas_por_categoria(lancamentos) -> dict[str, Decimal]:
+    """Total de despesas por categoria de uma lista de lançamentos — a célula
+    básica do /evolution/categories e do /comparison (só despesa: categoria é
+    dimensão de gasto, como no donut)."""
+    grupos: dict[str, Decimal] = {}
+    for lanc in lancamentos:
+        if lanc.tipo == "despesa":
+            grupos[lanc.categoria] = grupos.get(lanc.categoria, _ZERO) + lanc.valor
+    return grupos
+
+
+def _media(valores: list[Decimal], n: int) -> Decimal:
+    """Média com denominador FIXO n (mês ausente = zero), quantize 0.01."""
+    return (sum(valores, _ZERO) / n).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 @router.get("/monthly", response_model=MensalResponse)
@@ -153,6 +183,180 @@ def projection_stats(
         mes, ano = _mes_seguinte(mes, ano)
 
     return ProjecaoResponse(series=series)
+
+
+@router.get("/evolution", response_model=EvolucaoResponse)
+def evolution_stats(
+    meses: int = Query(3, ge=1, le=60),
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Série do Resumo (Seção 3, PLANO_RESUMO) — o espelho PRA TRÁS do
+    # /projection, em base CONSUMO (o "gasto" do Resumo é consumo, coerente
+    # com o donut do Dashboard). Âncora = mês corrente, incluído; cronológica;
+    # mês sem dado entra com zeros. Fonte única: _lancamentos_consumo_horizonte
+    # (cache por ano, sem N+1).
+    series = []
+    for mes, ano, lancamentos in _lancamentos_consumo_horizonte(
+        session, current_user.id, meses
+    ):
+        rec, desp = _agregar(lancamentos)
+        series.append(
+            MesEvolucaoConsumo(
+                mes=mes, ano=ano, receitas=rec, despesas=desp, saldo=rec - desp
+            )
+        )
+    return EvolucaoResponse(series=series)
+
+
+@router.get("/evolution/categories", response_model=EvolucaoCategoriasResponse)
+def evolution_categories_stats(
+    meses: int = Query(3, ge=1, le=60),
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Série por categoria (Seção 3 "evolução de uma categoria" + base da
+    # comparação) — CONSUMO, só despesas (categoria é dimensão de gasto, como
+    # no donut). Mesma fonte única do /evolution: as duas séries nunca
+    # divergem. Categoria ausente num mês = 0.00 (série alinhada ao eixo).
+    serie = _lancamentos_consumo_horizonte(session, current_user.id, meses)
+    grupos_mes = [_despesas_por_categoria(lanc) for _, _, lanc in serie]
+
+    categorias = sorted(
+        (
+            SerieCategoria(
+                categoria=nome,
+                total=sum((g.get(nome, _ZERO) for g in grupos_mes), _ZERO),
+                serie=[g.get(nome, _ZERO) for g in grupos_mes],
+            )
+            for nome in {nome for g in grupos_mes for nome in g}
+        ),
+        key=lambda c: (-c.total, c.categoria),
+    )
+    return EvolucaoCategoriasResponse(
+        meses=[MesAno(mes=m, ano=a) for m, a, _ in serie],
+        categorias=categorias,
+    )
+
+
+@router.get("/comparison", response_model=ComparacaoResponse)
+def comparison_stats(
+    meses: int = Query(3, ge=1, le=60),
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Seção 2 do Resumo (PLANO_RESUMO) — mês ATUAL vs ANTERIOR vs MÉDIA,
+    # totais e por categoria, base CONSUMO. `meses=N` conta meses FECHADOS:
+    # a média é o BASELINE dos N meses anteriores ao corrente (o corrente,
+    # parcial, não a contamina — a comparação não é circular); o horizonte
+    # buscado é N+1 (os N fechados + o corrente). anterior = o último fechado.
+    # Mesma fonte única do /evolution → as telas nunca divergem.
+    serie = _lancamentos_consumo_horizonte(session, current_user.id, meses + 1)
+    mes, ano = serie[-1][0], serie[-1][1]
+
+    agregados = [_agregar(lancamentos) for _, _, lancamentos in serie]
+    fechados = agregados[:-1]
+    rec_atual, desp_atual = agregados[-1]
+    rec_ant, desp_ant = agregados[-2]
+    media_rec = _media([r for r, _ in fechados], meses)
+    media_desp = _media([d for _, d in fechados], meses)
+
+    def _leitura(rec: Decimal, desp: Decimal) -> LeituraMes:
+        return LeituraMes(receitas=rec, despesas=desp, saldo=rec - desp)
+
+    def _tripla(base: LeituraMes) -> VariacaoTripla:
+        return VariacaoTripla(
+            receitas=_variacao(rec_atual, base.receitas),
+            despesas=_variacao(desp_atual, base.despesas),
+            saldo=_variacao(rec_atual - desp_atual, base.saldo),
+        )
+
+    anterior = _leitura(rec_ant, desp_ant)
+    media = _leitura(media_rec, media_desp)
+    totais = TotaisComparacao(
+        atual=_leitura(rec_atual, desp_atual),
+        anterior=anterior,
+        media=media,
+        variacao_vs_anterior=_tripla(anterior),
+        variacao_vs_media=_tripla(media),
+    )
+
+    # Por categoria (despesas): alinhamento pela UNIÃO dos nomes com gasto em
+    # qualquer mês do horizonte — ausente num mês = base zero (_variacao trata:
+    # surgiu → None, sumiu → −100%); a média divide pelo N fixo de fechados.
+    grupos_mes = [_despesas_por_categoria(lanc) for _, _, lanc in serie]
+    categorias = []
+    for nome in {nome for g in grupos_mes for nome in g}:
+        atual = grupos_mes[-1].get(nome, _ZERO)
+        ant = grupos_mes[-2].get(nome, _ZERO)
+        med = _media([g.get(nome, _ZERO) for g in grupos_mes[:-1]], meses)
+        categorias.append(
+            CategoriaComparacao(
+                categoria=nome,
+                atual=atual,
+                anterior=ant,
+                media=med,
+                variacao_vs_anterior=_variacao(atual, ant),
+                variacao_vs_media=_variacao(atual, med),
+            )
+        )
+    categorias.sort(key=lambda c: (-c.atual, c.categoria))
+
+    return ComparacaoResponse(mes=mes, ano=ano, totais=totais, categorias=categorias)
+
+
+@router.get("/highlights", response_model=HighlightsResponse)
+def highlights_stats(
+    mes: int = Query(..., ge=1, le=12),
+    ano: int = Query(..., ge=2000),
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Destaques do mês (Resumo, Seção 1 — PLANO_RESUMO), base CONSUMO: a
+    # MESMA lista do donut do /monthly (fonte única — a recorrência concorre,
+    # com data/descricao carregados pela trilha detalhada). Empates
+    # determinísticos: maior despesa por (valor, data mais recente,
+    # descrição); dia por (total, dia mais recente). Mês vazio → None/0.
+    lancamentos = _lancamentos_consumo_mes(session, current_user.id, mes, ano)
+    despesas = [l for l in lancamentos if l.tipo == "despesa"]
+
+    maior_despesa = None
+    dia_maior_gasto = None
+    if despesas:
+        top = max(despesas, key=lambda l: (l.valor, l.data, l.descricao))
+        maior_despesa = MaiorDespesa(
+            valor=top.valor, descricao=top.descricao,
+            categoria=top.categoria, data=top.data,
+        )
+        por_dia: dict = {}
+        for l in despesas:
+            por_dia[l.data] = por_dia.get(l.data, _ZERO) + l.valor
+        data, total = max(por_dia.items(), key=lambda item: (item[1], item[0]))
+        dia_maior_gasto = DiaMaiorGasto(data=data, total=total)
+
+    num_recorrentes = sum(1 for l in lancamentos if l.recorrente)
+    return HighlightsResponse(
+        mes=mes,
+        ano=ano,
+        maior_despesa=maior_despesa,
+        dia_maior_gasto=dia_maior_gasto,
+        num_transacoes_total=len(lancamentos),
+        num_lancadas=len(lancamentos) - num_recorrentes,
+        num_recorrentes=num_recorrentes,
+    )
+
+
+@router.get("/coverage", response_model=CoverageResponse)
+def coverage_stats(
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Florescimento do Resumo (PLANO_RESUMO §Limiares): o backend só conta —
+    # quem decide as seções é o front (≥2 → S2, ≥3 → S3). Base CONSUMO com
+    # clamp no mês corrente — ver _competencias_com_consumo.
+    return CoverageResponse(
+        meses_com_dados=_competencias_com_consumo(session, current_user.id)
+    )
 
 
 @router.get("/yearly", response_model=AnualResponse)

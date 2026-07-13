@@ -229,10 +229,13 @@ hivvo-api/
 | Cartões | `GET /cards`, `POST /cards`, `PUT /cards/{id}`, `DELETE /cards/{id}` |
 | Faturas | `GET /cards/{id}/invoices`, `GET /cards/{id}/invoices/{month}` |
 | Parcelas | `GET /installments`, `PUT /installments/{id}`, `DELETE /installments/{id}` |
-| Estatísticas | `GET /statistics/monthly`, `GET /statistics/yearly`, `GET /statistics/categories` |
+| Estatísticas | `GET /statistics/monthly`, `GET /statistics/default-month`, `GET /statistics/projection`, `GET /statistics/yearly` †, `GET /statistics/categories` |
+| Estatísticas — Resumo/análise (13/07/2026) | `GET /statistics/evolution`, `GET /statistics/evolution/categories`, `GET /statistics/comparison`, `GET /statistics/highlights`, `GET /statistics/coverage` — base CONSUMO, fonte única `_lancamentos_consumo_horizonte` (PLANO_RESUMO.md) |
 | IA | `POST /ai/chat`, `GET /ai/historico`, `DELETE /ai/historico` |
 
 > **Planejado (pré-deploy):** prefixar tudo sob `/api/v1` para estabilidade de contrato com clientes (T-28).
+>
+> † **`/statistics/yearly` — candidato a aposentadoria (13/07/2026):** com o `/evolution` (série histórica do Resumo), o yearly perde o papel de "evolução mensal" — mas **não são equivalentes** (yearly = FLUXO em ano-calendário fixo; evolution = CONSUMO em horizonte relativo). Neste repo só testes/docs o referenciam. **Não remover** antes de confirmar que o hivvo-web não o consome.
 
 ### Decisões de domínio (fixas)
 

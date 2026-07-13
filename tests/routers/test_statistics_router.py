@@ -29,10 +29,10 @@ def clock(mocker):
 
 
 def _add_recorrencia(session, uid, dia, valor="10000.00", mes_inicio=1, ano_inicio=2026,
-                     mes_fim=None, ano_fim=None):
+                     mes_fim=None, ano_fim=None, tipo="receita", categoria="Salário"):
     rec = Recorrencia(
-        usuario_id=uid, tipo="receita", categoria="Salário",
-        forma_pagamento="Pix", dia_do_mes=dia, descricao="Salário",
+        usuario_id=uid, tipo=tipo, categoria=categoria,
+        forma_pagamento="Pix", dia_do_mes=dia, descricao=categoria,
     )
     session.add(rec)
     session.flush()
@@ -155,12 +155,12 @@ class TestMonthlyConsumo:
         assert body["categorias_consumo"] == []
 
 
-def _add_avista(session, uid, data, tipo="despesa", valor="50.00"):
+def _add_avista(session, uid, data, tipo="despesa", valor="50.00", categoria="Outros"):
     """Transação à vista/receita (não parcelada, não faturada) — Fonte 3."""
     session.add(
         Transacao(
             usuario_id=uid, tipo=tipo, data=data, descricao="à vista",
-            valor=Decimal(valor), categoria="Outros", forma_pagamento="Pix",
+            valor=Decimal(valor), categoria=categoria, forma_pagamento="Pix",
         )
     )
     session.commit()
@@ -467,3 +467,174 @@ class TestProjection:
                 "/statistics/projection", params={"meses": invalido}
             )
             assert resp.status_code == 422
+
+
+class TestEvolution:
+    """GET /statistics/evolution — série CONSUMO dos últimos N meses (Resumo,
+    Seção 3, PLANO_RESUMO): o espelho PRA TRÁS do /projection. Âncora = mês
+    corrente INCLUÍDO (meses=N = corrente + N−1 pra trás), cronológica, zeros
+    para mês sem dado. hoje congelado em 15/07/2026 (fixture clock)."""
+
+    def _series(self, as_user, user, **params):
+        resp = as_user(user).get("/statistics/evolution", params=params)
+        assert resp.status_code == 200
+        return resp.json()["series"]
+
+    def test_default_3_meses_cronologico_terminando_no_corrente(self, users, as_user):
+        series = self._series(as_user, users[0])
+        assert [(i["mes"], i["ano"]) for i in series] == [
+            (5, 2026), (6, 2026), (7, 2026)
+        ]
+        for item in series:  # sem dados → zeros, série contínua
+            assert _q(item["receitas"]) == Decimal("0.00")
+            assert _q(item["despesas"]) == Decimal("0.00")
+            assert _q(item["saldo"]) == Decimal("0.00")
+
+    def test_consumo_parcelada_inteira_no_mes_da_compra(self, session, users, as_user):
+        # compra 12x em 15/jun: consumo conta R$1200 em jun; a parcela de jul
+        # NÃO conta (é fatia de fluxo — o /evolution é a lente do gasto).
+        _add_parcelada(session, users[0].id, mes0=6)
+
+        series = self._series(as_user, users[0])
+        assert _q(series[0]["despesas"]) == Decimal("0.00")     # mai
+        assert _q(series[1]["despesas"]) == Decimal("1200.00")  # jun: valor cheio
+        assert _q(series[2]["despesas"]) == Decimal("0.00")     # jul: sem compra
+
+    def test_bate_com_o_consumo_do_monthly_mes_a_mes(self, session, users, as_user):
+        # endpoint-vs-endpoint: a fonte única não diverge do Dashboard — cada
+        # item da série == campo `consumo` do /monthly do mesmo mês.
+        _add_recorrencia(session, users[0].id, dia=5)
+        _add_parcelada(session, users[0].id, mes0=5)
+        _add_avista(session, users[0].id, dt.date(2026, 6, 10))
+
+        for item in self._series(as_user, users[0], meses=4):
+            monthly = as_user(users[0]).get(
+                "/statistics/monthly", params={"mes": item["mes"], "ano": item["ano"]}
+            ).json()
+            assert _q(item["receitas"]) == _q(monthly["consumo"]["receitas"])
+            assert _q(item["despesas"]) == _q(monthly["consumo"]["despesas"])
+            assert _q(item["saldo"]) == _q(monthly["consumo"]["saldo"])
+
+    def test_virada_de_ano_no_horizonte(self, mocker, session, users, as_user):
+        # hoje = fev/2027; meses=4 cruza a virada: nov/2026..fev/2027
+        mocker.patch(
+            "app.services.estatisticas.hoje", return_value=dt.date(2027, 2, 15)
+        )
+        _add_avista(session, users[0].id, dt.date(2026, 12, 10), valor="70.00")
+
+        series = self._series(as_user, users[0], meses=4)
+        assert [(i["mes"], i["ano"]) for i in series] == [
+            (11, 2026), (12, 2026), (1, 2027), (2, 2027)
+        ]
+        assert _q(series[1]["despesas"]) == Decimal("70.00")
+
+    def test_mes_vazio_no_meio_entra_com_zeros(self, session, users, as_user):
+        _add_avista(session, users[0].id, dt.date(2026, 5, 10), tipo="receita",
+                    valor="100.00")
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="30.00")
+
+        series = self._series(as_user, users[0])
+        assert _q(series[0]["saldo"]) == Decimal("100.00")
+        assert _q(series[1]["receitas"]) == Decimal("0.00")  # jun vazio
+        assert _q(series[1]["despesas"]) == Decimal("0.00")
+        assert _q(series[2]["saldo"]) == Decimal("-30.00")
+
+    def test_isolamento_entre_usuarios(self, session, users, as_user):
+        _add_avista(session, users[1].id, dt.date(2026, 7, 10))
+
+        series = self._series(as_user, users[0])
+        assert _q(series[2]["despesas"]) == Decimal("0.00")
+
+    def test_meses_1_e_limites_1_a_60(self, users, as_user):
+        series = self._series(as_user, users[0], meses=1)
+        assert [(i["mes"], i["ano"]) for i in series] == [(7, 2026)]
+        assert len(self._series(as_user, users[0], meses=60)) == 60
+        for invalido in (0, 61):
+            resp = as_user(users[0]).get(
+                "/statistics/evolution", params={"meses": invalido}
+            )
+            assert resp.status_code == 422
+
+
+class TestEvolutionCategories:
+    """GET /statistics/evolution/categories — série por categoria (CONSUMO, só
+    despesas), categoria-major: cada `serie` alinhada por índice ao eixo
+    `meses`, zeros onde a categoria não teve gasto. hoje congelado em
+    15/07/2026 (fixture clock)."""
+
+    def _get(self, as_user, user, **params):
+        resp = as_user(user).get("/statistics/evolution/categories", params=params)
+        assert resp.status_code == 200
+        return resp.json()
+
+    def test_series_alinhadas_ao_eixo_com_zeros_e_ordenacao(
+        self, session, users, as_user
+    ):
+        _add_avista(session, users[0].id, dt.date(2026, 5, 10), valor="100.00",
+                    categoria="Mercado")
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="40.00",
+                    categoria="Mercado")
+        _add_avista(session, users[0].id, dt.date(2026, 6, 10), valor="60.00",
+                    categoria="Transporte")
+
+        body = self._get(as_user, users[0])
+        assert body["meses"] == [
+            {"mes": 5, "ano": 2026}, {"mes": 6, "ano": 2026}, {"mes": 7, "ano": 2026}
+        ]
+        # ordenação por total desc: Mercado (140) antes de Transporte (60)
+        assert [c["categoria"] for c in body["categorias"]] == ["Mercado", "Transporte"]
+        por_nome = {c["categoria"]: c for c in body["categorias"]}
+        assert [_q(v) for v in por_nome["Mercado"]["serie"]] == [
+            Decimal("100.00"), Decimal("0.00"), Decimal("40.00")
+        ]
+        assert [_q(v) for v in por_nome["Transporte"]["serie"]] == [
+            Decimal("0.00"), Decimal("60.00"), Decimal("0.00")
+        ]
+        assert _q(por_nome["Mercado"]["total"]) == Decimal("140.00")
+
+    def test_ultima_coluna_bate_com_o_donut_de_consumo_do_monthly(
+        self, session, users, as_user
+    ):
+        # endpoint-vs-endpoint: a coluna do mês corrente == categorias_consumo
+        # do /monthly (o Resumo é o aprofundamento do MESMO donut).
+        _add_parcelada(session, users[0].id, mes0=7)  # Eletrônicos 1200 em jul
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="80.00",
+                    categoria="Mercado")
+        _add_recorrencia(session, users[0].id, dia=5, tipo="despesa",
+                         categoria="Moradia", valor="2000.00")
+
+        body = self._get(as_user, users[0])
+        monthly = as_user(users[0]).get(
+            "/statistics/monthly", params={"mes": 7, "ano": 2026}
+        ).json()
+        ultima_coluna = {
+            c["categoria"]: _q(c["serie"][-1])
+            for c in body["categorias"]
+            if _q(c["serie"][-1]) != Decimal("0.00")
+        }
+        donut = {c["categoria"]: _q(c["total"]) for c in monthly["categorias_consumo"]}
+        assert ultima_coluna == donut
+
+    def test_receita_nao_vira_categoria(self, session, users, as_user):
+        _add_recorrencia(session, users[0].id, dia=5)  # receita Salário
+        _add_avista(session, users[0].id, dt.date(2026, 7, 3), tipo="receita",
+                    valor="500.00")
+
+        assert self._get(as_user, users[0])["categorias"] == []
+
+    def test_recorrencia_despesa_presente_em_todos_os_meses(
+        self, session, users, as_user
+    ):
+        _add_recorrencia(session, users[0].id, dia=5, tipo="despesa",
+                         categoria="Moradia", valor="2000.00")
+
+        body = self._get(as_user, users[0], meses=3)
+        (moradia,) = body["categorias"]
+        assert moradia["categoria"] == "Moradia"
+        assert [_q(v) for v in moradia["serie"]] == [Decimal("2000.00")] * 3
+        assert _q(moradia["total"]) == Decimal("6000.00")
+
+    def test_sem_dados_eixo_presente_categorias_vazias(self, users, as_user):
+        body = self._get(as_user, users[0])
+        assert len(body["meses"]) == 3
+        assert body["categorias"] == []

@@ -435,6 +435,52 @@ def _lancamentos_consumo_mes(
     return lancamentos
 
 
+def _lancamentos_consumo_ano(
+    session: Session,
+    usuario_id: int,
+    ano: int,
+    recs_com_vigencias: Optional[
+        list[tuple[Recorrencia, list[RecorrenciaVigencia]]]
+    ] = None,
+) -> dict[int, list[LancamentoFluxo]]:
+    """Lançamentos da visão CONSUMO do ano inteiro, agrupados por mês da compra.
+
+    O espelho consumo de :func:`_lancamentos_ano`: mesma semântica de 2 fontes
+    de :func:`_lancamentos_consumo_mes` (C1 = TODAS as transações por `data` —
+    a pai parcelada pelo valor cheio, a avulsa de cartão pela data, sem o
+    `continue` do fluxo; C4 = ocorrências de recorrência), escopada ao ano em
+    **3 queries fixas** (1 de transações + 2 da recorrência) — evita o N+1 de
+    chamar _lancamentos_consumo_mes N vezes no horizonte do Resumo
+    (PLANO_RESUMO §Backend). Consumo é integral (§Fase 3b D2): sem marcação
+    de realizado/a_pagar. Herda a limitação da Opção A (cancelamento
+    por-parcela não reflete — a pai não tem flag).
+
+    `recs_com_vigencias` opcional: quem varre vários anos (o horizonte) busca
+    as recorrências UMA vez e as reaproveita entre os anos.
+    """
+    por_mes: dict[int, list[LancamentoFluxo]] = {m: [] for m in range(1, 13)}
+
+    # C1: todas as transações do ano pela data (range sargável, padrão T-10).
+    inicio = dt.date(ano, 1, 1)
+    fim = dt.date(ano + 1, 1, 1)
+    for t in session.exec(
+        select(Transacao).where(
+            Transacao.usuario_id == usuario_id,
+            Transacao.data >= inicio,
+            Transacao.data < fim,
+        )
+    ).all():
+        por_mes[t.data.month].append(LancamentoFluxo(t.tipo, t.valor, t.categoria))
+
+    # C4: recorrências buscadas uma vez; os 12 meses aplicados em memória.
+    if recs_com_vigencias is None:
+        recs_com_vigencias = _recorrencias_com_vigencias(session, usuario_id)
+    for m in range(1, 13):
+        por_mes[m].extend(_ocorrencias_recorrentes(recs_com_vigencias, m, ano))
+
+    return por_mes
+
+
 def _lancamentos_ano(
     session: Session, usuario_id: int, ano: int
 ) -> dict[int, list[LancamentoFluxo]]:
@@ -547,6 +593,47 @@ def _mes_seguinte(mes: int, ano: int) -> tuple[int, int]:
     if mes == 12:
         return 1, ano + 1
     return mes + 1, ano
+
+
+def _mes_atras(mes: int, ano: int, n: int) -> tuple[int, int]:
+    """Competência n meses antes de (mes, ano), por aritmética de competência."""
+    total = ano * 12 + (mes - 1) - n
+    return total % 12 + 1, total // 12
+
+
+def _lancamentos_consumo_horizonte(
+    session: Session, usuario_id: int, meses: int
+) -> list[tuple[int, int, list[LancamentoFluxo]]]:
+    """Série CONSUMO dos últimos `meses` — o espelho PRA TRÁS do /projection.
+
+    Âncora = mês corrente (hoje()), INCLUÍDO: `meses=N` cobre o corrente +
+    (N−1) pra trás (PLANO_RESUMO §Backend). Retorna [(mes, ano, lançamentos)]
+    em ordem CRONOLÓGICA (o mais antigo primeiro; [-1] = corrente), série
+    contínua — mês sem dado vem com lista vazia (vira zeros na agregação).
+
+    Mesmo cache por ano do loop do /projection: itera pra frente, do início
+    ao corrente, e carrega _lancamentos_consumo_ano quando o ano muda — cada
+    ano no máximo 1 vez (≤ ceil(N/12)+1 anos), recorrências buscadas UMA vez
+    para o horizonte inteiro. Sem N+1. FONTE ÚNICA do Resumo: todos os
+    endpoints de análise temporal derivam daqui → zero drift entre eles e vs
+    o donut de consumo do Dashboard (/monthly).
+    """
+    h = hoje()
+    mes, ano = _mes_atras(h.month, h.year, meses - 1)
+    recs_com_vigencias = _recorrencias_com_vigencias(session, usuario_id)
+
+    serie: list[tuple[int, int, list[LancamentoFluxo]]] = []
+    por_mes: dict[int, list[LancamentoFluxo]] = {}
+    ano_carregado: Optional[int] = None
+    for _ in range(meses):
+        if ano != ano_carregado:
+            por_mes = _lancamentos_consumo_ano(
+                session, usuario_id, ano, recs_com_vigencias
+            )
+            ano_carregado = ano
+        serie.append((mes, ano, por_mes[mes]))
+        mes, ano = _mes_seguinte(mes, ano)
+    return serie
 
 
 def _tem_historico(session: Session, usuario_id: int, mes: int, ano: int) -> bool:

@@ -9,18 +9,23 @@ from app.models.user import Usuario
 from app.schemas.statistics import (
     AnualResponse,
     CategoriasResponse,
+    EvolucaoCategoriasResponse,
+    EvolucaoResponse,
     LeituraMes,
     MensalResponse,
     MesAno,
     MesDefaultResponse,
     MesEvolucao,
+    MesEvolucaoConsumo,
     MesProjecao,
     ProjecaoResponse,
+    SerieCategoria,
 )
 from app.services.estatisticas import (
     _agregar,
     _categorias,
     _lancamentos_ano,
+    _lancamentos_consumo_horizonte,
     _lancamentos_consumo_mes,
     _lancamentos_mes,
     _mes_seguinte,
@@ -153,6 +158,67 @@ def projection_stats(
         mes, ano = _mes_seguinte(mes, ano)
 
     return ProjecaoResponse(series=series)
+
+
+@router.get("/evolution", response_model=EvolucaoResponse)
+def evolution_stats(
+    meses: int = Query(3, ge=1, le=60),
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Série do Resumo (Seção 3, PLANO_RESUMO) — o espelho PRA TRÁS do
+    # /projection, em base CONSUMO (o "gasto" do Resumo é consumo, coerente
+    # com o donut do Dashboard). Âncora = mês corrente, incluído; cronológica;
+    # mês sem dado entra com zeros. Fonte única: _lancamentos_consumo_horizonte
+    # (cache por ano, sem N+1).
+    series = []
+    for mes, ano, lancamentos in _lancamentos_consumo_horizonte(
+        session, current_user.id, meses
+    ):
+        rec, desp = _agregar(lancamentos)
+        series.append(
+            MesEvolucaoConsumo(
+                mes=mes, ano=ano, receitas=rec, despesas=desp, saldo=rec - desp
+            )
+        )
+    return EvolucaoResponse(series=series)
+
+
+@router.get("/evolution/categories", response_model=EvolucaoCategoriasResponse)
+def evolution_categories_stats(
+    meses: int = Query(3, ge=1, le=60),
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Série por categoria (Seção 3 "evolução de uma categoria" + base da
+    # comparação) — CONSUMO, só despesas (categoria é dimensão de gasto, como
+    # no donut). Mesma fonte única do /evolution: as duas séries nunca
+    # divergem. Categoria ausente num mês = 0.00 (série alinhada ao eixo).
+    serie = _lancamentos_consumo_horizonte(session, current_user.id, meses)
+
+    grupos_mes: list[dict[str, Decimal]] = []
+    for _, _, lancamentos in serie:
+        grupos: dict[str, Decimal] = {}
+        for l in lancamentos:
+            if l.tipo == "despesa":
+                grupos[l.categoria] = grupos.get(l.categoria, _ZERO) + l.valor
+        grupos_mes.append(grupos)
+
+    categorias = sorted(
+        (
+            SerieCategoria(
+                categoria=nome,
+                total=sum((g.get(nome, _ZERO) for g in grupos_mes), _ZERO),
+                serie=[g.get(nome, _ZERO) for g in grupos_mes],
+            )
+            for nome in {nome for g in grupos_mes for nome in g}
+        ),
+        key=lambda c: (-c.total, c.categoria),
+    )
+    return EvolucaoCategoriasResponse(
+        meses=[MesAno(mes=m, ano=a) for m, a, _ in serie],
+        categorias=categorias,
+    )
 
 
 @router.get("/yearly", response_model=AnualResponse)

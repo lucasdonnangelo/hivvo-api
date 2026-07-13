@@ -26,8 +26,11 @@ from app.services.estatisticas import (
     _buscar_mes,
     _categorias,
     _lancamentos_ano,
+    _lancamentos_consumo_ano,
+    _lancamentos_consumo_horizonte,
     _lancamentos_consumo_mes,
     _lancamentos_mes,
+    _mes_atras,
     _soma_a_pagar,
 )
 from app.services.parcelas import _criar_parcelas
@@ -1101,3 +1104,139 @@ class TestConsumoMensal:
                 soma_fluxo += _agregar(_lancamentos_mes(session, 1, m, ano))[1]
         assert _q(soma_fluxo) == Decimal("100.00")
         assert _q(soma_fluxo) == _q(desp_consumo_jan)  # invariante exata, valor quebrado
+
+
+def _conta_selects(session, fn):
+    """Executa fn() contando os SELECTs emitidos (padrão dos testes de N+1)."""
+    selects: list[str] = []
+
+    def _conta(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            selects.append(statement)
+
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", _conta)
+    try:
+        fn()
+    finally:
+        event.remove(engine, "before_cursor_execute", _conta)
+    return selects
+
+
+class TestConsumoAnualEHorizonte:
+    """PLANO_RESUMO §Backend — a fonte única do Resumo: _lancamentos_consumo_ano
+    (o espelho consumo do _lancamentos_ano) e _lancamentos_consumo_horizonte
+    (o espelho PRA TRÁS do /projection: âncora = mês corrente INCLUÍDO,
+    meses=N = corrente + N−1 pra trás, cache por ano).
+
+    Invariante central: anual/horizonte batem mês a mês com
+    _lancamentos_consumo_mes — zero drift vs o donut do Dashboard."""
+
+    def test_consumo_anual_bate_com_mensal_mes_a_mes(self, session):
+        # Cenário cheio das 2 fontes do consumo: parcelada que atravessa anos
+        # (pai em ago), avulsa faturada (compra fev, fatura mar — consumo conta
+        # em FEV), à vista, receita versionada e despesa recorrente com fim.
+        _add_parcelada(session, "1200.00", 12, 8, 2026)
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 2, 25),
+                descricao="avulsa", valor=Decimal("300.00"), categoria="Eletrônicos",
+                forma_pagamento="Crédito", cartao_id=1, parcelado=False,
+                fatura_mes=3, fatura_ano=2026,
+            )
+        )
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 5, 10),
+                descricao="mercado", valor=Decimal("80.00"), categoria="Mercado",
+                forma_pagamento="Débito", parcelado=False,
+            )
+        )
+        session.commit()
+        rec = _add_recorrencia(session, mes_fim=7, ano_fim=2026)
+        session.add(
+            RecorrenciaVigencia(
+                recorrencia_id=rec.id, valor=Decimal("12000.00"),
+                mes_inicio=8, ano_inicio=2026,
+            )
+        )
+        session.commit()
+        _add_recorrencia(
+            session, tipo="despesa", categoria="Moradia", valor="2000.00",
+            mes_inicio=3, ano_inicio=2026, mes_fim=10, ano_fim=2026,
+        )
+
+        por_mes = _lancamentos_consumo_ano(session, 1, 2026)
+        for m in range(1, 13):
+            anual = tuple(map(_q, _agregar(por_mes[m])))
+            mensal = tuple(map(_q, _agregar(_lancamentos_consumo_mes(session, 1, m, 2026))))
+            assert anual == mensal, f"consumo diverge no mês {m}"
+
+        # consumo: a parcelada conta INTEIRA no mês da compra (ago)...
+        assert _q(_agregar(por_mes[8])[1]) == Decimal("3200.00")  # 1200 + Moradia 2000
+        # ...e as parcelas seguintes NÃO contam (set = só a Moradia)
+        assert _q(_agregar(por_mes[9])[1]) == Decimal("2000.00")
+
+    def test_consumo_ano_faz_numero_fixo_de_queries(self, session):
+        # Sem N+1: 3 SELECTs fixos (1 de transações + 2 da recorrência),
+        # independente de quantos meses têm dado. Parcelas nunca são lidas.
+        _add_parcelada(session, "1200.00", 12, 1, 2026)
+        _add_recorrencia(session)
+        _add_recorrencia(session, tipo="despesa", categoria="Moradia", valor="2000.00")
+
+        selects = _conta_selects(
+            session, lambda: _lancamentos_consumo_ano(session, 1, 2026)
+        )
+        assert len(selects) == 3, selects
+
+    def test_horizonte_ancora_corrente_cronologico_e_virada_de_ano(
+        self, session, mocker
+    ):
+        # hoje = fev/2027; meses=4 → nov/2026..fev/2027, do mais antigo ao
+        # corrente, contínuo (dez e fev vazios entram com zeros).
+        mocker.patch(
+            "app.services.estatisticas.hoje", return_value=dt.date(2027, 2, 15)
+        )
+        _add(session, dt.date(2026, 11, 5))  # despesa 10.00
+        _add(session, dt.date(2027, 1, 8))
+        session.commit()
+
+        serie = _lancamentos_consumo_horizonte(session, 1, 4)
+        assert [(m, a) for m, a, _ in serie] == [
+            (11, 2026), (12, 2026), (1, 2027), (2, 2027)
+        ]
+        assert [_q(_agregar(lanc)[1]) for _, _, lanc in serie] == [
+            Decimal("10.00"), Decimal("0.00"), Decimal("10.00"), Decimal("0.00")
+        ]
+
+    def test_horizonte_bate_com_consumo_mensal_mes_a_mes(self, session, mocker):
+        mocker.patch(
+            "app.services.estatisticas.hoje", return_value=dt.date(2026, 7, 15)
+        )
+        _add_parcelada(session, "1200.00", 12, 5, 2026)  # compra em mai
+        _add_recorrencia(session)
+
+        for m, a, lanc in _lancamentos_consumo_horizonte(session, 1, 6):
+            horizonte = tuple(map(_q, _agregar(lanc)))
+            mensal = tuple(map(_q, _agregar(_lancamentos_consumo_mes(session, 1, m, a))))
+            assert horizonte == mensal, f"horizonte diverge em {m}/{a}"
+
+    def test_horizonte_carrega_cada_ano_e_recorrencias_uma_vez(self, session, mocker):
+        # meses=13 cruza dois anos: 2 SELECTs de recorrência (buscada UMA vez
+        # para o horizonte inteiro) + 1 SELECT de transações por ano = 4 fixos
+        # — sem N+1 (13 chamadas mensais custariam 39).
+        mocker.patch(
+            "app.services.estatisticas.hoje", return_value=dt.date(2026, 7, 15)
+        )
+        _add_recorrencia(session)
+
+        selects = _conta_selects(
+            session, lambda: _lancamentos_consumo_horizonte(session, 1, 13)
+        )
+        assert len(selects) == 4, selects
+
+    def test_mes_atras_aritmetica_de_competencia(self):
+        assert _mes_atras(7, 2026, 0) == (7, 2026)
+        assert _mes_atras(7, 2026, 2) == (5, 2026)
+        assert _mes_atras(1, 2027, 1) == (12, 2026)   # virada pra trás
+        assert _mes_atras(7, 2026, 59) == (8, 2021)   # horizonte máximo (60)

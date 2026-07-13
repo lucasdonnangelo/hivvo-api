@@ -106,6 +106,58 @@ class ProjecaoResponse(BaseModel):
     series: list[MesProjecao]
 
 
+class MesEvolucaoConsumo(BaseModel):
+    """Um mês da série do /evolution (Resumo, Seção 3 — PLANO_RESUMO).
+
+    Base CONSUMO (gasto pela DATA da compra, o mesmo do donut do Dashboard),
+    integral (sem realizado/a_vir). Tem `ano` porque o horizonte relativo
+    cruza a virada de ano (diferente do MesEvolucao do /yearly, ano fixo).
+    """
+
+    mes: int
+    ano: int
+    receitas: Decimal
+    despesas: Decimal
+    saldo: Decimal
+
+
+class EvolucaoResponse(BaseModel):
+    """Série CONSUMO dos últimos N meses — o espelho PRA TRÁS do /projection.
+
+    Cronológica: series[0] é o mês mais antigo, series[-1] é o corrente
+    (âncora, incluída). Contínua — mês sem dado entra com zeros, não é
+    omitido.
+    """
+
+    series: list[MesEvolucaoConsumo]
+
+
+class SerieCategoria(BaseModel):
+    """Série de uma categoria no horizonte do /evolution/categories.
+
+    `serie` é alinhada por ÍNDICE ao eixo `meses` da resposta (0.00 nos meses
+    em que a categoria não teve gasto); `total` = soma no horizonte (critério
+    de ordenação).
+    """
+
+    categoria: str
+    total: Decimal
+    serie: list[Decimal]
+
+
+class EvolucaoCategoriasResponse(BaseModel):
+    """Gasto por categoria mês a mês nos últimos N meses (Resumo, Seção 3).
+
+    CONSUMO, só despesas (categoria é dimensão de gasto, como no donut) —
+    formato categoria-major: o front plota uma categoria contra o eixo
+    `meses` sem pivotar. Categorias ordenadas por total desc (desempate
+    alfabético). Eixo cronológico, o mesmo do /evolution.
+    """
+
+    meses: list[MesAno]
+    categorias: list[SerieCategoria]
+
+
 class MesDefaultResponse(BaseModel):
     """Mês default de abertura do Dashboard (PLANO §"Mês default do Dashboard").
 

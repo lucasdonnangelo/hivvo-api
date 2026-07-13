@@ -1,3 +1,4 @@
+import datetime as dt
 from decimal import Decimal
 from typing import Optional
 
@@ -208,6 +209,43 @@ class ComparacaoResponse(BaseModel):
     ano: int
     totais: TotaisComparacao
     categorias: list[CategoriaComparacao]  # despesas, ordenadas por atual desc
+
+
+class MaiorDespesa(BaseModel):
+    """A maior despesa do mês (CONSUMO — recorrência concorre, pela data da
+    ocorrência). Empate: valor → data mais recente → descrição."""
+
+    valor: Decimal
+    descricao: str
+    categoria: str
+    data: dt.date
+
+
+class DiaMaiorGasto(BaseModel):
+    """O dia com maior soma de despesas de consumo no mês. Empate: o dia
+    mais recente."""
+
+    data: dt.date
+    total: Decimal
+
+
+class HighlightsResponse(BaseModel):
+    """Destaques do mês (Resumo, Seção 1 — PLANO_RESUMO), base CONSUMO.
+
+    Mês sem despesa → maior_despesa/dia_maior_gasto None (200, nunca 404 —
+    o florescimento é decisão do front). Contagem DECOMPOSTA para o front
+    mostrar "total · N recorrentes": conta receitas E despesas
+    (movimentações do mês); invariante num_transacoes_total ==
+    num_lancadas + num_recorrentes.
+    """
+
+    mes: int
+    ano: int
+    maior_despesa: Optional[MaiorDespesa] = None
+    dia_maior_gasto: Optional[DiaMaiorGasto] = None
+    num_transacoes_total: int  # Transacao + ocorrências de recorrência
+    num_lancadas: int          # só Transacao (o que o usuário registrou)
+    num_recorrentes: int       # só ocorrências de recorrência do mês
 
 
 class MesDefaultResponse(BaseModel):

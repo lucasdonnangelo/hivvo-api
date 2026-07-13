@@ -59,6 +59,12 @@ class LancamentoFluxo:
     PagamentoFatura em toda a projeção — topo, realizado/a_vir, anual, série
     e consumo derivam exclusivamente de data/competência (§1.3: pagamento
     não governa a projeção).
+
+    ``data``/``descricao`` (PLANO_RESUMO, /highlights): preenchidos APENAS
+    pela trilha CONSUMO mensal (_lancamentos_consumo_mes — C1 pela Transacao,
+    C4 pela ocorrência da recorrência), para os destaques do mês derivarem da
+    MESMA lista do donut (fonte única). Nas demais trilhas ficam None; a
+    agregação (_agregar/_categorias) os ignora.
     """
 
     tipo: str
@@ -67,6 +73,8 @@ class LancamentoFluxo:
     recorrente: bool = False
     realizado: bool = True
     a_pagar: bool = False
+    data: Optional[dt.date] = None
+    descricao: Optional[str] = None
 
 
 # _agregar/_categorias operam por duck typing em .tipo/.valor/.categoria — servem
@@ -266,6 +274,7 @@ def _ocorrencias_recorrentes(
     mes: int,
     ano: int,
     limite_realizado: Optional[dt.date] = None,
+    detalhado: bool = False,
 ) -> list[LancamentoFluxo]:
     """Fonte 4 (pura, sem I/O): ocorrências de recorrência na competência (mes, ano).
 
@@ -278,15 +287,17 @@ def _ocorrencias_recorrentes(
     corrente — marca realizado = data_ocorrencia (dia clampado) <= hoje.
     None (mês não-corrente) = tudo realizado. NÃO filtra: a ocorrência entra
     na lista de qualquer forma (a projeção é integral).
+
+    `detalhado` (PLANO_RESUMO, /highlights): True só na trilha CONSUMO mensal
+    — carrega data (a ocorrência clampada) e descricao no lançamento, para a
+    recorrência concorrer aos destaques do mês. Trilhas de fluxo não pedem.
     """
     lancamentos: list[LancamentoFluxo] = []
     for recorrencia, vigencias in recs_com_vigencias:
         valor = valor_no_mes(recorrencia, vigencias, mes, ano)
         if valor is not None:
-            realizado = (
-                limite_realizado is None
-                or data_ocorrencia(recorrencia, mes, ano) <= limite_realizado
-            )
+            ocorrencia = data_ocorrencia(recorrencia, mes, ano)
+            realizado = limite_realizado is None or ocorrencia <= limite_realizado
             lancamentos.append(
                 LancamentoFluxo(
                     recorrencia.tipo,
@@ -294,6 +305,8 @@ def _ocorrencias_recorrentes(
                     recorrencia.categoria,
                     recorrente=True,
                     realizado=realizado,
+                    data=ocorrencia if detalhado else None,
+                    descricao=recorrencia.descricao if detalhado else None,
                 )
             )
     return lancamentos
@@ -422,14 +435,18 @@ def _lancamentos_consumo_mes(
     parcelas somem juntas); diverge só sob cancelamento de parcela individual.
     ⚠️ Se cancelamento por-parcela virar operação de usuário (UI + rota viva),
     revisitar (Opção B) — ver §Fase 3b.
+
+    Única trilha DETALHADA (PLANO_RESUMO): carrega data/descricao em cada
+    lançamento (C1 pela Transacao, C4 pela ocorrência) para o /highlights
+    derivar os destaques do mês da MESMA lista do donut — fonte única.
     """
     lancamentos: list[LancamentoFluxo] = [
-        LancamentoFluxo(t.tipo, t.valor, t.categoria)
+        LancamentoFluxo(t.tipo, t.valor, t.categoria, data=t.data, descricao=t.descricao)
         for t in _buscar_mes(session, usuario_id, mes, ano)
     ]
     lancamentos.extend(
         _ocorrencias_recorrentes(
-            _recorrencias_com_vigencias(session, usuario_id), mes, ano
+            _recorrencias_com_vigencias(session, usuario_id), mes, ano, detalhado=True
         )
     )
     return lancamentos

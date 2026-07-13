@@ -1240,3 +1240,27 @@ class TestConsumoAnualEHorizonte:
         assert _mes_atras(7, 2026, 2) == (5, 2026)
         assert _mes_atras(1, 2027, 1) == (12, 2026)   # virada pra trás
         assert _mes_atras(7, 2026, 59) == (8, 2021)   # horizonte máximo (60)
+
+
+class TestDetalhesDaTrilhaConsumo:
+    """PLANO_RESUMO (/highlights) — data/descricao no LancamentoFluxo são
+    preenchidos APENAS pela trilha consumo MENSAL (C1 pela Transacao, C4 pela
+    ocorrência da recorrência); nas trilhas de fluxo ficam None e a agregação
+    ignora os campos novos (extensão aditiva)."""
+
+    def test_consumo_mensal_carrega_detalhes_fluxo_nao(self, session):
+        _add(session, dt.date(2026, 7, 10))
+        session.commit()
+        _add_recorrencia(session)  # receita Salário, dia 5
+
+        consumo = _lancamentos_consumo_mes(session, 1, 7, 2026)
+        assert consumo and all(
+            l.data is not None and l.descricao is not None for l in consumo
+        )
+        # a ocorrência da recorrência traz a data clampada do mês
+        (ocorrencia,) = [l for l in consumo if l.recorrente]
+        assert ocorrencia.data == dt.date(2026, 7, 5)
+        assert ocorrencia.descricao == "Salário"
+
+        fluxo = _lancamentos_mes(session, 1, 7, 2026)
+        assert fluxo and all(l.data is None and l.descricao is None for l in fluxo)

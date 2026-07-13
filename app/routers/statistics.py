@@ -11,9 +11,12 @@ from app.schemas.statistics import (
     CategoriaComparacao,
     CategoriasResponse,
     ComparacaoResponse,
+    DiaMaiorGasto,
     EvolucaoCategoriasResponse,
     EvolucaoResponse,
+    HighlightsResponse,
     LeituraMes,
+    MaiorDespesa,
     MensalResponse,
     MesAno,
     MesDefaultResponse,
@@ -298,6 +301,47 @@ def comparison_stats(
     categorias.sort(key=lambda c: (-c.atual, c.categoria))
 
     return ComparacaoResponse(mes=mes, ano=ano, totais=totais, categorias=categorias)
+
+
+@router.get("/highlights", response_model=HighlightsResponse)
+def highlights_stats(
+    mes: int = Query(..., ge=1, le=12),
+    ano: int = Query(..., ge=2000),
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Destaques do mês (Resumo, Seção 1 — PLANO_RESUMO), base CONSUMO: a
+    # MESMA lista do donut do /monthly (fonte única — a recorrência concorre,
+    # com data/descricao carregados pela trilha detalhada). Empates
+    # determinísticos: maior despesa por (valor, data mais recente,
+    # descrição); dia por (total, dia mais recente). Mês vazio → None/0.
+    lancamentos = _lancamentos_consumo_mes(session, current_user.id, mes, ano)
+    despesas = [l for l in lancamentos if l.tipo == "despesa"]
+
+    maior_despesa = None
+    dia_maior_gasto = None
+    if despesas:
+        top = max(despesas, key=lambda l: (l.valor, l.data, l.descricao))
+        maior_despesa = MaiorDespesa(
+            valor=top.valor, descricao=top.descricao,
+            categoria=top.categoria, data=top.data,
+        )
+        por_dia: dict = {}
+        for l in despesas:
+            por_dia[l.data] = por_dia.get(l.data, _ZERO) + l.valor
+        data, total = max(por_dia.items(), key=lambda item: (item[1], item[0]))
+        dia_maior_gasto = DiaMaiorGasto(data=data, total=total)
+
+    num_recorrentes = sum(1 for l in lancamentos if l.recorrente)
+    return HighlightsResponse(
+        mes=mes,
+        ano=ano,
+        maior_despesa=maior_despesa,
+        dia_maior_gasto=dia_maior_gasto,
+        num_transacoes_total=len(lancamentos),
+        num_lancadas=len(lancamentos) - num_recorrentes,
+        num_recorrentes=num_recorrentes,
+    )
 
 
 @router.get("/yearly", response_model=AnualResponse)

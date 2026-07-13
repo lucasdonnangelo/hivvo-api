@@ -779,3 +779,126 @@ class TestComparison:
                 "/statistics/comparison", params={"meses": invalido}
             )
             assert resp.status_code == 422
+
+
+class TestHighlights:
+    """GET /statistics/highlights — destaques do mês (Resumo, Seção 1), base
+    CONSUMO: a MESMA lista do donut (recorrência concorre, pela data da
+    ocorrência). Contagem decomposta lançadas/recorrentes, com o invariante
+    total == lancadas + recorrentes. hoje congelado em 15/07/2026."""
+
+    def _get(self, as_user, user, mes=7, ano=2026):
+        resp = as_user(user).get(
+            "/statistics/highlights", params={"mes": mes, "ano": ano}
+        )
+        assert resp.status_code == 200
+        return resp.json()
+
+    def _add_despesa(self, session, uid, data, valor, descricao, categoria="Mercado"):
+        session.add(
+            Transacao(
+                usuario_id=uid, tipo="despesa", data=data, descricao=descricao,
+                valor=Decimal(valor), categoria=categoria, forma_pagamento="Pix",
+            )
+        )
+        session.commit()
+
+    def test_maior_despesa_com_descricao_categoria_e_data(
+        self, session, users, as_user
+    ):
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 10), "80.00",
+                          "feira")
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 12), "250.00",
+                          "tênis", categoria="Vestuário")
+
+        maior = self._get(as_user, users[0])["maior_despesa"]
+        assert _q(maior["valor"]) == Decimal("250.00")
+        assert maior["descricao"] == "tênis"
+        assert maior["categoria"] == "Vestuário"
+        assert maior["data"] == "2026-07-12"
+
+    def test_dia_de_maior_gasto_soma_o_dia_inteiro(self, session, users, as_user):
+        # dia 10 soma 110 (50+60) e ganha do dia 12 (100), mesmo sem ter a
+        # maior despesa individual.
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 10), "50.00", "a")
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 10), "60.00", "b")
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 12), "100.00", "c")
+
+        body = self._get(as_user, users[0])
+        assert body["dia_maior_gasto"]["data"] == "2026-07-10"
+        assert _q(body["dia_maior_gasto"]["total"]) == Decimal("110.00")
+        assert _q(body["maior_despesa"]["valor"]) == Decimal("100.00")  # a do dia 12
+
+    def test_recorrencia_concorre_aos_destaques(self, session, users, as_user):
+        _add_recorrencia(session, users[0].id, dia=5, tipo="despesa",
+                         categoria="Moradia", valor="2000.00")
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 10), "80.00", "feira")
+
+        body = self._get(as_user, users[0])
+        assert body["maior_despesa"]["descricao"] == "Moradia"
+        assert body["maior_despesa"]["data"] == "2026-07-05"  # ocorrência clampada
+        assert body["dia_maior_gasto"]["data"] == "2026-07-05"
+        assert _q(body["dia_maior_gasto"]["total"]) == Decimal("2000.00")
+
+    def test_invariante_total_igual_lancadas_mais_recorrentes(
+        self, session, users, as_user
+    ):
+        # O teste do AJUSTE 2, com AMBAS as fontes: 2 Transacao (receita E
+        # despesa — a contagem é de movimentações, não só gasto) + 2
+        # ocorrências de recorrência.
+        _add_avista(session, users[0].id, dt.date(2026, 7, 3), tipo="receita",
+                    valor="500.00")
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 10), "80.00", "feira")
+        _add_recorrencia(session, users[0].id, dia=5)  # receita recorrente
+        _add_recorrencia(session, users[0].id, dia=8, tipo="despesa",
+                         categoria="Moradia", valor="2000.00")
+
+        body = self._get(as_user, users[0])
+        assert body["num_transacoes_total"] == 4
+        assert body["num_lancadas"] == 2
+        assert body["num_recorrentes"] == 2
+        assert body["num_transacoes_total"] == (
+            body["num_lancadas"] + body["num_recorrentes"]
+        )
+
+    def test_empate_de_valor_ganha_a_data_mais_recente(self, session, users, as_user):
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 5), "100.00", "antiga")
+        self._add_despesa(session, users[0].id, dt.date(2026, 7, 20), "100.00", "recente")
+
+        body = self._get(as_user, users[0])
+        assert body["maior_despesa"]["descricao"] == "recente"
+        # empate no total do dia também: ganha o dia mais recente
+        assert body["dia_maior_gasto"]["data"] == "2026-07-20"
+
+    def test_consumo_parcelada_destaca_no_mes_da_compra(self, session, users, as_user):
+        _add_parcelada(session, users[0].id, mes0=6)  # compra 15/jun, 12x
+
+        jun = self._get(as_user, users[0], mes=6)
+        assert _q(jun["maior_despesa"]["valor"]) == Decimal("1200.00")  # valor cheio
+        assert jun["num_lancadas"] == 1  # a pai conta UMA vez
+
+        jul = self._get(as_user, users[0], mes=7)  # a parcela de jul NÃO conta
+        assert jul["maior_despesa"] is None
+        assert jul["num_transacoes_total"] == 0
+
+    def test_mes_vazio_campos_none_e_contagens_zero(self, users, as_user):
+        body = self._get(as_user, users[0])
+        assert body["maior_despesa"] is None
+        assert body["dia_maior_gasto"] is None
+        assert body["num_transacoes_total"] == 0
+        assert body["num_lancadas"] == body["num_recorrentes"] == 0
+
+    def test_mes_so_com_receitas_sem_destaques_mas_conta(self, session, users, as_user):
+        _add_avista(session, users[0].id, dt.date(2026, 7, 3), tipo="receita",
+                    valor="500.00")
+
+        body = self._get(as_user, users[0])
+        assert body["maior_despesa"] is None  # destaque é de DESPESA
+        assert body["dia_maior_gasto"] is None
+        assert body["num_transacoes_total"] == 1  # mas a movimentação conta
+
+    def test_validacao_de_parametros(self, users, as_user):
+        for params in ({"mes": 0, "ano": 2026}, {"mes": 13, "ano": 2026},
+                       {"mes": 7, "ano": 1999}, {"mes": 7}, {}):
+            resp = as_user(users[0]).get("/statistics/highlights", params=params)
+            assert resp.status_code == 422, params

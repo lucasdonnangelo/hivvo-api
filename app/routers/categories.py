@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -15,16 +17,23 @@ router = APIRouter(prefix="/categories", tags=["categories"])
 
 @router.get("", response_model=list[CategoriaResponse])
 def list_categories(
+    tipo: Optional[Literal["receita", "despesa"]] = Query(None),
     current_user: Usuario = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    custom = session.exec(
+    # Filtro opcional por tipo. Sem o param → tudo (comportamento original). O
+    # Literal no Query valida o valor no FastAPI → 422 para qualquer outro.
+    stmt = (
         select(CategoriaCustomizada)
         .where(CategoriaCustomizada.usuario_id == current_user.id)
         .where(CategoriaCustomizada.ativa == True)  # noqa: E712
-    ).all()
+    )
+    if tipo is not None:
+        stmt = stmt.where(CategoriaCustomizada.tipo == tipo)
+    custom = session.exec(stmt).all()
 
-    return CATEGORIAS_PADRAO + [CategoriaResponse.model_validate(c) for c in custom]
+    padrao = [c for c in CATEGORIAS_PADRAO if tipo is None or c.tipo == tipo]
+    return padrao + [CategoriaResponse.model_validate(c) for c in custom]
 
 
 @router.post("", response_model=CategoriaResponse, status_code=status.HTTP_201_CREATED)

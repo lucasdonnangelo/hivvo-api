@@ -248,6 +248,35 @@ class HighlightsResponse(BaseModel):
     num_recorrentes: int       # só ocorrências de recorrência do mês
 
 
+class GastoCartaoItem(BaseModel):
+    """Consumo (despesa por DATA da compra) atribuído a UM cartão no mês.
+
+    cartao_id/cartao_nome sempre preenchidos (é um cartão real) — mesmo
+    contrato do FaturaCartaoItem. Agrupa por cartao_id CRU (crédito, débito
+    ou ambos), sem olhar Cartao.tipo."""
+
+    cartao_id: int
+    cartao_nome: str
+    total: Decimal
+
+
+class GastoPorCartaoResponse(BaseModel):
+    """Gasto por cartão do mês (Resumo, Seção 1 — PLANO_RESUMO), base CONSUMO.
+
+    DESPESA-ONLY. `cartoes` ordenado por total desc (desempate cartao_id);
+    `sem_cartao` = despesa de consumo sem cartão (PIX/à vista + recorrências,
+    cartao_id NULL) num campo SEPARADO — mantém `cartoes` limpo (sem item de
+    cartao_id nulo). Invariante: sum(cartoes.total) + sem_cartao == total ==
+    o `consumo.despesas` do /monthly do mesmo mês (nada perdido nem duplicado).
+    Mês sem despesa → cartoes=[], sem_cartao=0, total=0 (200, nunca 404)."""
+
+    mes: int
+    ano: int
+    cartoes: list[GastoCartaoItem]
+    sem_cartao: Decimal
+    total: Decimal
+
+
 class CoverageResponse(BaseModel):
     """Nº de meses (competências) DISTINTOS com dado de CONSUMO até o mês
     corrente — a régua do florescimento do Resumo (PLANO_RESUMO §Limiares):

@@ -66,6 +66,13 @@ class LancamentoFluxo:
     C4 pela ocorrência da recorrência), para os destaques do mês derivarem da
     MESMA lista do donut (fonte única). Nas demais trilhas ficam None; a
     agregação (_agregar/_categorias) os ignora.
+
+    ``cartao_id`` (PLANO_RESUMO, /spending-by-card): preenchido APENAS pela
+    trilha CONSUMO mensal, na fonte C1 (pela Transacao) — a mesma trilha que
+    carrega data/descricao. Recorrência (C4) não passa por cartão → fica None.
+    As demais trilhas (fluxo mensal/anual, consumo ano/horizonte) NÃO o
+    preenchem (fica None) — é aditivo, o "gasto por cartão" é só do mês. A
+    agregação (_agregar/_categorias) o ignora.
     """
 
     tipo: str
@@ -76,6 +83,7 @@ class LancamentoFluxo:
     a_pagar: bool = False
     data: Optional[dt.date] = None
     descricao: Optional[str] = None
+    cartao_id: Optional[int] = None
 
 
 # _agregar/_categorias operam por duck typing em .tipo/.valor/.categoria — servem
@@ -132,6 +140,22 @@ def _categorias(itens: list[_Somavel]) -> list[CategoriaStats]:
         key=lambda x: x.total,
         reverse=True,
     )
+
+
+def _gasto_por_cartao(itens: list[LancamentoFluxo]) -> dict[Optional[int], Decimal]:
+    """Total de DESPESAS de consumo por cartao_id (None = sem cartão).
+
+    A célula do /spending-by-card (PLANO_RESUMO, Seção 1): agrupa por cartao_id
+    CRU — crédito, débito ou ambos, sem olhar Cartao.tipo. Despesa-only
+    (receita não entra). None reúne PIX/à vista + recorrências (sem cartão).
+    Invariante: soma dos valores == despesas do donut de consumo (o mesmo
+    _lancamentos_consumo_mes), já que agrupa a MESMA lista.
+    """
+    grupos: dict[Optional[int], Decimal] = {}
+    for l in itens:
+        if l.tipo == "despesa":
+            grupos[l.cartao_id] = grupos.get(l.cartao_id, _ZERO) + l.valor
+    return grupos
 
 
 def _buscar_mes(session: Session, usuario_id: int, mes: int, ano: int) -> list[Transacao]:
@@ -437,12 +461,16 @@ def _lancamentos_consumo_mes(
     ⚠️ Se cancelamento por-parcela virar operação de usuário (UI + rota viva),
     revisitar (Opção B) — ver §Fase 3b.
 
-    Única trilha DETALHADA (PLANO_RESUMO): carrega data/descricao em cada
-    lançamento (C1 pela Transacao, C4 pela ocorrência) para o /highlights
-    derivar os destaques do mês da MESMA lista do donut — fonte única.
+    Única trilha DETALHADA (PLANO_RESUMO): carrega data/descricao/cartao_id em
+    cada lançamento (C1 pela Transacao, C4 pela ocorrência) para /highlights e
+    /spending-by-card derivarem da MESMA lista do donut — fonte única. C4 fica
+    com cartao_id None (recorrência não passa por cartão).
     """
     lancamentos: list[LancamentoFluxo] = [
-        LancamentoFluxo(t.tipo, t.valor, t.categoria, data=t.data, descricao=t.descricao)
+        LancamentoFluxo(
+            t.tipo, t.valor, t.categoria,
+            data=t.data, descricao=t.descricao, cartao_id=t.cartao_id,
+        )
         for t in _buscar_mes(session, usuario_id, mes, ano)
     ]
     lancamentos.extend(

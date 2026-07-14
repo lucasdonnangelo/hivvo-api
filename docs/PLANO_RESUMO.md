@@ -31,12 +31,25 @@ Serve o usuário novo — valor no dia 1. Aprofunda o que o Dashboard só resume
   as categorias, valores e percentuais. **BASE = CONSUMO** (decidido) — coerente com o donut do
   Dashboard (que é consumo); o Resumo é o aprofundamento do MESMO donut, tem que bater. O dado já
   existe (`categorias_consumo` no /monthly); falta expor de forma dedicada ou o Resumo lê do /monthly.
-- **Gasto por cartão**: ADIADO para FAST-FOLLOW (decidido). Não entra na v1 do Resumo. Motivo:
-  consumo-por-cartão exige carregar `cartao_id` na trilha de CONSUMO (`LancamentoFluxo` de consumo
-  não tem hoje) — mexe no núcleo do cálculo; e a fatura-por-cartão (fluxo) JÁ existe na lente 3d
-  (/invoices/{ano}/{mes}), então não há lacuna urgente. Lucas quer adicionar LOGO APÓS o Resumo
-  estar pronto — fast-follow explícito, leva dedicada (adicionar cartao_id à trilha de consumo +
-  endpoint consumo-por-cartão + a UI na Seção 1).
+- **Gasto por cartão**: BACKEND FEITO (fast-follow entregue). Endpoint
+  `GET /statistics/spending-by-card?mes=&ano=` (molde do /highlights, mês/ano obrigatórios), base
+  CONSUMO, DESPESA-ONLY. Fonte única = `_lancamentos_consumo_mes` (a MESMA lista do donut do
+  /monthly), agrupada por `cartao_id` CRU — crédito/débito/ambos, SEM olhar `Cartao.tipo`. Decisões:
+  - **`cartao_id` na trilha de consumo**: campo aditivo em `LancamentoFluxo` (default None, como
+    data/descricao), preenchido APENAS na fonte C1 (Transacao) do consumo MENSAL; recorrência (C4)
+    e as trilhas de fluxo/consumo-ano/horizonte ficam None (teste-guarda garante o não-vazamento).
+  - **"sem cartão" = campo SEPARADO** `sem_cartao: Decimal` (não item na lista com cartao_id=null):
+    mantém `cartoes` com o mesmo contrato do `FaturaCartaoItem` (id/nome não-nulos). Reúne
+    PIX/à vista (cartao_id NULL) + recorrências.
+  - **Schema**: `GastoPorCartaoResponse{mes, ano, cartoes: [{cartao_id, cartao_nome, total}]
+    ordenado por total desc, sem_cartao, total}`. Nome via `_cartoes_por_id` (1 query, sem N+1).
+    Mês vazio → cartoes=[], sem_cartao=0, total=0 (200, nunca 404).
+  - **Invariante coberto por teste**: `sum(cartoes) + sem_cartao == total == consumo.despesas` do
+    /monthly (nada perdido nem duplicado); paridade do Resumo (highlights/evolution/comparison vs
+    consumo do /monthly) segue intacta (cartao_id é aditivo, _agregar ignora). Parcelada conta pelo
+    valor CHEIO no cartão da compra (a pai pela data), não a parcela.
+  - Distinto da fatura-por-cartão (FLUXO) da lente 3d `/invoices/{ano}/{mes}` — o que se COMPROU,
+    não o que VENCE. Falta só a **UI na Seção 1** (hivvo-web).
 - **Receitas vs despesas**: a composição do mês (já existe no /monthly).
 - **Destaques**: a maior despesa, o dia de maior gasto, o número de transações (endpoint novo).
 

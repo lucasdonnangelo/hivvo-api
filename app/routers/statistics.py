@@ -15,6 +15,8 @@ from app.schemas.statistics import (
     DiaMaiorGasto,
     EvolucaoCategoriasResponse,
     EvolucaoResponse,
+    GastoCartaoItem,
+    GastoPorCartaoResponse,
     HighlightsResponse,
     LeituraMes,
     MaiorDespesa,
@@ -31,8 +33,10 @@ from app.schemas.statistics import (
 )
 from app.services.estatisticas import (
     _agregar,
+    _cartoes_por_id,
     _categorias,
     _competencias_com_consumo,
+    _gasto_por_cartao,
     _lancamentos_ano,
     _lancamentos_consumo_horizonte,
     _lancamentos_consumo_mes,
@@ -343,6 +347,38 @@ def highlights_stats(
         num_transacoes_total=len(lancamentos),
         num_lancadas=len(lancamentos) - num_recorrentes,
         num_recorrentes=num_recorrentes,
+    )
+
+
+@router.get("/spending-by-card", response_model=GastoPorCartaoResponse)
+def spending_by_card(
+    mes: int = Query(..., ge=1, le=12),
+    ano: int = Query(..., ge=2000),
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    # Gasto por cartão (Resumo, Seção 1 — PLANO_RESUMO), base CONSUMO: a MESMA
+    # lista do donut do /monthly (fonte única — _lancamentos_consumo_mes), só
+    # despesas, agrupadas por cartao_id CRU (não por Cartao.tipo). cartao_id
+    # NULL (PIX/à vista + recorrências) vai para sem_cartao (campo separado —
+    # cartoes fica sem item nulo). Nomes via _cartoes_por_id (1 query, sem N+1),
+    # só quando há cartão a nomear. Invariante: sum(cartoes) + sem_cartao ==
+    # total == consumo.despesas do /monthly. Mês vazio → listas/zeros (200).
+    lancamentos = _lancamentos_consumo_mes(session, current_user.id, mes, ano)
+    grupos = _gasto_por_cartao(lancamentos)
+    sem_cartao = grupos.pop(None, _ZERO)
+
+    cartoes = _cartoes_por_id(session, current_user.id) if grupos else {}
+    itens = [
+        GastoCartaoItem(cartao_id=cid, cartao_nome=cartoes[cid].nome, total=total)
+        for cid, total in grupos.items()
+        if cid in cartoes  # cartão apagado sob a compra: defensivo, FK impede
+    ]
+    itens.sort(key=lambda i: (-i.total, i.cartao_id))
+
+    total = sum((i.total for i in itens), _ZERO) + sem_cartao
+    return GastoPorCartaoResponse(
+        mes=mes, ano=ano, cartoes=itens, sem_cartao=sem_cartao, total=total
     )
 
 

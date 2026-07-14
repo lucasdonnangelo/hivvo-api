@@ -11,6 +11,7 @@ from decimal import Decimal
 import pytest
 from sqlmodel import select
 
+from app.models.card import Cartao
 from app.models.installment import Parcela
 from app.models.pagamento_fatura import PagamentoFatura
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
@@ -989,3 +990,156 @@ class TestCoverage:
         assert self._coverage(as_user, users[0]) == 2
         _add_avista(session, users[0].id, dt.date(2026, 3, 10))
         assert self._coverage(as_user, users[0]) == 3
+
+
+def _add_cartao(session, uid, nome="Nubank", tipo="Crédito"):
+    c = Cartao(usuario_id=uid, nome=nome, tipo=tipo)
+    session.add(c)
+    session.commit()
+    session.refresh(c)
+    return c
+
+
+class TestSpendingByCard:
+    """GET /statistics/spending-by-card — gasto por cartão do mês (Resumo,
+    Seção 1 — PLANO_RESUMO), base CONSUMO. DESPESA-ONLY, agrupado por cartao_id
+    CRU (crédito/débito/ambos, sem olhar Cartao.tipo); cartao_id NULL (PIX/à
+    vista + recorrências) em `sem_cartao` (campo SEPARADO — cartoes fica limpo).
+    Invariante: sum(cartoes)+sem_cartao == total == consumo.despesas do
+    /monthly. hoje congelado em 15/07/2026 (fixture clock do módulo)."""
+
+    def _get(self, as_user, user, mes=7, ano=2026):
+        resp = as_user(user).get(
+            "/statistics/spending-by-card", params={"mes": mes, "ano": ano}
+        )
+        assert resp.status_code == 200
+        return resp.json()
+
+    def _add_despesa_cartao(self, session, uid, data, valor, cartao_id,
+                            forma="Crédito", categoria="Compras"):
+        session.add(
+            Transacao(
+                usuario_id=uid, tipo="despesa", data=data, descricao="compra",
+                valor=Decimal(valor), categoria=categoria,
+                forma_pagamento=forma, cartao_id=cartao_id, parcelado=False,
+            )
+        )
+        session.commit()
+
+    def test_total_fecha_com_consumo_do_monthly(self, session, users, as_user):
+        # INVARIANTE CENTRAL: sum(cartoes) + sem_cartao == total ==
+        # consumo.despesas do /monthly (nada perdido nem duplicado). Cenário
+        # misto: parcelada + avulsa no cartão 1, PIX e recorrência sem cartão.
+        _add_cartao(session, users[0].id, nome="Nubank")            # id 1
+        _add_parcelada(session, users[0].id, mes0=7)                # 1200 cheio, cartão 1
+        self._add_despesa_cartao(session, users[0].id, dt.date(2026, 7, 8),
+                                 "300.00", cartao_id=1)             # avulsa cartão 1
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="50.00")  # PIX
+        _add_recorrencia(session, users[0].id, dia=5, tipo="despesa",
+                         categoria="Moradia", valor="2000.00")      # sem cartão
+
+        body = self._get(as_user, users[0])
+        monthly = as_user(users[0]).get(
+            "/statistics/monthly", params={"mes": 7, "ano": 2026}
+        ).json()
+
+        soma = sum((_q(c["total"]) for c in body["cartoes"]), Decimal("0.00"))
+        assert soma + _q(body["sem_cartao"]) == _q(body["total"])
+        assert _q(body["total"]) == _q(monthly["consumo"]["despesas"])
+        # composição: cartão 1 = 1200 (pai cheia) + 300 (avulsa); sem cartão =
+        # 50 (PIX) + 2000 (recorrência)
+        assert _q(body["cartoes"][0]["total"]) == Decimal("1500.00")
+        assert _q(body["sem_cartao"]) == Decimal("2050.00")
+
+    def test_debito_no_cartao_cai_no_cartao_nao_em_sem_cartao(
+        self, session, users, as_user
+    ):
+        # Agrupa por cartao_id CRU: compra no DÉBITO com cartao_id de um cartão
+        # tipo Débito conta NAQUELE cartão, não em sem_cartao (não olha o tipo).
+        _add_cartao(session, users[0].id, nome="Inter Débito", tipo="Débito")  # id 1
+        self._add_despesa_cartao(session, users[0].id, dt.date(2026, 7, 10),
+                                 "120.00", cartao_id=1, forma="Débito")
+
+        body = self._get(as_user, users[0])
+        assert _q(body["sem_cartao"]) == Decimal("0.00")
+        assert len(body["cartoes"]) == 1
+        assert body["cartoes"][0]["cartao_nome"] == "Inter Débito"
+        assert _q(body["cartoes"][0]["total"]) == Decimal("120.00")
+
+    def test_pix_a_vista_vai_para_sem_cartao(self, session, users, as_user):
+        _add_avista(session, users[0].id, dt.date(2026, 7, 10), valor="75.00")
+
+        body = self._get(as_user, users[0])
+        assert body["cartoes"] == []
+        assert _q(body["sem_cartao"]) == Decimal("75.00")
+        assert _q(body["total"]) == Decimal("75.00")
+
+    def test_parcelada_valor_cheio_no_cartao_nao_a_parcela(
+        self, session, users, as_user
+    ):
+        # 12x no cartão 1 em jul → valor CHEIO (1200) no cartão em jul; a parcela
+        # (100) não aparece (fatia de fluxo). Reusa o precedente do consumo.
+        _add_cartao(session, users[0].id, nome="Nubank")  # id 1
+        _add_parcelada(session, users[0].id, mes0=7)      # 1200/12x, cartão 1
+
+        body = self._get(as_user, users[0])
+        assert _q(body["cartoes"][0]["total"]) == Decimal("1200.00")  # cheio, não 100
+        assert _q(body["sem_cartao"]) == Decimal("0.00")
+        # a parcela de agosto NÃO vira consumo em ago (compra foi em jul)
+        ago = self._get(as_user, users[0], mes=8)
+        assert ago["cartoes"] == [] and _q(ago["sem_cartao"]) == Decimal("0.00")
+
+    def test_ordenacao_por_total_desc(self, session, users, as_user):
+        _add_cartao(session, users[0].id, nome="Cartão A")  # id 1
+        _add_cartao(session, users[0].id, nome="Cartão B")  # id 2
+        self._add_despesa_cartao(session, users[0].id, dt.date(2026, 7, 5),
+                                 "100.00", cartao_id=1)
+        self._add_despesa_cartao(session, users[0].id, dt.date(2026, 7, 6),
+                                 "500.00", cartao_id=2)
+
+        body = self._get(as_user, users[0])
+        assert [c["cartao_nome"] for c in body["cartoes"]] == ["Cartão B", "Cartão A"]
+        assert [_q(c["total"]) for c in body["cartoes"]] == [
+            Decimal("500.00"), Decimal("100.00")
+        ]
+
+    def test_receita_no_cartao_nao_entra_despesa_only(self, session, users, as_user):
+        # Despesa-only: uma receita atribuída a cartão (ex. estorno) não conta —
+        # nem no cartão nem em sem_cartao; só a despesa entra.
+        _add_cartao(session, users[0].id, nome="Nubank")  # id 1
+        session.add(
+            Transacao(
+                usuario_id=users[0].id, tipo="receita", data=dt.date(2026, 7, 3),
+                descricao="estorno", valor=Decimal("400.00"), categoria="Outros",
+                forma_pagamento="Crédito", cartao_id=1, parcelado=False,
+            )
+        )
+        session.commit()
+        self._add_despesa_cartao(session, users[0].id, dt.date(2026, 7, 10),
+                                 "60.00", cartao_id=1)
+
+        body = self._get(as_user, users[0])
+        assert _q(body["cartoes"][0]["total"]) == Decimal("60.00")
+        assert _q(body["total"]) == Decimal("60.00")
+
+    def test_mes_vazio_200_listas_e_zeros(self, users, as_user):
+        body = self._get(as_user, users[0])
+        assert body["cartoes"] == []
+        assert _q(body["sem_cartao"]) == Decimal("0.00")
+        assert _q(body["total"]) == Decimal("0.00")
+
+    def test_isolamento_entre_usuarios(self, session, users, as_user):
+        _add_cartao(session, users[1].id, nome="Do B")  # id 1, user B
+        self._add_despesa_cartao(session, users[1].id, dt.date(2026, 7, 10),
+                                 "90.00", cartao_id=1)
+
+        body = self._get(as_user, users[0])
+        assert body["cartoes"] == [] and _q(body["sem_cartao"]) == Decimal("0.00")
+
+    def test_validacao_de_parametros(self, users, as_user):
+        for params in ({"mes": 0, "ano": 2026}, {"mes": 13, "ano": 2026},
+                       {"mes": 7, "ano": 1999}, {"mes": 7}, {}):
+            resp = as_user(users[0]).get(
+                "/statistics/spending-by-card", params=params
+            )
+            assert resp.status_code == 422, params

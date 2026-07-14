@@ -1264,3 +1264,36 @@ class TestDetalhesDaTrilhaConsumo:
 
         fluxo = _lancamentos_mes(session, 1, 7, 2026)
         assert fluxo and all(l.data is None and l.descricao is None for l in fluxo)
+
+    def test_cartao_id_so_na_trilha_consumo_mensal_c1(self, session, mocker):
+        # PLANO_RESUMO (/spending-by-card): cartao_id é aditivo — preenchido só
+        # na fonte C1 (Transacao) do consumo MENSAL. A pai parcelada o carrega
+        # (pelo valor cheio); a recorrência (C4) e a à vista sem cartão ficam
+        # None. TESTE-GUARDA: não vaza pro fluxo nem pro consumo ano/horizonte.
+        mocker.patch(
+            "app.services.estatisticas.hoje", return_value=dt.date(2026, 7, 15)
+        )
+        _add_parcelada(session, "1200.00", 12, 7, 2026)  # pai cartao_id=1, jul
+        session.add(
+            Transacao(
+                usuario_id=1, tipo="despesa", data=dt.date(2026, 7, 10),
+                descricao="pix", valor=Decimal("50.00"), categoria="Mercado",
+                forma_pagamento="Pix", parcelado=False,
+            )
+        )
+        session.commit()
+        _add_recorrencia(session)  # receita Salário, sem cartão
+
+        consumo = _lancamentos_consumo_mes(session, 1, 7, 2026)
+        com_cartao = [l for l in consumo if l.cartao_id is not None]
+        assert len(com_cartao) == 1                       # só a pai parcelada
+        assert com_cartao[0].cartao_id == 1
+        assert _q(com_cartao[0].valor) == Decimal("1200.00")  # valor cheio
+        assert all(l.cartao_id is None for l in consumo if l.recorrente)
+
+        # não vaza: fluxo mensal, consumo anual e consumo horizonte → tudo None
+        assert all(l.cartao_id is None for l in _lancamentos_mes(session, 1, 7, 2026))
+        ano = _lancamentos_consumo_ano(session, 1, 2026)
+        assert all(l.cartao_id is None for lst in ano.values() for l in lst)
+        horizonte = _lancamentos_consumo_horizonte(session, 1, 3)
+        assert all(l.cartao_id is None for _, _, lst in horizonte for l in lst)

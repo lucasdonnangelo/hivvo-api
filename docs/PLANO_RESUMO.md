@@ -47,26 +47,56 @@ Serve o usuário novo — valor no dia 1. Aprofunda o que o Dashboard só resume
 - Base: vs mês anterior E vs média (as duas leituras — mês anterior é intuitivo, média é robusta a
   meses atípicos).
 
-### Seção 3 — "Evolução" (aparece com ≥3 meses de dados)
-- **Gráfico de linha/barra dos últimos N meses**: gasto mensal, ou receita vs despesa por mês.
-  É onde vive o gráfico "evolução mensal" do Resumo antigo — mas olhando PRA TRÁS (o futuro é do
-  Bloco 2 do Dashboard).
-- **Evolução de uma categoria específica** ao longo do tempo (abrir uma categoria e ver sua série).
-- **Horizonte: padrão 3 meses** quando aparece. FILTRO de período (3/6/12/tudo) é FUTURO — não no
-  escopo inicial do frontend, MAS o backend nasce PARAMETRIZADO (?meses=N) para não exigir
-  retrabalho depois. Frontend começa fixo em 3 (sem os botões de filtro), consumindo um endpoint
-  que já aceita qualquer horizonte.
+### Seção 3 — "Evolução" (aparece com ≥6 meses de dados — coverage >= 6)
+FLORESCE COM 6 MESES (não 3, decisão revista): a série temporal precisa de base consistente. Um
+evento inicial atípico sobre poucos meses distorce; com 6+ ele é diluído. (Ver "Princípios de
+indicadores financeiros" abaixo — a lição da XP.)
+- **Gráfico principal**: LINHA, despesas vs receitas (duas linhas — a MARGEM entre elas é a leitura:
+  "gasto dentro do que ganho ao longo do tempo?"). Valores em R$ (não %). Base CONSUMO.
+- **Gráfico de categoria** (SEPARADO do principal, não integrado — eixos e semânticas diferentes):
+  um SELETOR de categoria (chips/dropdown) que mostra UMA categoria por vez ao longo do tempo. Várias
+  linhas sobrepostas = espaguete ilegível. Uma linha limpa responde "como essa categoria evoluiu?".
+- **Filtro de horizonte** (3/6/12/tudo), default 6. O backend já é parametrizado (?meses=N). O FILTRO
+  TAMBÉM FLORESCE — as opções se limitam ao histórico: coverage>=6 → [3·6·Tudo] (Tudo=6); coverage>=12
+  → [3·6·12·Tudo]. NUNCA oferecer horizonte maior que o histórico (plotaria meses vazios que enganam
+  — a lição XP aplicada ao filtro). "Tudo" = todo o histórico (teto 60 do backend).
+- **MÊS CORRENTE = PARCIAL**: o mês corrente está acontecendo → o último ponto é sempre "baixo" e
+  parece uma QUEDA falsa. Marcar visualmente como parcial (linha tracejada / cor / rótulo "em
+  andamento") OU excluir da série. Nunca deixar o parcial parecer tendência de queda. (Mesma
+  disciplina da média da Seção 2, que exclui o corrente.)
+- Gatilho é DADOS (coverage = competências distintas com lançamento), não tempo de conta. Quem
+  importar 6 meses de histórico destrava na hora; quem tem conta há 6 meses mas nunca lançou, não.
+
+## PRINCÍPIOS DE INDICADORES FINANCEIROS (a lição da XP — vale para TODO gráfico/métrica do Hivvo)
+Origem: Lucas relatou que a XP Investimentos mostrou "-78% de rendimento" por ~1 ano por causa de um
+evento inicial atípico (compra de ~R$13 numa base minúscula durante a fase de aprendizado) que
+contaminou uma métrica PERCENTUAL COMPOSTA sobre base pequena — só "corrigiu" quando o evento saiu
+da janela móvel. Para o Hivvo NUNCA repetir isso:
+1. **Prefira valores ABSOLUTOS (R$) a percentuais** em gráficos/indicadores. % sobre base pequena
+   mente (+200% de R$10 é irrelevante). [Já aplicado: curadoria da Seção 2 por R$.]
+2. **Trate base zero/pequena explicitamente** — "nova", "sem base", NUNCA "+∞"/"+400%" cru. [Já
+   aplicado: Seção 2 categoria nova/zerada.]
+3. **O mês corrente (parcial) NUNCA contamina série ou média** — marque como parcial ou exclua. [Já
+   aplicado: média da Seção 2; a aplicar: gráfico da Seção 3.]
+4. **Não mostre análise temporal até haver base suficiente** — o florescimento tardio protege contra
+   eventos iniciais atípicos. [Já aplicado: Seção 3 em 6 meses; o filtro limitado ao histórico.]
+5. **EVITE métricas compostas/acumuladas ancoradas num ponto inicial.** O Hivvo hoje mede fluxo/
+   consumo POR PERÍODO (absoluto), não crescimento composto sobre uma base — por isso é imune ao bug
+   da XP. SE um dia introduzir "evolução patrimonial" ou "% de progresso desde o início" (o 50/30/20
+   pode pedir), ancore com cuidado: base = capital/estado real, janela móvel, EXCLUA a fase de setup.
+Quatro dos cinco já eram seguidos por instinto na sessão — a história da XP CONFIRMOU os princípios,
+não revelou buraco. O #5 é preventivo (só importa se surgir métrica composta).
 
 ### Seção 4 — Insights da IA
 FORA do escopo inicial (decidido). Possível no futuro (Gemini comentando padrões). Registrado, não
 construído agora.
 
 ## LIMIARES DE FLORESCIMENTO
-- Seção 1: há qualquer transação no mês → aparece.
-- Seção 2: ≥2 meses com dados → aparece.
-- Seção 3: ≥3 meses com dados → aparece.
-("Mês com dados" = mês com ao menos uma transação/lançamento. Definir a contagem exata na
-investigação — provável: meses distintos com lançamento no histórico do usuário.)
+- Seção 1: há qualquer transação no mês → aparece (independe de coverage — reflete o mês corrente).
+- Seção 2: coverage >= 2 → aparece (há mês anterior). A comparação vs MÉDIA só com coverage >= 3.
+- Seção 3: coverage >= 6 → aparece (base consistente p/ série temporal — lição XP). O filtro de
+  horizonte também floresce: coverage>=6 → [3·6·Tudo]; coverage>=12 → [3·6·12·Tudo].
+("Mês com dados" = competência distinta com lançamento de CONSUMO. É o que /coverage conta.)
 
 ## LOCALIZAÇÃO
 Aba "Análise" dentro de "Início" (ao lado de "Visão geral" = o Dashboard atual). Não incha a barra

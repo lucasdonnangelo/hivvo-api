@@ -35,8 +35,21 @@ Serve o usuário novo — valor no dia 1. Aprofunda o que o Dashboard só resume
   consumo-por-cartão exige carregar `cartao_id` na trilha de CONSUMO (`LancamentoFluxo` de consumo
   não tem hoje) — mexe no núcleo do cálculo; e a fatura-por-cartão (fluxo) JÁ existe na lente 3d
   (/invoices/{ano}/{mes}), então não há lacuna urgente. Lucas quer adicionar LOGO APÓS o Resumo
-  estar pronto — fast-follow explícito, leva dedicada (adicionar cartao_id à trilha de consumo +
-  endpoint consumo-por-cartão + a UI na Seção 1).
+  estar pronto — fast-follow explícito, leva dedicada.
+  DECISÕES DO FAST-FOLLOW (fechadas): (a) base CONSUMO — "quanto GASTEI/PASSEI em cada cartão este
+  mês" (valor cheio pela data da compra; parcelada conta cheia no mês da compra, não a parcela). (b)
+  QUALQUER CARTÃO agrupado cru por `cartao_id` — crédito, débito e "ambos" juntos no MESMO cartão
+  (a pergunta é "quanto gastei NESTE cartão físico", independente da modalidade; separar débito
+  fragmentaria um cartão "ambos" em dois baldes — errado). "SEM CARTÃO" = só PIX/à vista (cartao_id
+  NULL) + recorrências. Invariante: soma(por cartão + sem cartão) == consumo.despesas do mês. (c)
+  DESPESA-ONLY (receita não entra — não se recebe salário em cartão). (d) DISTINÇÃO CRÍTICA na UI:
+  isto é "gastei/passei neste cartão" (consumo), a lente 3d é "vou pagar desta fatura" (fluxo). Com
+  débito no meio, num cartão "ambos" parte já saiu (débito) e parte vira fatura (crédito) — o rótulo
+  DEVE dizer "gastei", não "vou pagar", senão confunde com a fatura da 3d. (e) Padrão técnico:
+  `cartao_id: Optional[int]=None` no LancamentoFluxo, preenchido só na fonte C1 (Transacao) da trilha
+  de consumo MENSAL, MESMO padrão aditivo de data/descricao; o endpoint agrupa cru por cartao_id (NÃO
+  consulta Cartao.tipo — qualquer cartão conta). Teste-guarda: trilha de fluxo não vaza; paridade
+  Resumo/Dashboard intacta.
 - **Receitas vs despesas**: a composição do mês (já existe no /monthly).
 - **Destaques**: a maior despesa, o dia de maior gasto, o número de transações (endpoint novo).
 

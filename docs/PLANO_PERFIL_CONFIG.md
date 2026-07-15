@@ -1,10 +1,15 @@
 # PLANO_PERFIL_CONFIG.md — Separação Perfil vs Configurações
 
 > Documento de design. Fecha O QUE cada tela é antes de qualquer código.
-> Problema: o SettingsPage virou depósito — mistura identidade (nome/senha), conta/LGPD (logout/
-> reset/DELETE /auth/me), dados de gestão (categorias, recorrências) e ferramentas (importar/backup).
-> E há DOIS pontos de entrada sobrepostos: o menu do ícone de perfil (Importar/Backup/Categorias/
-> Config/Termos) e o próprio SettingsPage — "categorias" aparece nos dois.
+> Problema: o SettingsPage virou depósito — mistura identidade (nome/senha), conta/LGPD (logout,
+> Termos), dados de gestão (categorias, recorrências) e ferramentas (importar/exportar, resetar IA).
+> Uma tela só, 8 seções, sem eixo: "quem sou eu" e "como uso o app" no mesmo rolo.
+>
+> ⚠️ A premissa original deste doc dizia que havia "DOIS pontos de entrada sobrepostos: o menu do
+> ícone de perfil (Importar/Backup/Categorias/Config/Termos) e o próprio SettingsPage". **Isso era
+> falso** (ver INVENTÁRIO): o ponto de entrada era UM só — o ícone chamava `navigate('/settings')`
+> direto. Aqueles "5 itens" eram as seções DE DENTRO do SettingsPage. A fonte do erro era o
+> Hivvo_Referencia.md, já corrigido.
 
 ## DECISÃO ESTRUTURAL: DUAS TELAS (não três)
 - **Perfil** = "quem sou eu" (identidade, segurança, sessão). Pequeno e coeso; entra-se raramente.
@@ -12,14 +17,32 @@
 Três telas (Perfil + Preferências + Gerenciar-dados) seria over-engineering para o tamanho atual.
 
 ## NAVEGAÇÃO
-O ícone de perfil (header) abre um **menu enxuto**: **Perfil** | **Configurações** (+ Sair direto).
-Substitui o menu atual bagunçado de 5 itens. Cada destino organiza suas coisas dentro. Acaba a
-sobreposição dos dois pontos de entrada.
+O ícone de perfil (header mobile / sidebar desktop) abre um **menu enxuto**: **Perfil** |
+**Configurações** | **Sair**. Cada destino organiza suas coisas dentro.
+
+> ⚠️ Este menu **NASCE no BATCH 1 — não substitui nada**. Não havia menu nenhum antes: o ícone
+> chamava `navigate('/settings')` direto. É componente NOVO (`components/layout/ProfileMenu.tsx`),
+> não a reforma de um menu existente. ✅ Implementado no BATCH 1.
 
 ## PERFIL — "quem sou eu"
 - **Nome** (editável — UM campo, aceita nome completo). NÃO dividir em nome/sobrenome: exigiria
   migration e o campo atual já aceita "Lucas Donnangelo". Se um dia precisar do primeiro nome
   (saudação), `nome.split(' ')[0]` resolve sem migration.
+  - 🐛 **BUG CORRIGIDO no BATCH 1: o campo "Nome" editava o `username`, não o `nome_completo`.**
+    O SettingsPage fazia `useState(user?.username ?? '')` e o `updateMe` mandava `{username}` — ou
+    seja, sob o rótulo "Nome" o usuário vinha editando um identificador interno, auto-gerado do
+    e-mail, que o plano decidiu nem sequer expor. (Ironia: o `PUT /auth/me` só aceitava `username`,
+    então os dois lados estavam consistentemente errados — foi o que mascarou o bug.)
+    **Consequência visível:** para quem já editou aquele campo, o valor exibido no Perfil MUDA
+    (ex.: `lucas.donnangelo` → `Lucas Donnangelo`), porque agora mostra o campo certo. **É a
+    correção aparecendo, não uma regressão** — o `nome_completo` sempre esteve lá, vindo do
+    cadastro, apenas nunca era exibido nem editável.
+  - **`nome_completo` NUNCA é NULL:** `nullable=False` desde a migration inicial (`abdb546095c0`) e
+    obrigatório no `RegisterRequest` — não há conta antiga sem nome. Mas o `RegisterRequest` não tem
+    `min_length`, então uma chamada DIRETA à API consegue gravar `""` (a UI exige 2+). Por isso o
+    avatar usa `initialDoUsuario(nome, email)` (`lib/userInitial.ts`), com fallback
+    `nome → email → '?'`. O padrão ANTIGO (`user?.username?.[0].toUpperCase() ?? '?'`) **estourava**
+    com string vazia: `""[0]` é `undefined` e o `?? '?'` nunca chegava a rodar — o throw vinha antes.
 - **E-mail** (READ-ONLY). Não há fluxo de troca de e-mail hoje; editável seria feature de backend →
   backlog.
 - **NÃO expor o username.** É auto-gerado do e-mail, artefato interno, sem função visível (login é
@@ -33,14 +56,25 @@ sobreposição dos dois pontos de entrada.
 - **Termos e Privacidade.**
 
 ## CONFIGURAÇÕES — "como uso o app"
+Ordem: **Categorias · Recorrências · Assistente IA · Meus dados** (+ **Sobre** no BATCH 2).
 - **Categorias** (as duas seções por tipo, com os "+" próprios — já implementado, só migra de lugar).
 - **Recorrências** (a Section completa: listar/editar/encerrar/corrigir-valor/apagar permanente —
   já implementado, só migra de lugar).
+- **Assistente IA** — "Resetar Assistente" (`clearHistorico` → apaga o histórico do chat). **JÁ
+  EXISTE** hoje no SettingsPage; o plano original OMITIA esta seção e ela sumiria calada. Migra de
+  lugar INTACTA, como Categorias/Recorrências. Fica em **seção própria, NÃO dentro de "Meus dados"**:
+  é "como uso o app", não identidade — e diluiria o peso de alerta das ações irreversíveis (excluir
+  conta / começar do zero), que devem ficar sozinhas nesse bloco.
 - **Meus dados** (agrupa entrada/saída/eliminação — a natureza LGPD: acesso + eliminação):
-  - Importar CSV
-  - Exportar / Backup
-  - **Começar do zero** (NOVO)
-  - **Excluir minha conta** (existe: `DELETE /auth/me`) — SAI do Perfil e vem para cá.
+  - **Importar CSV** — mantido: a feature JÁ FUNCIONA (ver investigação abaixo).
+  - **Exportar transações (JSON)** (rótulo honesto — ver investigação; o nome do arquivo baixado
+    também deixa de ser `hivvo-backup-*.json`, pela mesma razão).
+  - **Começar do zero** (NOVO — BATCH 2; backend `POST /auth/reset-data` já pronto).
+  - **Excluir minha conta** — ⚠️ **NÃO "sai do Perfil": ela NUNCA existiu na UI.** `DELETE /auth/me`
+    existe no backend desde o F-07, mas não era chamado em lugar nenhum do frontend (não havia
+    `deleteMe` em `services/auth.ts`). É **construção NOVA**, feita no BATCH 1: modal com
+    reautenticação por senha (o backend exige), e no sucesso `clearAuth()` + `/login` — sem chamar
+    logout, porque a conta e a sessão já não existem no servidor.
   - Racional: as duas ações irreversíveis (zerar + excluir) ficam JUNTAS, mesmo peso de alerta, em
     vez de espalhadas por duas telas.
 - **Sobre** (NOVO, rodapé): número da versão + ajuda/contato. Útil de verdade — quando alguém
@@ -87,9 +121,8 @@ sobreposição dos dois pontos de entrada.
   core/auth.py, usada por change_password/reset_password) — falta só a rota (`POST /auth/logout-all`,
   ~10 linhas, sem migration/schema).
   ⚠️ **TEXTO HONESTO:** o access token é JWT stateless e vive até 30 min → os outros dispositivos
-  seguem funcionando até lá. Expulsão instantânea exigiria checar revogação a cada request — outro
-  projeto. (A redação sugerida aqui — "Encerra as outras sessões" — pressupunha a opção B, que
-  mantinha esta sessão viva. **Fomos de opção A**: ver a redação final no §EXECUÇÃO BACKEND.)
+  seguem funcionando até lá. Dizer **"Encerra as outras sessões"**, NUNCA "desconecta agora".
+  Expulsão instantânea exigiria checar revogação a cada request — outro projeto.
 - **Trocar senha (`PUT /auth/password`) JÁ revoga todas as sessões** (inclusive a atual) na mesma
   transação. ⚠️ Mas o access token atual sobrevive ~30 min → a UI DEVE fazer **logout explícito**
   após o 204, senão o usuário fica num limbo.
@@ -97,6 +130,54 @@ sobreposição dos dois pontos de entrada.
   DESATIVADO em produção; o `/health` é genérico de propósito (F-14). DECISÃO: usar a versão do
   **frontend** (é o que o usuário está olhando ao reportar bug) via `import.meta.env.VITE_APP_VERSION`
   (package.json ou SHA do commit no build). NÃO tocar o backend.
+
+## INVENTÁRIO DO SettingsPage (varredura 14/07/2026) — o que EXISTE hoje vs. o plano
+Varredura completa do arquivo (todas as `<Section>`, todos os modais, todas as chamadas de serviço).
+São **8 seções** e **12 ações vivas**. A lista abaixo é fechada — não há uma nona.
+
+| # | Seção (hoje) | Ação viva | O plano previa? | Destino |
+|---|---|---|---|---|
+| 1 | Perfil | Nome (input+Salvar) | sim | **Perfil** |
+| 2 | Perfil | E-mail (read-only) | sim | **Perfil** |
+| 3 | Perfil | Alterar senha | sim | **Perfil** (+ logout explícito) |
+| 4 | Perfil | Sair da conta | sim | **Perfil** + menu |
+| 5 | Categorias de despesa | listar/adicionar/remover | sim | **Configurações** |
+| 6 | Categorias de receita | listar/adicionar/remover | sim | **Configurações** |
+| 7 | Recorrências | listar/editar/alterar-vs-corrigir valor/encerrar/apagar permanente | sim | **Configurações** |
+| 8 | Importar dados | Importar CSV → `/import` | **NÃO** (mandava excluir) | **Config. → Meus dados** |
+| 9 | Exportar dados | Exportar JSON | sim ("Backup") | **Config. → Meus dados** |
+| 10 | Assistente IA | Resetar Assistente | **NÃO** (omitida) | **Config. → seção própria** |
+| 11 | Legal | Termos de Uso → `/terms` | sim | **Perfil** |
+| 12 | Legal | Política de Privacidade → `/privacy` | sim | **Perfil** |
+
+**Duas features vivas o plano não mapeou** (8 e 10) — ambas sumiriam caladas. Resolvidas acima.
+
+### FANTASMAS — o plano supunha que existiam, mas NÃO existem
+- **O "menu de 5 itens" do ícone de perfil NÃO EXISTE.** Em `MobileLayout.tsx` e `DesktopLayout.tsx`
+  o ícone chama `navigate('/settings')` DIRETO — não há dropdown algum. Os "5 itens" que o plano
+  descreve são, na verdade, as SEÇÕES DE DENTRO do SettingsPage. Consequência: **não há sobreposição
+  de dois pontos de entrada** (há UM só), e o menu enxuto não "substitui" nada — ele é **CRIADO**
+  (componente novo).
+- **"Excluir minha conta" NÃO EXISTE na UI.** `DELETE /auth/me` não é chamado em lugar nenhum do
+  frontend (não há `deleteMe` em `services/auth.ts`). Não "SAI do Perfil": nasce agora, com modal de
+  reautenticação por senha.
+
+### BUGS REAIS ENCONTRADOS (entram no BATCH 1)
+- **O campo "Nome" edita o `username`, não o `nome_completo`.** `useState(user?.username ?? '')` +
+  `updateMe` mandando `{username}`. O usuário vem editando o username achando que é o nome. Ao
+  corrigir, o valor exibido MUDA para quem já editou (ex.: `lucas.donnangelo` → `Lucas Donnangelo`)
+  — é a correção, não uma regressão.
+- **O avatar usa `username[0]`** nos dois layouts → passa a `nome_completo[0]` (o plano decidiu não
+  expor o username).
+- **`UserResponse` do frontend não tem `nome_completo`** (`{id, email, username}`), enquanto o
+  backend devolve `{id, email, username, nome_completo, criado_em, ativo}`. Há ainda um tipo inline
+  duplicado em `services/api.ts` (refresh) a alinhar.
+- **Trocar senha NÃO faz logout hoje** — só toast de sucesso. É o limbo de ~30 min descrito acima.
+
+### BACKEND — status real (commit 9921075, JÁ MERGEADO em master)
+`PUT /auth/me` (aceita `nome_completo`), `DELETE /auth/me`, `POST /auth/reset-data`,
+`POST /auth/logout-all` e a purga compartilhada estão **prontos e no master**. O BATCH 2 já tem
+backend; não falta nada de API para ele.
 
 ## NÃO ENTRA AGORA (backlog, com escopo real)
 - **Preferências / Aparência (tema claro + acessibilidade)**: NÃO criar a seção vazia hoje. Tema
@@ -109,10 +190,23 @@ sobreposição dos dois pontos de entrada.
 - **Trocar e-mail**: exigiria backend (verificação, unicidade).
 
 ## ORDEM DE EXECUÇÃO
-1. ~~**Investigação**~~ ✅ (13/07/2026) — resultados no §DECISÕES DA INVESTIGAÇÃO acima.
-2. ~~**Backend**~~ ✅ (14/07/2026) — §EXECUÇÃO BACKEND abaixo.
-3. **Frontend**: as duas telas + o menu enxuto + migrar Categorias/Recorrências de lugar (MOVER
-   intacto, não reescrever — mesmo padrão da extração OverviewPage do Resumo). ← **PRÓXIMO**
+1. ✅ **Investigação** — feita (ver DECISÕES DA INVESTIGAÇÃO + INVENTÁRIO).
+2. ✅ **Backend** — commit `9921075`, mergeado em master: `PUT /auth/me` (aceita `nome_completo`),
+   `POST /auth/reset-data`, `POST /auth/logout-all`, purga compartilhada. Nada falta de API.
+3. ✅ **Frontend BATCH 1 (estrutura)** — 14/07/2026:
+   - `components/layout/ProfileMenu.tsx` (NOVO) — menu Perfil · Configurações · Sair, nos dois layouts.
+   - `pages/Profile/ProfilePage.tsx` (NOVO, rota `/profile`) — nome editável (`nome_completo`),
+     e-mail read-only, trocar senha **com logout explícito**, sair, Termos e Privacidade.
+   - `pages/Settings/SettingsPage.tsx` — Categorias · Recorrências · Assistente IA (as três MOVIDAS
+     intactas) + Meus dados (Importar CSV · Exportar transações JSON · Excluir minha conta).
+   - `components/ui/SettingsSection.tsx` (NOVO) — `Section`/`SettingsRow` extraídas, usadas pelas duas
+     telas (duplicar o markup faria uma divergir da outra na primeira mudança).
+   - `lib/userInitial.ts` (NOVO) — inicial do avatar com fallback `nome → email → '?'`.
+   - Contratos: `UserResponse` alinhado ao backend (+`nome_completo`, `criado_em`, `ativo`);
+     `updateMe` manda `{nome_completo}`; `deleteMe(password)` nasce; tipo inline duplicado do
+     `/auth/refresh` em `services/api.ts` eliminado.
+4. ⬜ **Frontend BATCH 2** — "Começar do zero", "Sair de todos os dispositivos" e "Sobre/versão"
+   (backend dos dois primeiros JÁ PRONTO; a versão sai de `import.meta.env.VITE_APP_VERSION`).
 
 ## EXECUÇÃO BACKEND (14/07/2026) — CONCLUÍDO
 Sem migration. Suíte: **499 testes** (474 + 25), todos verdes.

@@ -28,6 +28,7 @@ from app.models.chat import ChatMessage
 from app.models.installment import Parcela
 from app.models.pagamento_fatura import PagamentoFatura
 from app.models.password_reset_token import PasswordResetToken
+from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.refresh_token import RefreshToken
 from app.models.transaction import Transacao
 from app.models.user import Usuario
@@ -37,6 +38,8 @@ from app.schemas.auth import (
     ForgotPasswordRequest,
     LoginRequest,
     RegisterRequest,
+    ResetDataRequest,
+    ResetDataResponse,
     ResetPasswordRequest,
     UpdateMeRequest,
     UserResponse,
@@ -224,20 +227,87 @@ def update_me(
     current_user: Usuario = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    existing = session.exec(
-        select(Usuario).where(
-            Usuario.username == body.username,
-            Usuario.id != current_user.id
-        )
-    ).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Username já em uso.")
+    """Atualiza o perfil — aplica só os campos que vieram (exclude_unset).
 
-    current_user.username = body.username
+    A UI do Perfil manda apenas nome_completo; username segue aceito (interno,
+    auto-gerado do e-mail) para um cliente futuro. O schema garante que ao menos
+    um campo veio, e não-None.
+    """
+    campos = body.model_dump(exclude_unset=True)
+
+    # Só consulta unicidade quando o username está mesmo mudando.
+    if body.username is not None:
+        existing = session.exec(
+            select(Usuario).where(
+                Usuario.username == body.username,
+                Usuario.id != current_user.id
+            )
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Username já em uso.")
+
+    for campo, valor in campos.items():
+        if valor is not None:
+            setattr(current_user, campo, valor)
+
     session.add(current_user)
     session.commit()
     session.refresh(current_user)
     return UserResponse.model_validate(current_user)
+
+
+def _purgar_dados_do_usuario(uid: int, session: Session) -> dict[str, int]:
+    """Apaga os DADOS do usuário (não a conta) — base do reset E do delete_me.
+
+    UMA função porque o furo que ela corrige nasceu de dois lugares que deveriam
+    ser um: o delete_me esquecia `recorrencias`/`recorrencia_vigencias` (só o ON
+    DELETE CASCADE do Postgres salvava, e o teste não pegava — o SQLite da suíte
+    não força FK sem PRAGMA). Um lugar para errar.
+
+    ORDEM (confirmada nas migrations, não negociável): `parcelas.transacao_id` é
+    CASCADE, então parcelas saem antes de transacoes; `transacoes.cartao_id` e
+    `parcelas.cartao_id` são NO ACTION — o T-14 as deixou fora do cascade DE
+    PROPÓSITO (soft delete de cartão) —, então o banco BLOQUEIA apagar cartão com
+    compras e os deletes têm de ser explícitos nesta ordem. Nenhum cascade cobre
+    o caminho de `cartoes`, e no reset o `usuario_id` sobrevive por definição:
+    não dá para apoiar no banco.
+
+    NÃO commita — quem chama controla a transação (tudo-ou-nada num único
+    commit). NÃO apaga: usuarios, categorias, refresh_tokens,
+    password_reset_tokens.
+
+    Devolve o rowcount por tabela (grátis: vem do próprio DELETE).
+    """
+    apagados: dict[str, int] = {}
+
+    def _apagar(stmt, tabela: str) -> None:
+        # synchronize_session=False: delete em massa não precisa reconciliar a
+        # identity map (o chamador não reusa as instâncias apagadas), e o
+        # delete por subquery não é avaliável em Python.
+        result = session.exec(stmt.execution_options(synchronize_session=False))
+        apagados[tabela] = result.rowcount
+
+    _apagar(delete(Parcela).where(Parcela.usuario_id == uid), "parcelas")
+    _apagar(delete(Transacao).where(Transacao.usuario_id == uid), "transacoes")
+    _apagar(delete(PagamentoFatura).where(PagamentoFatura.usuario_id == uid), "pagamentos_fatura")
+    _apagar(delete(Cartao).where(Cartao.usuario_id == uid), "cartoes")
+    # recorrencia_vigencias não tem usuario_id (liga por recorrencia_id) — daí a
+    # subquery, e daí ela sair ANTES de recorrencias: depois, a subquery não
+    # acharia mais as linhas-pai para casar.
+    _apagar(
+        delete(RecorrenciaVigencia).where(
+            RecorrenciaVigencia.recorrencia_id.in_(
+                select(Recorrencia.id).where(Recorrencia.usuario_id == uid)
+            )
+        ),
+        "recorrencia_vigencias",
+    )
+    _apagar(delete(Recorrencia).where(Recorrencia.usuario_id == uid), "recorrencias")
+    # chat_messages entra na purga: o histórico referencia lançamentos por texto —
+    # zerar sem limpá-lo deixa a IA conversando sobre transações que não existem.
+    _apagar(delete(ChatMessage).where(ChatMessage.usuario_id == uid), "chat_messages")
+
+    return apagados
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
@@ -251,10 +321,10 @@ def delete_me(
 
     Reautenticação obrigatória (senha atual): um cookie sozinho não pode
     deletar a conta. Apaga TODOS os dados do usuário numa ÚNICA transação
-    (tudo ou nada). A ordem dos deletes respeita as FKs entre as filhas —
-    quem aponta é apagado antes de quem é apontado (parcelas → transacoes
-    → cartoes → demais → usuário) —, correto também no Postgres real, não
-    só no SQLite. Em produção os cascades do T-14 são defesa em profundidade.
+    (tudo ou nada): a purga compartilhada (dados) + o que ela preserva de
+    propósito para o reset (categorias, tokens) + a própria conta. A ordem é
+    a de _purgar_dados_do_usuario, correta no Postgres real, não só no SQLite.
+    Em produção os cascades do T-14 são defesa em profundidade.
     """
     # Reautenticação: senha errada não apaga nada.
     if not verify_password(body.password, current_user.senha_hash):
@@ -262,16 +332,12 @@ def delete_me(
 
     uid = current_user.id
 
-    # Ordem respeita FKs inter-tabelas (parcelas aponta p/ transacoes e cartoes;
-    # transacoes aponta p/ cartoes). categorias/tokens/chat só apontam p/ usuarios.
-    session.exec(delete(Parcela).where(Parcela.usuario_id == uid))
-    session.exec(delete(Transacao).where(Transacao.usuario_id == uid))
-    session.exec(delete(PagamentoFatura).where(PagamentoFatura.usuario_id == uid))
-    session.exec(delete(Cartao).where(Cartao.usuario_id == uid))
+    _purgar_dados_do_usuario(uid, session)
+    # O que a purga preserva de propósito (o reset mantém a conta utilizável) e
+    # aqui precisa cair junto. Só apontam p/ usuarios — sem ordem entre si.
     session.exec(delete(CategoriaCustomizada).where(CategoriaCustomizada.usuario_id == uid))
     session.exec(delete(RefreshToken).where(RefreshToken.usuario_id == uid))
     session.exec(delete(PasswordResetToken).where(PasswordResetToken.usuario_id == uid))
-    session.exec(delete(ChatMessage).where(ChatMessage.usuario_id == uid))
     session.delete(current_user)
     session.commit()
 
@@ -279,6 +345,65 @@ def delete_me(
     logger.info("conta_excluida usuario_id=%s", uid)
 
     # Sessão do próprio usuário já cai nos deletes; limpa os cookies na resposta.
+    _clear_auth_cookies(response)
+
+
+@router.post("/reset-data", response_model=ResetDataResponse)
+def reset_data(
+    body: ResetDataRequest,
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """"Começar do zero" — zera os LANÇAMENTOS, mantém a conta.
+
+    Reautenticação obrigatória (é irreversível, mesmo padrão do delete_me).
+    Reset TOTAL, nunca seletivo: com `transacoes.cartao_id`/`parcelas.cartao_id`
+    em NO ACTION, cada combinação seletiva abre um estado inconsistente
+    diferente (ver _purgar_dados_do_usuario).
+
+    PRESERVA o usuario_id (nunca deletar+recriar: o id novo quebraria tudo que o
+    assume), as categorias customizadas (o usuário quer zerar os lançamentos, não
+    reconstruir a taxonomia dele) e os tokens — o usuário CONTINUA LOGADO, então
+    os cookies não são limpos.
+
+    UM único commit: erro no meio faz rollback e nada é apagado. Commit em etapas
+    deixaria estado parcial (usuário sem transações, mas com cartões).
+    """
+    if not verify_password(body.password, current_user.senha_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Senha incorreta.")
+
+    apagados = _purgar_dados_do_usuario(current_user.id, session)
+    session.commit()
+
+    # Log de auditoria SEM PII — só id + evento.
+    logger.info("dados_resetados usuario_id=%s", current_user.id)
+
+    return ResetDataResponse(**apagados)
+
+
+@router.post("/logout-all", status_code=status.HTTP_204_NO_CONTENT)
+def logout_all(
+    response: Response,
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Sair de TODOS os dispositivos — revoga todas as sessões do usuário.
+
+    Limpa os cookies desta sessão também: revoke_all_refresh_tokens revoga
+    TAMBÉM o refresh deste dispositivo, então manter o cookie deixaria o cliente
+    segurando um token já morto, que falharia no próximo refresh — um limbo. Sai
+    daqui junto: "você saiu; entre de novo".
+
+    ATENÇÃO ao texto na UI — o rótulo é LITERAL: "Sair de todos os
+    dispositivos", este INCLUÍDO. O que precisa de ressalva é o prazo dos
+    outros: o access token é JWT stateless (vive até
+    ACCESS_TOKEN_EXPIRE_MINUTES), então eles seguem funcionando até ele expirar
+    — expulsão instantânea exigiria checar revogação a cada request. Redação:
+    "Você sairá de todos os dispositivos, incluindo este. Outros dispositivos
+    podem levar até 30 minutos."
+    """
+    revoke_all_refresh_tokens(current_user.id, session)
+    session.commit()
     _clear_auth_cookies(response)
 
 

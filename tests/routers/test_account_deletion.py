@@ -21,7 +21,9 @@ from app.models.card import Cartao
 from app.models.category import CategoriaCustomizada
 from app.models.chat import ChatMessage
 from app.models.installment import Parcela
+from app.models.pagamento_fatura import PagamentoFatura
 from app.models.password_reset_token import PasswordResetToken
+from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.refresh_token import RefreshToken
 from app.models.transaction import Transacao
 from app.models.user import Usuario
@@ -30,10 +32,16 @@ from main import app
 SENHA = "senha-correta-1"
 
 # Tabelas filhas ligadas ao usuário — a varredura do teste percorre todas.
+# PagamentoFatura/Recorrencia/RecorrenciaVigencia entraram na correção do furo:
+# o delete_me não as apagava explicitamente (só o CASCADE do Postgres salvava) e
+# esta lista não as continha, então a varredura "zero linhas" passava com o furo
+# aberto. recorrencia_vigencias é contada à parte (não tem usuario_id).
 _CHILD_MODELS = [
     Parcela,
     Transacao,
+    PagamentoFatura,
     Cartao,
+    Recorrencia,
     CategoriaCustomizada,
     RefreshToken,
     PasswordResetToken,
@@ -83,6 +91,35 @@ def _popular_usuario(session) -> Usuario:
             fatura_ano=2026,
         )
     )
+    session.add(
+        PagamentoFatura(
+            usuario_id=user.id,
+            cartao_id=cartao.id,
+            fatura_mes=7,
+            fatura_ano=2026,
+            pago=True,
+        )
+    )
+
+    recorrencia = Recorrencia(
+        usuario_id=user.id,
+        tipo="despesa",
+        categoria="Moradia",
+        forma_pagamento="Pix",
+        dia_do_mes=10,
+        descricao="Aluguel",
+    )
+    session.add(recorrencia)
+    session.flush()
+    session.add(
+        RecorrenciaVigencia(
+            recorrencia_id=recorrencia.id,
+            valor=Decimal("2500.00"),
+            mes_inicio=1,
+            ano_inicio=2026,
+        )
+    )
+
     session.add(CategoriaCustomizada(usuario_id=user.id, nome="Pets"))
     session.add(
         RefreshToken(
@@ -117,6 +154,12 @@ def _rows_do_usuario(session, uid: int) -> dict:
         m.__tablename__: len(session.exec(select(m).where(m.usuario_id == uid)).all())
         for m in _CHILD_MODELS
     }
+    # recorrencia_vigencias não tem usuario_id. Conta a tabela INTEIRA de
+    # propósito: filtrar por recorrencia_id IN (recorrencias do usuário) daria 0
+    # assim que as recorrências saíssem — e a vigência órfã, que é justamente o
+    # bug possível, ficaria invisível. A fixture cria só este usuário, então
+    # qualquer linha remanescente aqui é órfã.
+    counts["recorrencia_vigencias"] = len(session.exec(select(RecorrenciaVigencia)).all())
     counts["usuarios"] = 1 if session.get(Usuario, uid) is not None else 0
     return counts
 

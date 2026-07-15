@@ -205,8 +205,23 @@ backend; não falta nada de API para ele.
    - Contratos: `UserResponse` alinhado ao backend (+`nome_completo`, `criado_em`, `ativo`);
      `updateMe` manda `{nome_completo}`; `deleteMe(password)` nasce; tipo inline duplicado do
      `/auth/refresh` em `services/api.ts` eliminado.
-4. ⬜ **Frontend BATCH 2** — "Começar do zero", "Sair de todos os dispositivos" e "Sobre/versão"
-   (backend dos dois primeiros JÁ PRONTO; a versão sai de `import.meta.env.VITE_APP_VERSION`).
+4. ✅ **Frontend BATCH 2** — 15/07/2026, commit `fbe8b40` do hivvo-web (BATCH 1 + 2 já mergeados na
+   master de lá). Nada de backend mudou: as três peças só consomem o que o §EXECUÇÃO BACKEND entregou.
+   - **Perfil → "Sair de todos os dispositivos"**: `POST /auth/logout-all` → `clearAuth()` + `/login`.
+     Rótulo LITERAL da opção A. A UI NÃO chama `POST /auth/logout` antes — esta rota já revogou tudo
+     e limpou os cookies desta sessão. Confirmação em Modal, sem senha (disruptivo, mas reversível).
+   - **Configurações → Meus dados → "Começar do zero"**: `POST /auth/reset-data` → modal de dois
+     estados (senha → recibo), invalidação de todas as queries, SEM deslogar. O recibo aparece no
+     próprio modal — foi para isso que a rota devolve 200 e não 204. `recorrencia_vigencias` fica
+     FORA da exibição (versionamento interno; "2 vigências" não diz nada ao usuário); os outros 6
+     campos viram linhas com plural pt-BR, escondendo os zerados.
+   - **Configurações → "Sobre"**: versão + `contato@hivvo.app`. **Não consulta o backend** (o
+     `/openapi.json` está desativado em prod e o `/health` é genérico de propósito, F-14): a versão é
+     injetada no build do frontend via `define` no `vite.config.ts` (`pkg.version` + SHA do commit).
+   - Verificado ponta a ponta contra SQLite isolado (receita da skill `verify` — o Supabase não foi
+     tocado): recibo com contagens reais, senha errada → 401 sem apagar nada, sessão sobrevive ao
+     reset com o mesmo `usuario_id`, categorias customizadas preservadas, reset em conta vazia →
+     recibo todo zero, `logout-all` → 204 + `Set-Cookie` limpando e 401 no request seguinte.
 
 ## EXECUÇÃO BACKEND (14/07/2026) — CONCLUÍDO
 Sem migration. Suíte: **499 testes** (474 + 25), todos verdes.

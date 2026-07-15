@@ -114,7 +114,18 @@ colors: {
 | 4 | Cartões | Faturas, Gerenciar Parcelas | Lista de cartões + detalhe de fatura |
 | 5 | Assistente IA | — | Chat Gemini + painel de insights |
 
-**Menu secundário (ícone de perfil no header):** Importar CSV · Backup (download JSON/CSV) · Gerenciar categorias · Configurações da conta · Termos e Privacidade
+**Menu do ícone de perfil (header mobile / sidebar desktop):** **Perfil** · **Configurações** · **Sair**
+
+- **Perfil** (`/profile`) — nome (editável), e-mail (read-only), trocar senha, sair, Termos e Privacidade.
+- **Configurações** (`/settings`) — Categorias (despesa/receita) · Recorrências · Assistente IA
+  (Resetar Assistente) · Meus dados (Importar CSV · Exportar transações JSON · Excluir minha conta).
+
+> Histórico: até 14/07/2026 esta linha afirmava que o menu tinha 5 itens (Importar CSV · Backup ·
+> Gerenciar categorias · Configurações da conta · Termos e Privacidade). **Era falso e nunca existiu**
+> — o ícone chamava `navigate('/settings')` direto, sem dropdown algum; aqueles 5 itens eram, na
+> verdade, as SEÇÕES DE DENTRO do SettingsPage. A descrição de "Backup (download JSON/CSV)" também
+> era falsa em dois pontos: o export só traz transações (não é backup da conta) e só gera JSON, nunca
+> CSV. O menu acima existe de fato desde a separação Perfil/Configurações (BATCH 1).
 
 ### Features por Tela (implementadas)
 

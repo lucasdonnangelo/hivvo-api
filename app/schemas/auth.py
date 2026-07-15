@@ -6,13 +6,21 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class RegisterRequest(BaseModel):
     email: str
-    nome_completo: str
+    nome_completo: str = Field(min_length=2)
     password: str
 
     @field_validator("email")
     @classmethod
     def email_lowercase(cls, v: str) -> str:
         return v.strip().lower()
+
+    @field_validator("nome_completo", mode="before")
+    @classmethod
+    def strip_espacos(cls, v):
+        # mode="before": as constraints (min_length) precisam ver o valor JÁ
+        # aparado, senão "  " passaria por min_length=2 e gravaria nome em branco.
+        # Mesmo contrato do UpdateMeRequest.
+        return v.strip() if isinstance(v, str) else v
 
     @field_validator("password")
     @classmethod

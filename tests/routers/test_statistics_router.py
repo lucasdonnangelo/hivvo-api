@@ -9,7 +9,6 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
-from sqlmodel import select
 
 from app.models.card import Cartao
 from app.models.installment import Parcela
@@ -223,29 +222,6 @@ class TestMonthlyAPagar:
         assert _q(antes.pop("a_pagar")) == Decimal("100.00")
         assert _q(depois.pop("a_pagar")) == Decimal("0.00")
         assert antes == depois  # resto da resposta byte a byte igual
-
-    def test_parcela_pago_obsoleto_nao_mexe_em_nada(self, session, users, as_user):
-        # Parcela.pago está MORTO na camada de estatísticas: alternar a coluna
-        # obsoleta não muda a resposta INTEIRA do /monthly — nem o a_pagar.
-        _add_parcelada(session, users[0].id)
-
-        def _monthly():
-            return as_user(users[0]).get(
-                "/statistics/monthly", params={"mes": 7, "ano": 2026}
-            ).json()
-
-        antes = _monthly()
-        parcela_jul = session.exec(
-            select(Parcela).where(Parcela.fatura_mes == 7, Parcela.fatura_ano == 2026)
-        ).one()
-        parcela_jul.pago = True
-        parcela_jul.data_pagamento = HOJE
-        session.add(parcela_jul)
-        session.commit()
-        depois = _monthly()
-
-        assert _q(antes["a_pagar"]) == Decimal("100.00")
-        assert antes == depois  # resposta byte a byte igual, a_pagar incluso
 
 
 class TestDefaultMonth:

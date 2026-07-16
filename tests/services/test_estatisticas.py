@@ -215,16 +215,10 @@ class TestFluxoPorCompetencia:
         assert _q(receitas) == Decimal("5000.00")
         assert _q(despesas) == Decimal("50.00")
 
-    def test_total_parcelas_proximo_mes_deriva_de_competencia_ignora_pago(self, session):
-        # PLANO §1.3: pago deixou de ser fonte de verdade. Uma parcela paga que
-        # vence no próximo mês AINDA conta; cancelada NÃO conta.
+    def test_total_parcelas_proximo_mes_deriva_de_competencia(self, session):
+        # PLANO §1.3: deriva de fatura_mes/fatura_ano (Parcela.pago foi DROPADO
+        # na Fase 2 do #8). Parcela do próximo mês conta; cancelada NÃO conta.
         pai = _add_parcelada(session, "600.00", 3, 8, 2026)  # (8,2026)/(9)/(10)
-        # marca a parcela de competência (9,2026) como paga
-        parcela_set = session.exec(
-            select(Parcela).where(Parcela.fatura_mes == 9, Parcela.fatura_ano == 2026)
-        ).all()
-        for p in parcela_set:
-            p.pago = True
         # parcela cancelada na mesma competência (9,2026) — pai próprio para não
         # colidir no UNIQUE(transacao_id, numero_parcela) do pai anterior.
         outro_pai = Transacao(
@@ -244,7 +238,7 @@ class TestFluxoPorCompetencia:
         )
         session.commit()
 
-        # mês de referência 8/2026 → próximo mês = 9/2026, parcela de R$200 (paga)
+        # mês de referência 8/2026 → próximo mês = 9/2026, parcela de R$200
         total = _total_parcelas_proximo_mes(session, 1, 8, 2026)
         assert _q(total) == Decimal("200.00")
 
@@ -865,8 +859,9 @@ class TestAPagar:
         self._avulsa(session, dia_vencimento_cartao=10, fatura_mes=6)
         assert self._a_pagar(session, 6, 2026) == Decimal("400.00")
 
-    # ---- Testes-guarda da FRONTEIRA (Leva 2): pagamento não governa a
-    # projeção, e Parcela.pago está MORTO na camada de estatísticas
+    # ---- Teste-guarda da FRONTEIRA (Leva 2): pagamento não governa a
+    # projeção — só a marcação a_pagar reage a PagamentoFatura.
+    # (O guarda de Parcela.pago morreu na Fase 2 do #8: coluna dropada.)
 
     def _fotografia(self, session):
         lanc = _lancamentos_mes(session, 1, 7, 2026)
@@ -878,27 +873,6 @@ class TestAPagar:
             _agregar(_lancamentos_consumo_mes(session, 1, 7, 2026)),
             [_agregar(anual[m]) for m in range(1, 13)],
         )
-
-    def test_alternar_parcela_pago_nao_muda_nada(self, session):
-        # Parcela.pago está OBSOLETO: alternar não move NADA — nem o a_pagar
-        # (que agora deriva de PagamentoFatura), nem projeção/realizado/
-        # a_vir/consumo/anual.
-        _add_parcelada(session, "1200.00", 12, 1, 2026)
-        _add_recorrencia(session, dia=20)
-
-        antes, a_pagar_antes = self._fotografia(session), self._a_pagar(session, 7, 2026)
-
-        parcela_jul = session.exec(
-            select(Parcela).where(Parcela.fatura_mes == 7, Parcela.fatura_ano == 2026)
-        ).one()
-        parcela_jul.pago = True
-        parcela_jul.data_pagamento = HOJE_LEITURAS
-        session.add(parcela_jul)
-        session.commit()
-
-        depois, a_pagar_depois = self._fotografia(session), self._a_pagar(session, 7, 2026)
-        assert antes == depois
-        assert a_pagar_antes == a_pagar_depois == Decimal("100.00")
 
     def test_alternar_pagamento_fatura_so_muda_o_a_pagar(self, session):
         # O guarda da fronteira, agora sobre a fonte NOVA: a projeção

@@ -32,7 +32,7 @@ def _card(session, usuario_id):
     return card
 
 
-def _parcela(session, usuario_id, cartao_id, transacao_id, mes, ano, valor, pago=False, cancelado=False):
+def _parcela(session, usuario_id, cartao_id, transacao_id, mes, ano, valor, cancelado=False):
     session.add(
         Parcela(
             usuario_id=usuario_id,
@@ -46,7 +46,6 @@ def _parcela(session, usuario_id, cartao_id, transacao_id, mes, ano, valor, pago
             cartao_id=cartao_id,
             fatura_mes=mes,
             fatura_ano=ano,
-            pago=pago,
             cancelado=cancelado,
         )
     )
@@ -74,12 +73,12 @@ class TestT17InvoicesAgregacao:
         user_a, _ = users
         card = _card(session, user_a.id)
 
-        # Fatura (3, 2026): parcela paga 100 + parcela não-paga 50 + avulsa 30
-        _parcela(session, user_a.id, card.id, 1, 3, 2026, "100.00", pago=True)
-        _parcela(session, user_a.id, card.id, 2, 3, 2026, "50.00", pago=False)
+        # Fatura (3, 2026): parcela 100 + parcela 50 + avulsa 30
+        _parcela(session, user_a.id, card.id, 1, 3, 2026, "100.00")
+        _parcela(session, user_a.id, card.id, 2, 3, 2026, "50.00")
         _avulsa(session, user_a.id, card.id, 3, 2026, "30.00")
         # Fatura (4, 2026): uma parcela 200
-        _parcela(session, user_a.id, card.id, 3, 4, 2026, "200.00", pago=False)
+        _parcela(session, user_a.id, card.id, 3, 4, 2026, "200.00")
         # Excluídos: parcela cancelada e avulsa que é receita
         _parcela(session, user_a.id, card.id, 4, 3, 2026, "999.00", cancelado=True)
         _avulsa(session, user_a.id, card.id, 3, 2026, "999.00", tipo="receita")

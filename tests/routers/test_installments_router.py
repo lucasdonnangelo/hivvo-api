@@ -2,8 +2,8 @@
 
 Pagamento agora é por FATURA (PUT /invoices/{cartao_id}/{ano}/{mes}/pagamento,
 PagamentoFatura); mandar `pago`/`data_pagamento` na parcela vira 422 explícito
-(extra="forbid" no ParcelaUpdate) — não um no-op silencioso sobre a coluna
-obsoleta. Os campos restantes (cancelado, data_vencimento) seguem funcionando.
+(extra="forbid" no ParcelaUpdate — as colunas foram dropadas na Fase 2 do #8).
+Os campos restantes (cancelado, data_vencimento) seguem funcionando.
 """
 
 from sqlmodel import select
@@ -26,11 +26,6 @@ def test_put_com_pago_rejeitado_422(session, users, as_user):
 
     response = client.put(f"/installments/{parcela.id}", json={"pago": True})
     assert response.status_code == 422
-
-    # E não gravou nada na coluna obsoleta.
-    session.refresh(parcela)
-    assert parcela.pago is False
-    assert parcela.data_pagamento is None
 
 
 def test_put_com_data_pagamento_rejeitado_422(session, users, as_user):

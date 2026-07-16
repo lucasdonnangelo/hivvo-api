@@ -31,7 +31,6 @@ class Parcela(SQLModel, table=True):
     valor_parcela: Decimal = Field(sa_column=Column(Numeric(15, 2), nullable=False))
 
     data_vencimento: dt.date
-    data_pagamento: Optional[dt.date] = None
 
     taxa_juros: Decimal = Field(default=Decimal("0.0"), sa_column=Column(Numeric(5, 2), nullable=False))
     valor_juros: Decimal = Field(default=Decimal("0.0"), sa_column=Column(Numeric(15, 2), nullable=False))
@@ -40,11 +39,8 @@ class Parcela(SQLModel, table=True):
     categoria: str
     cartao_id: Optional[int] = Field(default=None, foreign_key="cartoes.id")
 
-    # OBSOLETO (Leva 2 — PLANO_3D_PAGAMENTO_FATURA): pagamento agora é por
-    # FATURA (PagamentoFatura); nenhuma query de estatística/projeção lê mais
-    # `pago`/`data_pagamento` e o PUT /installments não os grava. As colunas
-    # ficam (drop é irreversível; respostas/filtros legados ainda as expõem).
-    pago: bool = False
+    # `pago`/`data_pagamento` foram DROPADOS (Fase 2 do #8): pagamento é por
+    # FATURA (PagamentoFatura) desde a Leva 2 — PLANO_3D_PAGAMENTO_FATURA.
     cancelado: bool = False
     criado_em: dt.date = Field(default_factory=hoje)
 

@@ -58,7 +58,6 @@ def _criar_parcelas(session: Session, transacao: Transacao, card: Cartao | None)
     for i in range(1, total + 1):
         valor_parcela = valor_ultima if i == total else valor_base
         data_venc = _data_vencimento_parcela(transacao.data, i, card)
-        pago = data_venc < TODAY
 
         parcela = Parcela(
             usuario_id=transacao.usuario_id,
@@ -72,8 +71,6 @@ def _criar_parcelas(session: Session, transacao: Transacao, card: Cartao | None)
             descricao=f"{transacao.descricao} ({i}/{total})",
             categoria=transacao.categoria,
             cartao_id=transacao.cartao_id,
-            pago=pago,
-            data_pagamento=data_venc if pago else None,
         )
         session.add(parcela)
 

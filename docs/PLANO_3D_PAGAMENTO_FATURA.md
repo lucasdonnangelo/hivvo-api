@@ -41,6 +41,14 @@ hoje = "mês sem dados" por acidente). Inversamente, o backend manda `total_parc
 
 ## LEVA 2 — Pagamento de fatura (design decidido, implementar depois)
 
+> **✅ WEB ENTREGUE (10/07/2026).** Backend materializou `PagamentoFatura` e expôs `status`
+> derivado (`paga`/`aberta`/`a_vencer`/`atrasada`) nos 3 endpoints de fatura + `PUT
+> /invoices/{cartao_id}/{ano}/{mes}/pagamento {pago}`. Frontend: `status` reintroduzido nos 3 tipos,
+> `InvoiceStatusBadge` (atrasada destacada), ação "Marcar/Desmarcar pagamento" (um clique, reversível)
+> no `InvoiceDetail` — cobre os modos "Por cartão" e "Por mês" por reuso. Invalidação inclui
+> `['statistics']` (o `a_pagar` do Dashboard muda ao confirmar). **NÃO feito:** aviso de fatura
+> atrasada no Dashboard (item 4 — decisão adiada). Detalhes em `docs/SESSAO_ATUAL_WEB.md`.
+
 ### O problema
 - "Marcar fatura paga" hoje = marcar N `Parcela.pago` (uma a uma, sem bulk) **e as avulsas, que não
   têm onde gravar** (`Transacao` não tem `pago`). Fatura com avulsa fica eternamente meio-paga.

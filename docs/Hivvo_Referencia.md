@@ -234,7 +234,7 @@ hivvo-api/
 
 | Domínio | Endpoints |
 |---|---|
-| Auth | `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `PUT /auth/me`, `POST /auth/refresh`, `PUT /auth/password`, `POST /auth/forgot-password`, `POST /auth/reset-password` · **planejado:** `DELETE /auth/me` (exclusão de conta, LGPD) |
+| Auth | `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `POST /auth/logout-all`, `GET /auth/me`, `PUT /auth/me`, `DELETE /auth/me` ‡, `POST /auth/refresh`, `PUT /auth/password`, `POST /auth/forgot-password`, `POST /auth/reset-password`, `POST /auth/reset-data` |
 | Transações | `GET /transactions`, `POST /transactions`, `PUT /transactions/{id}`, `DELETE /transactions/{id}` |
 | Categorias | `GET /categories`, `POST /categories`, `DELETE /categories/{id}` |
 | Cartões | `GET /cards`, `POST /cards`, `PUT /cards/{id}`, `DELETE /cards/{id}` |
@@ -244,9 +244,11 @@ hivvo-api/
 | Estatísticas — Resumo/análise (13/07/2026) | `GET /statistics/evolution`, `GET /statistics/evolution/categories`, `GET /statistics/comparison`, `GET /statistics/highlights`, `GET /statistics/coverage` — base CONSUMO, fonte única `_lancamentos_consumo_horizonte` (PLANO_RESUMO.md) |
 | IA | `POST /ai/chat`, `GET /ai/historico`, `DELETE /ai/historico` |
 
-> **Planejado (pré-deploy):** prefixar tudo sob `/api/v1` para estabilidade de contrato com clientes (T-28).
+> ✅ **Aplicado (T-28):** todas as rotas vivem sob `/api/v1` (`main.py`, os 10 routers). Os caminhos desta tabela são **relativos ao prefixo** — o real é `/api/v1/auth/login` etc. Este doc já descreveu o prefixo como "planejado", o que era falso.
 >
 > † **`/statistics/yearly` — candidato a aposentadoria (13/07/2026):** com o `/evolution` (série histórica do Resumo), o yearly perde o papel de "evolução mensal" — mas **não são equivalentes** (yearly = FLUXO em ano-calendário fixo; evolution = CONSUMO em horizonte relativo). Neste repo só testes/docs o referenciam. **Não remover** antes de confirmar que o hivvo-web não o consome.
+>
+> ‡ **`DELETE /auth/me` existe no backend desde sempre** (`app/routers/auth.py`, exige `{password}` → `204`) — este doc já o listou como "planejado", o que era falso. O que **não** existe é a exposição na UI: nenhuma tela chama a rota. Ver `PLANO_PERFIL_CONFIG.md` (§ INVENTÁRIO) — a exclusão de conta é feature de UI pendente, não de API.
 
 ### Decisões de domínio (fixas)
 
@@ -316,11 +318,23 @@ O backend passou por duas auditorias somente-leitura:
 
 **Topologia de hospedagem.** Recomendado: same-site sob `hivvo.app` — `app.hivvo.app` (Vercel) + `api.hivvo.app` (Railway), cookie `Domain=.hivvo.app` `SameSite=Lax`. Resolve o cookie cross-site e preserva a proteção CSRF sem precisar de tokens CSRF. Afeta DNS, cookies e CORS — decidir antes do deploy.
 
+### Observabilidade (estado real — implementada nos dois repos)
+
+**Não é item de roadmap: o código existe e está no master dos dois lados.** A ativação é por variável de ambiente, não por implementação pendente — sem `SENTRY_DSN` o Sentry é **no-op por design** (T-25), para que dev/CI não precisem de DSN nem quebrem sem ele.
+
+| Camada | Onde | O que tem |
+|---|---|---|
+| Backend (hivvo-api) | `app/core/observability.py` | Logging estruturado, middleware de request-log, `init_sentry()` chamado no lifespan (`main.py`), scrub LGPD (`_before_send`) e `validate_startup_config` (fail-fast de boot). Dependência: `sentry-sdk[fastapi]` (`requirements.txt`). Coberto por `tests/test_observability.py`. |
+| Frontend (hivvo-web) | `src/lib/observability.ts` | `@sentry/react`, `initSentry()` chamado no `main.tsx`, integrado ao `ErrorBoundary`. Espelha o backend: no-op sem DSN, `sendDefaultPii: false`, `beforeSend`/`beforeBreadcrumb` com scrub. |
+
+**Regra de privacidade (dura, idêntica nos dois):** nunca enviar ao Sentry valor/descrição de transação, conteúdo de chat, senha, token ou cookie — só metadados. A defesa é em três camadas (no-op sem DSN → cortar na origem → refiltro no `beforeSend`), com **deny-all** onde não dá para saber se o dado é sensível e allowlist onde dá. Ao mexer em qualquer um dos dois arquivos, mantenha o espelho.
+
+**Pendente (ops, não código):** setar `SENTRY_DSN` nos ambientes de deploy.
+
 ### Arquitetura-alvo (pós-deploy)
 
 - **Repository Pattern completo:** `services/` (regra de negócio) + `repositories/` (acesso a dados), tirando lógica dos routers.
 - **RLS no Supabase** como defesa em profundidade (papel Postgres de privilégio mínimo + políticas por `SET LOCAL`).
-- **Observabilidade:** logging estruturado + Sentry.
 - **Performance:** agregações no banco (não em Python), cache do contexto da IA, paginação com envelope.
 
 ### Roadmap de produto

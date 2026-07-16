@@ -1,9 +1,9 @@
 """Batch 8 / T-17 — GET /cards/{id}/invoices agregado no banco (GROUP BY).
 
 A reescrita (SUM/COUNT GROUP BY fatura) deve dar valores IDÊNTICOS aos da
-varredura anterior: total por fatura, total_itens (parcelas + avulsas) e
-total_parcelas_pagas (só parcelas). Parcela cancelada e avulsa não-despesa
-ficam de fora; parcelas+avulsas na MESMA fatura somam juntas.
+varredura anterior: total por fatura e total_itens (parcelas + avulsas).
+Parcela cancelada e avulsa não-despesa ficam de fora; parcelas+avulsas na
+MESMA fatura somam juntas.
 """
 
 import datetime as dt
@@ -94,12 +94,10 @@ class TestT17InvoicesAgregacao:
         f3 = por_chave[(3, 2026)]
         assert Decimal(str(f3["total"])) == Decimal("180.00")  # 100 + 50 + 30
         assert f3["total_itens"] == 3
-        assert f3["total_parcelas_pagas"] == 1
 
         f4 = por_chave[(4, 2026)]
         assert Decimal(str(f4["total"])) == Decimal("200.00")
         assert f4["total_itens"] == 1
-        assert f4["total_parcelas_pagas"] == 0
 
     def test_cartao_sem_movimento_retorna_lista_vazia(self, session, users, as_user):
         user_a, _ = users

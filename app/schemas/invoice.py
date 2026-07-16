@@ -21,10 +21,8 @@ class ParcelaFaturaResponse(BaseModel):
     valor_parcela: Decimal
     descricao: str
     categoria: str
-    pago: bool
     cancelado: bool
     data_vencimento: dt.date
-    data_pagamento: Optional[dt.date] = None
 
     model_config = {"from_attributes": True}
 
@@ -45,9 +43,6 @@ class FaturaListItem(BaseModel):
     ano: int
     total: Decimal
     data_vencimento: Optional[dt.date] = None
-    # total_parcelas_pagas deriva de Parcela.pago (OBSOLETO desde a Leva 2);
-    # mantido como legado até o batch cross-repo de remoção.
-    total_parcelas_pagas: int = 0
     total_itens: int = 0
     status: StatusFatura
 

@@ -15,7 +15,6 @@ router = APIRouter(prefix="/installments", tags=["installments"])
 @router.get("", response_model=list[ParcelaResponse])
 def list_installments(
     cartao_id: Optional[int] = Query(None),
-    pago: Optional[bool] = Query(None),
     cancelado: Optional[bool] = Query(None),
     mes: Optional[int] = Query(None, ge=1, le=12),
     ano: Optional[int] = Query(None, ge=2000),
@@ -26,8 +25,6 @@ def list_installments(
 
     if cartao_id is not None:
         stmt = stmt.where(Parcela.cartao_id == cartao_id)
-    if pago is not None:
-        stmt = stmt.where(Parcela.pago == pago)
     if cancelado is not None:
         stmt = stmt.where(Parcela.cancelado == cancelado)
     if mes is not None:

@@ -2,7 +2,7 @@ import datetime as dt
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Path
-from sqlalchemy import case, func
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.core.auth import get_current_user
@@ -79,7 +79,6 @@ def list_invoices(
             Parcela.fatura_ano,
             func.sum(Parcela.valor_parcela),
             func.count(Parcela.id),
-            func.sum(case((Parcela.pago == True, 1), else_=0)),  # noqa: E712
         )
         .where(
             Parcela.cartao_id == card_id,
@@ -111,14 +110,13 @@ def list_invoices(
 
     faturas: dict[tuple[int, int], dict] = {}
 
-    for mes, ano, total, itens, pagas in parcelas_rows:
-        f = faturas.setdefault((mes, ano), {"total": Decimal("0.00"), "pagas": 0, "itens": 0})
+    for mes, ano, total, itens in parcelas_rows:
+        f = faturas.setdefault((mes, ano), {"total": Decimal("0.00"), "itens": 0})
         f["total"] += total or Decimal("0.00")
         f["itens"] += itens
-        f["pagas"] += pagas or 0
 
     for mes, ano, total, itens in avulsas_rows:
-        f = faturas.setdefault((mes, ano), {"total": Decimal("0.00"), "pagas": 0, "itens": 0})
+        f = faturas.setdefault((mes, ano), {"total": Decimal("0.00"), "itens": 0})
         f["total"] += total or Decimal("0.00")
         f["itens"] += itens
 
@@ -141,7 +139,6 @@ def list_invoices(
             ano=ano,
             total=data["total"],
             data_vencimento=_fatura_vencimento(card, mes, ano),
-            total_parcelas_pagas=data["pagas"],
             total_itens=data["itens"],
             status=status_fatura(card, mes, ano, pagamentos.get((mes, ano)), h),
         )

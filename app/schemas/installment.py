@@ -27,10 +27,8 @@ class ParcelaResponse(BaseModel):
     descricao: str
     categoria: str
     data_vencimento: dt.date
-    data_pagamento: Optional[dt.date] = None
     fatura_mes: Optional[int] = None
     fatura_ano: Optional[int] = None
-    pago: bool
     cancelado: bool
     criado_em: dt.date
 

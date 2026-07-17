@@ -1,0 +1,4 @@
+# PDFs de fatura (reais, mesmo anonimizados) e outputs NUNCA commitam.
+faturas/
+out/
+.venv/

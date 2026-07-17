@@ -1,0 +1,5 @@
+# Deps EXCLUSIVAS do spike — não entram no requirements.txt da raiz.
+# Instalar num venv próprio (ver README.md).
+pdfplumber>=0.11
+google-genai>=1.0
+pydantic>=2.7

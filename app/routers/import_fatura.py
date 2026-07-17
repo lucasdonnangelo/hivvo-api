@@ -1,0 +1,162 @@
+"""Importação de fatura — Batch 1: preview STATELESS.
+
+POST /import/fatura/preview: PDF de fatura + cartao_id -> JSON extraído
+(schema validado no spike de 17/07) + bloco de reconciliação. NADA é
+persistido — nem o arquivo, nem o resultado: processa em memória e descarta.
+Escrita em transacoes/parcelas, distribuição por fatura e frontend são
+batches seguintes.
+
+PII/logs: o texto da fatura NUNCA vai para log — apenas metadados (bytes,
+páginas, chars, nº de transações, bate). Reconciliação NÃO bater não é erro
+HTTP: devolve 200 com bate=false e o cliente decide.
+"""
+
+import logging
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from pydantic import ValidationError
+from sqlmodel import Session
+
+from app.core.auth import get_current_user
+from app.core.config import settings
+from app.core.database import get_session
+from app.core.rate_limit import _user_or_ip_key, limiter
+from app.models.card import Cartao
+from app.models.user import Usuario
+from app.schemas.import_fatura import (
+    FaturaExtraida,
+    FaturaPreviewResponse,
+    ReconciliacaoOut,
+)
+from app.services.import_fatura import extracao_pdf, gemini, redacao
+from app.services.import_fatura.reconciliacao import TOLERANCIA, reconciliar
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/import", tags=["import"])
+
+_DETAIL_ARQUIVO_INVALIDO = "Arquivo inválido: envie um PDF de fatura."
+
+
+def _get_card_for_user(session: Session, card_id: int, usuario_id: int) -> Cartao:
+    # Mesmo contrato de routers/invoices.py: inexistente OU de outro usuário
+    # -> 404 (anti-enumeração; nunca 403).
+    card = session.get(Cartao, card_id)
+    if not card or card.usuario_id != usuario_id:
+        raise HTTPException(status_code=404, detail="Cartão não encontrado")
+    return card
+
+
+def _ler_pdf(request: Request, arquivo: UploadFile) -> bytes:
+    limite = settings.IMPORT_MAX_PDF_BYTES
+    detail_413 = f"Arquivo excede o limite de {limite // (1024 * 1024)} MB."
+
+    # Rejeição rápida pelo Content-Length (é o corpo multipart inteiro, então
+    # com folga para o overhead) — mas o header não é confiável: o teto real
+    # é confirmado lendo no máximo limite+1 bytes.
+    content_length = request.headers.get("content-length", "")
+    if content_length.isdigit() and int(content_length) > limite + 64 * 1024:
+        raise HTTPException(status_code=413, detail=detail_413)
+
+    dados = arquivo.file.read(limite + 1)
+    if len(dados) > limite:
+        raise HTTPException(status_code=413, detail=detail_413)
+    # Magic bytes, não content-type (que o cliente pode mentir).
+    if not dados.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail=_DETAIL_ARQUIVO_INVALIDO)
+    return dados
+
+
+@router.post("/fatura/preview", response_model=FaturaPreviewResponse)
+# Custo real (tier pago): limites mais apertados que o chat, mesmos mecanismos.
+@limiter.limit("10/minute")
+@limiter.limit("5/minute", key_func=_user_or_ip_key)
+@limiter.limit("150/day", key_func=_user_or_ip_key)
+def preview_fatura(
+    request: Request,
+    arquivo: UploadFile = File(...),
+    cartao_id: int = Form(...),
+    current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if not settings.GEMINI_IMPORT_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Importação indisponível: GEMINI_IMPORT_API_KEY não configurada.",
+        )
+
+    cartao = _get_card_for_user(session, cartao_id, current_user.id)
+
+    dados = _ler_pdf(request, arquivo)
+
+    try:
+        texto, paginas = extracao_pdf.extrair_texto(
+            dados, settings.IMPORT_MAX_PDF_PAGINAS
+        )
+    except extracao_pdf.PaginasDemaisError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"PDF com {e.paginas} páginas — o limite é "
+                f"{settings.IMPORT_MAX_PDF_PAGINAS}."
+            ),
+        )
+    except Exception as e:
+        # PDF corrompido/ilegível (pdfplumber/pdfminer levantam classes
+        # variadas). Só a classe no log — nunca conteúdo.
+        logger.warning("[import] PDF ilegível: %s", e.__class__.__name__)
+        raise HTTPException(status_code=400, detail=_DETAIL_ARQUIVO_INVALIDO)
+
+    if not extracao_pdf.tem_camada_de_texto(texto):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Fatura escaneada não é suportada — envie o PDF original "
+                "emitido pelo banco."
+            ),
+        )
+
+    # Redação best-effort (ver services/import_fatura/redacao.py): CPF e
+    # finais são confiáveis; nome é frágil e endereço vai como está.
+    nomes = [n for n in (current_user.nome_completo, current_user.username) if n]
+    texto_redigido, mapa_reverso = redacao.redigir(texto, nomes)
+
+    raw = gemini.extrair_fatura(texto_redigido)  # 503 em falha de API/chave
+
+    try:
+        fatura = FaturaExtraida.model_validate_json(raw)
+    except ValidationError as e:
+        # NUNCA logar a exceção inteira: o ValidationError embute os VALORES
+        # rejeitados (descrições/valores da fatura). Só contagem e locs.
+        locs = [".".join(str(p) for p in err["loc"]) for err in e.errors()[:5]]
+        logger.warning(
+            "[import] resposta do Gemini rejeitada pelo schema: %d erros (%s)",
+            len(e.errors()),
+            ", ".join(locs),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="A extração retornou dados inválidos. Tente novamente.",
+        )
+
+    redacao.restaurar_finais(fatura, mapa_reverso)
+    rec = reconciliar(fatura, TOLERANCIA)
+
+    logger.info(
+        "[import] preview: cartao=%s bytes=%d paginas=%d chars=%d transacoes=%d bate=%s",
+        cartao.id, len(dados), paginas, len(texto), len(fatura.transacoes), rec.bate,
+    )
+    return FaturaPreviewResponse(
+        cartao_id=cartao.id,
+        fatura=fatura,
+        reconciliacao=ReconciliacaoOut(
+            ancora=str(rec.ancora),
+            soma_gastos=str(rec.soma_gastos),
+            excluidos=str(rec.excluidos),
+            total_a_pagar=str(rec.total_a_pagar),
+            diferenca=str(rec.diferenca),
+            bate=rec.bate,
+            diferenca_secundaria=str(rec.diferenca_secundaria),
+            bate_secundario=rec.bate_secundario,
+        ),
+    )

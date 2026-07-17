@@ -111,17 +111,20 @@ def test_init_sentry_noop_sem_dsn(monkeypatch):
 def test_fail_fast_producao_sem_chaves(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(settings, "GEMINI_IMPORT_API_KEY", "")
     monkeypatch.setattr(settings, "RESEND_API_KEY", "")
     with pytest.raises(RuntimeError) as exc:
         validate_startup_config()
     msg = str(exc.value)
     assert "GEMINI_API_KEY" in msg
+    assert "GEMINI_IMPORT_API_KEY" in msg
     assert "RESEND_API_KEY" in msg
 
 
 def test_producao_com_chaves_ok(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "gemini-key")
+    monkeypatch.setattr(settings, "GEMINI_IMPORT_API_KEY", "gemini-import-key")
     monkeypatch.setattr(settings, "RESEND_API_KEY", "resend-key")
     validate_startup_config()  # não deve levantar
 
@@ -129,6 +132,7 @@ def test_producao_com_chaves_ok(monkeypatch):
 def test_dev_sem_chaves_apenas_warning(monkeypatch, caplog):
     monkeypatch.setattr(settings, "ENVIRONMENT", "development")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(settings, "GEMINI_IMPORT_API_KEY", "")
     monkeypatch.setattr(settings, "RESEND_API_KEY", "")
     with caplog.at_level(logging.WARNING):
         validate_startup_config()  # não levanta em dev

@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     GEMINI_RETRY_WAITS: list[int] = [2]
     GEMINI_TIMEOUT_MS: int = 30000
 
+    # Importação de fatura (Batch 1, 17/07): chave DEDICADA, tier PAGO, custo
+    # e controle isolados do assistente. NUNCA cai na GEMINI_API_KEY (zero
+    # fallback, por design). Produção não sobe sem ela (validate_startup_config).
+    GEMINI_IMPORT_API_KEY: str = ""
+    GEMINI_IMPORT_MODEL: str = "gemini-2.5-flash"
+    GEMINI_IMPORT_TIMEOUT_MS: int = 60000  # fatura é bem maior que chat
+    IMPORT_MAX_PDF_BYTES: int = 10 * 1024 * 1024
+    IMPORT_MAX_PDF_PAGINAS: int = 20
+
     # F-04: rate limiting (slowapi). Ligado por padrão (produção); desligado no
     # ambiente de teste para a suíte não tomar 429.
     RATE_LIMIT_ENABLED: bool = True

@@ -19,7 +19,7 @@ from app.core.observability import (
 )
 from app.core.csrf import verify_origin
 from app.core.rate_limit import limiter
-from app.routers import auth, transactions, categories, cards, invoices, installments, statistics, ai, recorrencias
+from app.routers import auth, transactions, categories, cards, invoices, installments, statistics, ai, recorrencias, import_fatura
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,7 @@ app.include_router(installments.router, prefix="/api/v1", dependencies=_csrf)
 app.include_router(statistics.router, prefix="/api/v1", dependencies=_csrf)
 app.include_router(ai.router, prefix="/api/v1", dependencies=_csrf)
 app.include_router(recorrencias.router, prefix="/api/v1", dependencies=_csrf)
+app.include_router(import_fatura.router, prefix="/api/v1", dependencies=_csrf)
 
 
 @app.get("/health", tags=["health"])

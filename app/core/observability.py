@@ -145,6 +145,7 @@ def validate_startup_config() -> None:
     """
     features = {
         "GEMINI_API_KEY": settings.GEMINI_API_KEY,
+        "GEMINI_IMPORT_API_KEY": settings.GEMINI_IMPORT_API_KEY,
         "RESEND_API_KEY": settings.RESEND_API_KEY,
     }
     missing = [name for name, value in features.items() if not value]

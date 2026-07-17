@@ -190,6 +190,10 @@ class FaturaCommitResponse(BaseModel):
     transacoes_criadas: int
     parcelas_criadas: int
     faturas_marcadas_pagas: int
+    # Parceladas puladas por dedup: a MESMA parcelada, materializada por um
+    # import ANTERIOR, reaparece nesta fatura (X/N → (X+1)/N). Visível para o
+    # skip não sumir em silêncio (MULTI-FATURA).
+    parceladas_deduplicadas: int
     # Estornos (compra negativa) NÃO são graváveis (CHECK valor>0); aparecem
     # aqui para não sumirem em silêncio. Netting contra a compra-mãe: adiado.
     estornos_ignorados: int

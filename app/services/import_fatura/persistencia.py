@@ -13,10 +13,10 @@ transação única (atomicidade — T-41). Decimal sempre.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.models.card import Cartao
 from app.models.installment import Parcela
@@ -38,10 +38,11 @@ class ResultadoMaterializacao:
     transacoes_criadas: int = 0
     parcelas_criadas: int = 0
     estornos_ignorados: int = 0
-    # Competências (mes, ano) ESTRITAMENTE anteriores à âncora que esta
-    # importação criou (via parcelas históricas). É o conjunto que delimita
-    # quais faturas passadas o commit aceita marcar como pagas (B.5).
-    competencias_passadas: set[tuple[int, int]] = field(default_factory=set)
+    # Parceladas puladas por dedup: a MESMA parcelada, já materializada por um
+    # import ANTERIOR, reaparece nesta fatura (X/N vira (X+1)/N no mês seguinte).
+    # O skip NUNCA é silencioso — vai no recibo, como estornos_ignorados
+    # (MULTI-FATURA).
+    parceladas_deduplicadas: int = 0
 
 
 def ancora_competencia(fatura: FaturaCommit) -> tuple[int, int]:
@@ -58,6 +59,103 @@ def ancora_competencia(fatura: FaturaCommit) -> tuple[int, int]:
     return fatura.competencia.mes, fatura.competencia.ano
 
 
+# --- Dedup de parcela entre importações (MULTI-FATURA) -----------------------
+
+_CENTS = Decimal("0.01")
+
+# Chave estável de uma parcelada: (descrição normalizada, total, origem
+# implícita (mes, ano), valor da parcela em centavos). A MESMA compra tem a
+# MESMA chave em qualquer fatura/ordem de import. O cartão fica implícito
+# (o snapshot já é por cartão).
+Identidade = tuple[str, int, int, int, str]
+
+
+def _norm_descricao(descricao: str) -> str:
+    """Descrição canônica para o match: colapsa espaços e casefold. NÃO tira
+    acento — o mesmo lojista não troca acento entre faturas; o drift real é
+    caixa/espaço."""
+    return " ".join(descricao.split()).casefold()
+
+
+def _identidade_parcelada(
+    descricao: str, total: int, mes: int, ano: int, valor_parcela: Decimal
+) -> Identidade:
+    """Valor entra na chave: parceladas de mesma desc/total/origem mas valor
+    distinto são compras DISTINTAS (desempate por valor)."""
+    valor_cents = str(Decimal(str(valor_parcela)).quantize(_CENTS))
+    return (_norm_descricao(descricao), total, mes, ano, valor_cents)
+
+
+def _snapshot_identidades_parcelada(
+    session: Session, usuario_id: int, cartao_id: int
+) -> set[Identidade]:
+    """Identidades das parceladas JÁ importadas deste cartão — tirado ANTES de
+    qualquer insert desta materialização. Os skips decidem contra ESTE conjunto
+    (imports ANTERIORES), nunca contra o que este request cria: duas linhas
+    idênticas na MESMA fatura são duas compras e ambas materializam.
+
+    A origem implícita mora na `Parcela` nº 1 (a materialização grava
+    parcela j em âncora−(indice−j); para j=1 isso é âncora−(indice−1) = a
+    origem). `UNIQUE(transacao_id, numero_parcela)` garante uma nº 1 por mãe.
+    """
+    rows = session.exec(
+        select(
+            Transacao.descricao,
+            Transacao.total_parcelas,
+            Parcela.fatura_mes,
+            Parcela.fatura_ano,
+            Parcela.valor_parcela,
+        )
+        .join(Parcela, Parcela.transacao_id == Transacao.id)
+        .where(
+            Transacao.usuario_id == usuario_id,
+            Transacao.cartao_id == cartao_id,
+            Transacao.parcelado == True,  # noqa: E712
+            Transacao.origem == ORIGEM_IMPORT,
+            Parcela.numero_parcela == 1,
+        )
+    ).all()
+    return {
+        _identidade_parcelada(desc, total, mes, ano, valor)
+        for desc, total, mes, ano, valor in rows
+    }
+
+
+def competencias_passadas_com_lancamentos(
+    session: Session, usuario_id: int, cartao_id: int, ancora_ord: int
+) -> set[tuple[int, int]]:
+    """Competências (mes, ano) ESTRITAMENTE antes da âncora que têm ALGUM
+    lançamento EXISTENTE deste cartão — parcela ou avulsa, criado neste request
+    ou por import anterior (autoflush enxerga ambos). É o conjunto que o commit
+    aceita marcar como pago: passado real do cartão, nunca fatura arbitrária
+    (MULTI-FATURA — confirmação de pagamento das passadas). Com dedup, a
+    parcelada passada pode ter sido PULADA neste import e mesmo assim já existir
+    de outro — por isso a fonte é o que EXISTE, não o que este request criou.
+    """
+    comps: set[tuple[int, int]] = set()
+    fontes = (
+        session.exec(
+            select(Parcela.fatura_mes, Parcela.fatura_ano).where(
+                Parcela.usuario_id == usuario_id,
+                Parcela.cartao_id == cartao_id,
+            )
+        ).all(),
+        session.exec(
+            select(Transacao.fatura_mes, Transacao.fatura_ano).where(
+                Transacao.usuario_id == usuario_id,
+                Transacao.cartao_id == cartao_id,
+            )
+        ).all(),
+    )
+    for linhas in fontes:
+        for mes, ano in linhas:
+            if mes is None or ano is None:
+                continue
+            if ano * 12 + mes < ancora_ord:
+                comps.add((mes, ano))
+    return comps
+
+
 def materializar_fatura(
     session: Session, usuario_id: int, card: Cartao, fatura: FaturaCommit
 ) -> ResultadoMaterializacao:
@@ -71,8 +169,12 @@ def materializar_fatura(
       contado em estornos_ignorados (B.3).
     """
     ancora_mes, ancora_ano = ancora_competencia(fatura)
-    ancora_ord = ancora_ano * 12 + ancora_mes
     res = ResultadoMaterializacao()
+    # SNAPSHOT das identidades já importadas ANTES de qualquer insert: todo skip
+    # de dedup decide contra imports ANTERIORES, não contra o que ESTA fatura
+    # cria. Duas linhas parceladas idênticas na mesma fatura = duas compras →
+    # ambas materializam (contar a mais é corrigível na revisão; a menos, não).
+    snapshot = _snapshot_identidades_parcelada(session, usuario_id, card.id)
 
     for t in fatura.transacoes:
         if t.tipo not in _TIPOS_GASTO:
@@ -86,7 +188,7 @@ def materializar_fatura(
         if t.parcela is not None:
             _materializar_parcelada(
                 session, usuario_id, card, t, valor, ancora_mes, ancora_ano,
-                ancora_ord, res,
+                snapshot, res,
             )
         else:
             _materializar_avulsa(
@@ -135,11 +237,22 @@ def _materializar_parcelada(
     valor_parcela: Decimal,
     ancora_mes: int,
     ancora_ano: int,
-    ancora_ord: int,
+    snapshot: set[Identidade],
     res: ResultadoMaterializacao,
 ) -> None:
     n = t.parcela.total
     indice = t.parcela.indice
+
+    # DEDUP: origem implícita = âncora − (indice − 1) = competência que a
+    # materialização grava na parcela nº 1. Se essa identidade já veio de um
+    # import ANTERIOR (snapshot) → o cronograma inteiro já existe, PULA.
+    origem_ano, origem_mes = _competencia_menos(ancora_ano, ancora_mes, indice - 1)
+    identidade = _identidade_parcelada(
+        t.descricao, n, origem_mes, origem_ano, valor_parcela
+    )
+    if identidade in snapshot:
+        res.parceladas_deduplicadas += 1
+        return
 
     transacao = Transacao(
         usuario_id=usuario_id,
@@ -185,7 +298,5 @@ def _materializar_parcelada(
             )
         )
         res.parcelas_criadas += 1
-        if ano_j * 12 + mes_j < ancora_ord:
-            res.competencias_passadas.add((mes_j, ano_j))
 
     session.flush()

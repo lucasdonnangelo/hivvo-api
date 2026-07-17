@@ -36,6 +36,7 @@ from app.schemas.import_fatura import (
 from app.services.import_fatura import extracao_pdf, gemini, redacao
 from app.services.import_fatura.persistencia import (
     ancora_competencia,
+    competencias_passadas_com_lancamentos,
     materializar_fatura,
 )
 from app.services.import_fatura.reconciliacao import TOLERANCIA, reconciliar
@@ -224,12 +225,21 @@ def commit_fatura(
         res = materializar_fatura(session, current_user.id, cartao, fatura)
 
         # Faturas passadas marcadas pagas: REVALIDA no servidor que cada
-        # competência pertence ao passado que ESTA importação materializou —
-        # nunca deixa o front marcar fatura arbitrária paga. data_pagamento=None
+        # competência é passado REAL deste cartão (tem lançamento EXISTENTE
+        # anterior à âncora — criado agora ou por outro import), nunca fatura
+        # arbitrária. Com dedup, a parcelada passada pode ter sido PULADA neste
+        # request e ainda assim ser marcável (MULTI-FATURA). data_pagamento=None
         # (histórico: hoje() seria data falsa — Q3; status só olha `pago`).
         competencias_pagas = {(c.mes, c.ano) for c in body.competencias_pagas}
+        marcaveis = (
+            competencias_passadas_com_lancamentos(
+                session, current_user.id, cartao.id, ancora_ano * 12 + ancora_mes
+            )
+            if competencias_pagas
+            else set()
+        )
         for mes, ano in competencias_pagas:
-            if (mes, ano) not in res.competencias_passadas:
+            if (mes, ano) not in marcaveis:
                 raise HTTPException(
                     status_code=422,
                     detail=(
@@ -263,15 +273,16 @@ def commit_fatura(
 
     logger.info(
         "[import] commit: cartao=%s competencia=%d/%d transacoes=%d parcelas=%d "
-        "pagas=%d estornos_ignorados=%d bate=%s",
+        "pagas=%d dedup=%d estornos_ignorados=%d bate=%s",
         cartao.id, ancora_mes, ancora_ano, res.transacoes_criadas,
-        res.parcelas_criadas, len(competencias_pagas), res.estornos_ignorados,
-        rec.bate,
+        res.parcelas_criadas, len(competencias_pagas), res.parceladas_deduplicadas,
+        res.estornos_ignorados, rec.bate,
     )
     return FaturaCommitResponse(
         transacoes_criadas=res.transacoes_criadas,
         parcelas_criadas=res.parcelas_criadas,
         faturas_marcadas_pagas=len(competencias_pagas),
+        parceladas_deduplicadas=res.parceladas_deduplicadas,
         estornos_ignorados=res.estornos_ignorados,
         reconciliacao_bate=rec.bate,
     )

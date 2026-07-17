@@ -3,7 +3,7 @@ import datetime as dt
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
 from app.models.card import Cartao
@@ -221,6 +221,74 @@ def fatura_existe(
     return (
         session.exec(parcela).first() is not None
         or session.exec(avulsa).first() is not None
+    )
+
+
+def competencias_da_compra(
+    session: Session, transacao: Transacao
+) -> set[tuple[int, int, int]]:
+    """Competências (cartao_id, fatura_mes, fatura_ano) que a compra toca (#9).
+
+    Lê o MATERIALIZADO, nunca recalcula: à vista = a competência gravada na
+    própria transação por _fatura_cartao_avulso (1 no máximo); parcelada = as
+    competências das parcelas JÁ criadas na sessão (N, uma por parcela).
+    Compra sem cartão / sem fatura derivada não toca fatura alguma (vazio) —
+    mesma regra da composição (parcela/avulsa sem cartão não pertence a fatura).
+    """
+    if transacao.cartao_id is None:
+        return set()
+    if transacao.parcelado:
+        rows = session.exec(
+            select(Parcela.cartao_id, Parcela.fatura_mes, Parcela.fatura_ano)
+            .where(
+                Parcela.transacao_id == transacao.id,
+                Parcela.cartao_id != None,  # noqa: E711
+                Parcela.fatura_mes != None,  # noqa: E711
+                Parcela.cancelado == False,  # noqa: E712
+            )
+            .distinct()
+        ).all()
+        return {(cartao_id, mes, ano) for cartao_id, mes, ano in rows}
+    if transacao.fatura_mes is None or transacao.fatura_ano is None:
+        return set()
+    return {(transacao.cartao_id, transacao.fatura_mes, transacao.fatura_ano)}
+
+
+def faturas_pagas_atingidas(
+    session: Session, usuario_id: int, competencias: set[tuple[int, int, int]]
+) -> list[tuple[int, int, int]]:
+    """Subconjunto de `competencias` com PagamentoFatura.pago=True (#9).
+
+    Detecção READ-ONLY do aviso "compra caiu em fatura já paga": 1 query na
+    chave natural (cartao_id, fatura_mes, fatura_ano), SEMPRE filtrada por
+    usuario_id (isolamento no código). Não materializa nada nem toca
+    status_fatura — só informa. Ordenado por (ano, mes, cartao_id) para
+    resposta determinística.
+    """
+    if not competencias:
+        return []
+    chaves = [
+        and_(
+            PagamentoFatura.cartao_id == cartao_id,
+            PagamentoFatura.fatura_mes == mes,
+            PagamentoFatura.fatura_ano == ano,
+        )
+        for cartao_id, mes, ano in competencias
+    ]
+    rows = session.exec(
+        select(
+            PagamentoFatura.cartao_id,
+            PagamentoFatura.fatura_mes,
+            PagamentoFatura.fatura_ano,
+        ).where(
+            PagamentoFatura.usuario_id == usuario_id,
+            PagamentoFatura.pago == True,  # noqa: E712
+            or_(*chaves),
+        )
+    ).all()
+    return sorted(
+        ((cartao_id, mes, ano) for cartao_id, mes, ano in rows),
+        key=lambda c: (c[2], c[1], c[0]),
     )
 
 

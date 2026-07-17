@@ -1,6 +1,6 @@
 import datetime as dt
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -106,5 +106,27 @@ class TransacaoResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CompetenciaFatura(BaseModel):
+    """Uma fatura-alvo (cartão + competência) tocada pela compra (#9)."""
+
+    cartao_id: int
+    fatura_mes: int
+    fatura_ano: int
+
+
+class AvisoFaturaPaga(BaseModel):
+    """Aviso NÃO-bloqueante (#9): a compra caiu em competência(s) já marcada(s)
+    como paga(s) (PagamentoFatura.pago=True) — dinheiro que não aparece no
+    "A pagar". Estrutura pura: a copy é composta no frontend a partir das
+    competencias; o backend não embute texto de UI. Nada muda no status
+    (derivação intacta) nem no lançamento (sempre persiste).
+    """
+
+    codigo: Literal["fatura_paga"] = "fatura_paga"
+    competencias: list[CompetenciaFatura]
+
+
 class TransacaoCreateResponse(TransacaoResponse):
     parcelas_criadas: int = 0
+    # #9: avisos não-bloqueantes da criação (default vazio → retrocompatível)
+    avisos: list[AvisoFaturaPaga] = []

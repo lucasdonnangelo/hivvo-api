@@ -13,12 +13,18 @@ from app.models.installment import Parcela
 from app.models.transaction import Transacao
 from app.models.user import Usuario
 from app.schemas.transaction import (
+    AvisoFaturaPaga,
+    CompetenciaFatura,
     TransacaoCreate,
     TransacaoCreateResponse,
     TransacaoResponse,
     TransacaoUpdate,
 )
-from app.services.faturas import _fatura_cartao_avulso
+from app.services.faturas import (
+    _fatura_cartao_avulso,
+    competencias_da_compra,
+    faturas_pagas_atingidas,
+)
 from app.services.parcelas import _criar_parcelas
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -137,8 +143,28 @@ def create_transaction(
     session.commit()
     session.refresh(transacao)
 
+    # #9: aviso NÃO-bloqueante quando a compra cai em fatura já confirmada paga
+    # (PagamentoFatura.pago=True) — a compra sai do "A pagar" sem o usuário ver.
+    # Detecção read-only pós-commit: o lançamento já persistiu; nada é
+    # materializado, nenhum status muda (status_fatura intacto). Só informa.
+    pagas = faturas_pagas_atingidas(
+        session, current_user.id, competencias_da_compra(session, transacao)
+    )
+    avisos = (
+        [
+            AvisoFaturaPaga(
+                competencias=[
+                    CompetenciaFatura(cartao_id=c, fatura_mes=m, fatura_ano=a)
+                    for c, m, a in pagas
+                ]
+            )
+        ]
+        if pagas
+        else []
+    )
+
     return TransacaoCreateResponse.model_validate(
-        {**transacao.model_dump(), "parcelas_criadas": parcelas_criadas}
+        {**transacao.model_dump(), "parcelas_criadas": parcelas_criadas, "avisos": avisos}
     )
 
 

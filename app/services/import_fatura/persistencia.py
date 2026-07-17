@@ -21,7 +21,12 @@ from sqlmodel import Session, select
 from app.models.card import Cartao
 from app.models.installment import Parcela
 from app.models.transaction import Transacao
-from app.schemas.import_fatura import FaturaCommit, TipoTransacao, TransacaoCommit
+from app.schemas.import_fatura import (
+    FaturaCommit,
+    FaturaExtraida,
+    TipoTransacao,
+    TransacaoCommit,
+)
 from app.services.faturas import _competencia_menos, vencimento_avulsa
 
 # Proveniência: distingue o que veio do import (filtro/UX). `origem` é string
@@ -45,7 +50,7 @@ class ResultadoMaterializacao:
     parceladas_deduplicadas: int = 0
 
 
-def ancora_competencia(fatura: FaturaCommit) -> tuple[int, int]:
+def ancora_competencia(fatura: FaturaExtraida) -> tuple[int, int]:
     """(mes, ano) âncora da fatura.
 
     No sistema, competência = mês de VENCIMENTO (fatura_mes/ano dos lançamentos
@@ -153,6 +158,41 @@ def competencias_passadas_com_lancamentos(
                 continue
             if ano * 12 + mes < ancora_ord:
                 comps.add((mes, ano))
+    return comps
+
+
+def competencias_passadas_da_fatura(fatura: FaturaExtraida) -> set[tuple[int, int]]:
+    """Competências (mes, ano) ESTRITAMENTE antes da âncora que RECEBERÃO
+    parcela quando esta fatura for materializada — cálculo DRY, SEM escrever.
+
+    É a "armadilha do histórico": importar uma parcelada X/N cria as parcelas
+    1..X−1 em faturas PASSADAS do cartão. A tela de revisão precisa listá-las
+    (para o usuário marcar as já pagas) sem que o front recompute a regra.
+
+    Reusa a MESMA âncora (ancora_competencia) e a MESMA distribuição de
+    _materializar_parcelada — parcela j em âncora−(indice−j) via
+    _competencia_menos — para não divergir do que o commit de fato grava.
+    Mesmos filtros da materialização: só gasto (compra/iof) e valor>0 (estorno
+    não vira parcela). Avulsas caem sempre na âncora, nunca no passado.
+
+    NÃO aplica dedup: uma parcelada passada já materializada por import
+    anterior segue no histórico desta fatura (o commit revalida como marcável
+    via competencias_passadas_com_lancamentos). Ordenação/`ja_paga` são do
+    boundary (router); aqui é o conjunto cru.
+    """
+    ancora_mes, ancora_ano = ancora_competencia(fatura)
+    ancora_ord = ancora_ano * 12 + ancora_mes
+    comps: set[tuple[int, int]] = set()
+    for t in fatura.transacoes:
+        if t.tipo not in _TIPOS_GASTO or t.parcela is None:
+            continue
+        if Decimal(t.valor_brl) <= 0:  # estorno/linha degenerada não materializa
+            continue
+        n, indice = t.parcela.total, t.parcela.indice
+        for j in range(1, n + 1):
+            ano_j, mes_j = _competencia_menos(ancora_ano, ancora_mes, indice - j)
+            if ano_j * 12 + mes_j < ancora_ord:
+                comps.add((mes_j, ano_j))
     return comps
 
 

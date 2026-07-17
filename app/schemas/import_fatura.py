@@ -151,10 +151,32 @@ class ReconciliacaoOut(BaseModel):
     bate_secundario: bool
 
 
+class FaturaPassadaOut(BaseModel):
+    """Competência passada que ESTA importação vai CRIAR — dado de EXIBIÇÃO da
+    tela de revisão (a "armadilha do histórico").
+
+    Vem da distribuição da parcela (âncora−(indice−j)): ao importar uma
+    parcelada X/N, o commit materializa as parcelas anteriores em faturas
+    passadas do cartão. O front lista essas competências para o usuário marcar
+    as já pagas — ele NÃO recomputa a regra (fica no backend).
+
+    `ja_paga`: já existe PagamentoFatura(pago=True) para (cartao, mes, ano) —
+    a UI pré-marca/oculta. Só cálculo/leitura: o preview segue STATELESS.
+    """
+
+    mes: int
+    ano: int
+    ja_paga: bool
+
+
 class FaturaPreviewResponse(BaseModel):
     cartao_id: int
     fatura: FaturaExtraida
     reconciliacao: ReconciliacaoOut
+    # Competências ESTRITAMENTE antes da âncora que o commit vai preencher com
+    # parcelas desta fatura — para a revisão marcar as já pagas. Vazia quando a
+    # fatura não tem parcelada que recue para o passado.
+    faturas_passadas: list[FaturaPassadaOut] = []
 
 
 # --- Batch 2: commit (grava transações/parcelas a partir da fatura revisada) ---

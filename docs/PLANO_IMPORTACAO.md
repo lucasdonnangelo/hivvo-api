@@ -296,13 +296,18 @@ caminho funcionar.
 ---
 
 ## PRÓXIMO PASSO
-1. **Delta pro Claude Code:** corrigir o schema (`total_compras_periodo` como âncora de reconciliação,
-   `total_a_pagar` como campo separado) + a reconciliação. Rodar de novo nas 2 faturas → as duas
-   batem.
-2. **#4 Termos** (pré-requisito técnico) — atacar antes do batch de produção.
-3. **Primeiro batch de produção:** o extrator plugável no backend (fatia Nubank).
-4. **E DEPOIS da fatura entregar:** implementar o **extrato** (seção acima). Ordem:
-   fatura → valida → fatura implementada → extrato implementado.
+Backend da fatura COMPLETO (Batch 1 preview + Batch 2 commit + Batch 3 multi-fatura dedup). Ordem daqui:
+1. **Ajuste no preview** (hivvo-api): devolver `faturas_passadas` (as competências passadas que a
+   importação vai criar) — pra tela de revisão não replicar a lógica de competência no front.
+2. **Tela de revisão** (hivvo-web) — fecha o fluxo upload → preview → revisar/editar → confirmar
+   faturas passadas pagas → commit. Design fechado: entrada por fluxo dedicado com escolha de cartão;
+   1 fatura por vez + "importar outra"; commit SEQUENCIAL (nunca paralelo — mitiga a TOCTOU
+   cross-competência); edição = categoria + apagar linha; confirmação de pagamento das passadas com
+   default "paga"; surfaça reconciliação/estornos_ignorados/parceladas_deduplicadas.
+3. **#4 Termos/Privacidade** — pré-requisito ANTES de abrir pra usuários reais (edições já redigidas:
+   Gemini pago/subprocessador, fluxo de importação, corrigir a promessa do "nome completo").
+4. **Ir ao ar** com a fatura (fatia Nubank), tier pago + #4 no ar.
+5. **Extrato** — a fatia seguinte (resolve de graça a armadilha do histórico).
 
 ---
 

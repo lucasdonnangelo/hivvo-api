@@ -30,6 +30,7 @@ from app.schemas.import_fatura import (
     FaturaCommitRequest,
     FaturaCommitResponse,
     FaturaExtraida,
+    FaturaPassadaOut,
     FaturaPreviewResponse,
     ReconciliacaoOut,
 )
@@ -37,6 +38,7 @@ from app.services.import_fatura import extracao_pdf, gemini, redacao
 from app.services.import_fatura.persistencia import (
     ancora_competencia,
     competencias_passadas_com_lancamentos,
+    competencias_passadas_da_fatura,
     materializar_fatura,
 )
 from app.services.import_fatura.reconciliacao import TOLERANCIA, reconciliar
@@ -55,6 +57,29 @@ def _get_card_for_user(session: Session, card_id: int, usuario_id: int) -> Carta
     if not card or card.usuario_id != usuario_id:
         raise HTTPException(status_code=404, detail="Cartão não encontrado")
     return card
+
+
+def _faturas_passadas(
+    session: Session, usuario_id: int, cartao_id: int, fatura: FaturaExtraida
+) -> list[FaturaPassadaOut]:
+    """Competências passadas que o commit criará (cálculo DRY em persistencia) +
+    flag `ja_paga` (leitura de PagamentoFatura). Só LEITURA — o preview segue
+    stateless. Ordenado cronologicamente para a tela de revisão."""
+    comps = competencias_passadas_da_fatura(fatura)
+    pagas: set[tuple[int, int]] = set()
+    if comps:
+        linhas = session.exec(
+            select(PagamentoFatura.fatura_mes, PagamentoFatura.fatura_ano).where(
+                PagamentoFatura.usuario_id == usuario_id,
+                PagamentoFatura.cartao_id == cartao_id,
+                PagamentoFatura.pago == True,  # noqa: E712
+            )
+        ).all()
+        pagas = {(m, a) for m, a in linhas} & comps
+    return [
+        FaturaPassadaOut(mes=mes, ano=ano, ja_paga=(mes, ano) in pagas)
+        for mes, ano in sorted(comps, key=lambda c: (c[1], c[0]))
+    ]
 
 
 def _ler_pdf(request: Request, arquivo: UploadFile) -> bytes:
@@ -169,6 +194,7 @@ def preview_fatura(
             diferenca_secundaria=str(rec.diferenca_secundaria),
             bate_secundario=rec.bate_secundario,
         ),
+        faturas_passadas=_faturas_passadas(session, current_user.id, cartao.id, fatura),
     )
 
 

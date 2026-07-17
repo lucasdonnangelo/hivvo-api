@@ -16,9 +16,10 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.models.card import Cartao
+from app.models.pagamento_fatura import PagamentoFatura
 from app.services.import_fatura import extracao_pdf, gemini
 from main import app
-from tests.fixtures.faturas_validadas import NUBANK
+from tests.fixtures.faturas_validadas import ITAU, NUBANK
 
 _PDF = (
     Path(__file__).resolve().parent.parent / "fixtures" / "fatura_texto_minimo.pdf"
@@ -82,6 +83,49 @@ def test_preview_feliz_devolve_fatura_e_reconciliacao(
     # nem o texto extraído do PDF nem o conteúdo da fatura vão para log
     assert "BANCO SINTETICO" not in caplog.text  # linha do PDF fixture
     assert "Blacktag" not in caplog.text  # descrição vinda do Gemini
+
+
+# --- faturas_passadas: a "armadilha do histórico" na tela de revisão ---------
+
+def test_preview_lista_faturas_passadas_da_parcelada(as_user, users, cartoes, monkeypatch):
+    monkeypatch.setattr(gemini, "extrair_fatura", lambda texto: json.dumps(NUBANK))
+    resp = _post(as_user(users[0]), cartoes[0].id)
+    assert resp.status_code == 200
+
+    # Blacktag 4/7, âncora julho/2026 (vencimento 2026-07-13): parcelas 1..3
+    # recuam para 04,05,06/2026 — o histórico que a revisão precisa mostrar.
+    passadas = resp.json()["faturas_passadas"]
+    assert [(f["mes"], f["ano"]) for f in passadas] == [(4, 2026), (5, 2026), (6, 2026)]
+    assert all(f["ja_paga"] is False for f in passadas)  # nenhum pagamento ainda
+
+
+def test_preview_faturas_passadas_marca_ja_paga(session, as_user, users, cartoes, monkeypatch):
+    monkeypatch.setattr(gemini, "extrair_fatura", lambda texto: json.dumps(NUBANK))
+    session.add_all([
+        # pagamento confirmado de 05/2026 neste cartão → ja_paga True
+        PagamentoFatura(usuario_id=users[0].id, cartao_id=cartoes[0].id,
+                        fatura_mes=5, fatura_ano=2026, pago=True),
+        # "não paguei" de 04/2026 (pago=False) → NÃO conta como paga
+        PagamentoFatura(usuario_id=users[0].id, cartao_id=cartoes[0].id,
+                        fatura_mes=4, fatura_ano=2026, pago=False),
+        # pago=True de 06/2026 em OUTRO cartão → não vaza para este
+        PagamentoFatura(usuario_id=users[1].id, cartao_id=cartoes[1].id,
+                        fatura_mes=6, fatura_ano=2026, pago=True),
+    ])
+    session.commit()
+
+    resp = _post(as_user(users[0]), cartoes[0].id)
+    assert resp.status_code == 200
+    ja_paga = {(f["mes"], f["ano"]): f["ja_paga"] for f in resp.json()["faturas_passadas"]}
+    assert ja_paga == {(4, 2026): False, (5, 2026): True, (6, 2026): False}
+
+
+def test_preview_sem_parcelada_passada_lista_vazia(as_user, users, cartoes, monkeypatch):
+    # Itaú (fixture) não tem parcelada: nada recua para o passado.
+    monkeypatch.setattr(gemini, "extrair_fatura", lambda texto: json.dumps(ITAU))
+    resp = _post(as_user(users[0]), cartoes[0].id)
+    assert resp.status_code == 200
+    assert resp.json()["faturas_passadas"] == []
 
 
 def test_cartao_inexistente_404(as_user, users, cartoes):

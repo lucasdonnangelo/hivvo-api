@@ -155,3 +155,42 @@ class FaturaPreviewResponse(BaseModel):
     cartao_id: int
     fatura: FaturaExtraida
     reconciliacao: ReconciliacaoOut
+
+
+# --- Batch 2: commit (grava transações/parcelas a partir da fatura revisada) ---
+#
+# O request reusa o contrato da extração por SUBCLASSE — herda campos e
+# validadores de Transacao/FaturaExtraida sem duplicá-los, e sem tocar no
+# schema que o Gemini consome. A ÚNICA adição é `categoria` por linha: ela é
+# do request (a revisão no front categoriza), NUNCA da extração — default
+# "Outros" quando ausente.
+
+
+class TransacaoCommit(Transacao):
+    categoria: str = "Outros"
+
+
+class FaturaCommit(FaturaExtraida):
+    transacoes: list[TransacaoCommit]
+
+
+class FaturaCommitRequest(BaseModel):
+    cartao_id: int
+    fatura: FaturaCommit
+    # Competências passadas a marcar como pagas (o commit cria PagamentoFatura
+    # pago=True). NUNCA presume pago por data — só o que vier aqui. Revalidado
+    # no servidor: cada uma tem que pertencer ao passado que ESTA importação
+    # materializou (ver services/import_fatura/persistencia.py).
+    competencias_pagas: list[Competencia] = []
+
+
+class FaturaCommitResponse(BaseModel):
+    """Recibo do commit — tudo que foi gravado, para o front conferir."""
+
+    transacoes_criadas: int
+    parcelas_criadas: int
+    faturas_marcadas_pagas: int
+    # Estornos (compra negativa) NÃO são graváveis (CHECK valor>0); aparecem
+    # aqui para não sumirem em silêncio. Netting contra a compra-mãe: adiado.
+    estornos_ignorados: int
+    reconciliacao_bate: bool

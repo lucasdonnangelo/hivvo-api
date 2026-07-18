@@ -15,6 +15,7 @@ from sqlmodel import Session, delete, select
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.database import get_session
+from app.core.gemini_safety import SAFETY_SETTINGS
 from app.core.rate_limit import _user_or_ip_key, limiter
 from app.models.category import CategoriaCustomizada
 from app.models.chat import ChatMessage
@@ -45,14 +46,6 @@ _MESES = {
     5: "Maio",    6: "Junho",     7: "Julho",     8: "Agosto",
     9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro",
 }
-# F-06: BLOCK_ONLY_HIGH (não o default pleno) — não recusa consulta financeira
-# legítima, mas mantém a barreira do provedor. Exige validação runtime manual.
-_SAFETY = [
-    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT",        threshold="BLOCK_ONLY_HIGH"),
-    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH",        threshold="BLOCK_ONLY_HIGH"),
-    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT",  threshold="BLOCK_ONLY_HIGH"),
-    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT",  threshold="BLOCK_ONLY_HIGH"),
-]
 
 
 def _total_parcelas_proximo_mes(session: Session, usuario_id: int, mes: int, ano: int) -> Decimal:
@@ -237,7 +230,7 @@ def _gemini_generate(contents: list[types.Content], system_instruction: str) -> 
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    safety_settings=_SAFETY,
+                    safety_settings=SAFETY_SETTINGS,
                 ),
             )
             if not response.text:

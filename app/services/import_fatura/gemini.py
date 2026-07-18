@@ -23,6 +23,7 @@ from google.genai import errors as genai_errors
 from google.genai import types
 
 from app.core.config import settings
+from app.core.gemini_safety import SAFETY_SETTINGS
 from app.schemas.import_fatura import FaturaExtraida
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,9 @@ def extrair_fatura(texto_redigido: str) -> str:
                     temperature=0,
                     response_mime_type="application/json",
                     response_schema=FaturaExtraida,
+                    # F-06: mesma moderação do assistente (fonte única em
+                    # app/core/gemini_safety) — o texto da fatura vai ao modelo.
+                    safety_settings=SAFETY_SETTINGS,
                 ),
             )
             return resposta.text or ""

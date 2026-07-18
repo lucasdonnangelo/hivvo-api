@@ -296,18 +296,15 @@ caminho funcionar.
 ---
 
 ## PRÓXIMO PASSO
-Backend da fatura COMPLETO (Batch 1 preview + Batch 2 commit + Batch 3 multi-fatura dedup). Ordem daqui:
-1. **Ajuste no preview** (hivvo-api): devolver `faturas_passadas` (as competências passadas que a
-   importação vai criar) — pra tela de revisão não replicar a lógica de competência no front.
-2. **Tela de revisão** (hivvo-web) — fecha o fluxo upload → preview → revisar/editar → confirmar
-   faturas passadas pagas → commit. Design fechado: entrada por fluxo dedicado com escolha de cartão;
-   1 fatura por vez + "importar outra"; commit SEQUENCIAL (nunca paralelo — mitiga a TOCTOU
-   cross-competência); edição = categoria + apagar linha; confirmação de pagamento das passadas com
-   default "paga"; surfaça reconciliação/estornos_ignorados/parceladas_deduplicadas.
-3. **#4 Termos/Privacidade** — pré-requisito ANTES de abrir pra usuários reais (edições já redigidas:
-   Gemini pago/subprocessador, fluxo de importação, corrigir a promessa do "nome completo").
-4. **Ir ao ar** com a fatura (fatia Nubank), tier pago + #4 no ar.
-5. **Extrato** — a fatia seguinte (resolve de graça a armadilha do histórico).
+Importação de fatura CODE-COMPLETE ponta a ponta (backend + frontend). Falta validar e declarar.
+1. ✅ Ajuste no preview (faturas_passadas) — entregue.
+2. ✅ Tela de revisão (hivvo-web) — implementada (build/tsc/lint limpos). ⚠️ E2E isolado PENDENTE:
+   preview é read-only (E2E livre); o COMMIT escreve → só contra banco descartável, nunca o .env de prod.
+3. **E2E ponta a ponta** (upload → preview → revisão → commit) em conta descartável — onde os bugs
+   reais aparecem. Confirmar que "A pagar"/projeção se mexem após importar.
+4. **#4 Termos/Privacidade** — pré-requisito ANTES de abrir pra usuários reais (edições já redigidas).
+5. **Ir ao ar** com a fatura (fatia Nubank), tier pago + #4 no ar.
+6. **Extrato** — a fatia seguinte.
 
 ---
 

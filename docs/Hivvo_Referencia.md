@@ -220,15 +220,19 @@ hivvo-api/
 ├── alembic/versions/
 └── app/
     ├── models/          SQLModel models
-    ├── repositories/    ⚠️ VAZIO hoje (alvo pós-deploy — ver §8)
-    ├── services/        ⚠️ VAZIO hoje (alvo pós-deploy — ver §8)
+    ├── repositories/    ⚠️ VAZIO hoje (só __init__.py — sem camada de acesso a dados separada)
+    ├── services/        parcelas, faturas, estatisticas, categorias, recorrencias,
+    │                    import_fatura/ (extração PDF, redação PII, Gemini,
+    │                    reconciliação, materialização) — ~2.170 linhas
     ├── routers/         auth, transactions, categories, cards, invoices,
-    │                    installments, statistics, ai  ← lógica de negócio vive AQUI
+    │                    installments, statistics, ai, recorrencias, import_fatura
+    │                    ← orquestração (auth/sessão/request-response); parte da
+    │                    lógica de domínio ainda vive aqui também
     ├── schemas/         Pydantic (request/response)
     └── core/            auth.py (JWT+bcrypt), database.py, config.py
 ```
 
-> **Estado real da arquitetura em camadas:** as pastas `repositories/` e `services/` existem mas estão **vazias**. Toda a lógica de domínio — inclusive a criação de parcelas e o cálculo de fatura, que é o diferencial do produto — está hoje **dentro dos routers**, em funções privadas. A lógica de negócio do FinanceAI transferiu e funciona corretamente, mas **não foi reconstruída em camadas**. A extração para `services/`/`repositories/` é a primeira etapa do plano de correção (ver §7 e §8) e o refactor completo é pós-deploy.
+> **Estado real da arquitetura em camadas:** `repositories/` está **vazio** (só `__init__.py`) — não existe camada de acesso a dados separada da regra de negócio. `services/` **não está vazio**: concentra lógica de domínio em `parcelas.py`, `faturas.py`, `estatisticas.py`, `categorias.py`, `recorrencias.py` e o pacote `import_fatura/` (extração de PDF, redação de PII, chamada ao Gemini, reconciliação, materialização) — ao todo ~2.170 linhas. Essas funções recebem `Session` e fazem suas próprias queries — não é o Repository Pattern completo (acesso a dados separado da regra de negócio); é serviço com lógica + I/O misturados. Os routers fazem orquestração (auth, sessão, mapeamento request/response) e chamam `services/`; parte da lógica de domínio ainda vive direto nos routers, em funções privadas. Separar `services/` (regra) de `repositories/` (dados) é o refactor pendente (ver §7/§8) — não a criação de `services/` do zero, que já existe.
 
 ### Endpoints por Domínio (estado real)
 
@@ -267,7 +271,7 @@ O Hivvo nasceu da migração do FinanceAI (protótipo Python/Streamlit). A UI St
 | Origem | Status real na hivvo-api |
 |---|---|
 | `models.py` | ✅ Transferido — SQLModel com PostgreSQL |
-| `logic.py` / `repositories.py` | 🔄 **Lógica transferida e funcional, mas vive nos routers** — as camadas `services/`/`repositories/` ainda não foram reconstruídas (planejado, §8) |
+| `logic.py` / `repositories.py` | 🔄 **Lógica transferida e funcional** — parte em `services/` (parcelas, faturas, estatísticas, recorrências, import_fatura), parte ainda nos routers; `repositories/` (acesso a dados separado da regra) segue vazio (planejado, §8) |
 | `agent.py` (Gemini) | ✅ Adaptado para HTTP (`routers/ai.py`) com persistência de chat |
 | `auth.py` | ✅ Adaptado — bcrypt + JWT (httpOnly cookie) + refresh token |
 | `pages/` + `components/` (Streamlit) | ❌ Descartado — substituído pelo React |
@@ -333,7 +337,7 @@ O backend passou por duas auditorias somente-leitura:
 
 ### Arquitetura-alvo (pós-deploy)
 
-- **Repository Pattern completo:** `services/` (regra de negócio) + `repositories/` (acesso a dados), tirando lógica dos routers.
+- **Repository Pattern completo:** separar `repositories/` (acesso a dados, hoje vazio) de `services/` (regra de negócio, já existe mas hoje mistura queries) — tirando o que resta de lógica/queries dos routers.
 - **RLS no Supabase** como defesa em profundidade (papel Postgres de privilégio mínimo + políticas por `SET LOCAL`).
 - **Performance:** agregações no banco (não em Python), cache do contexto da IA, paginação com envelope.
 

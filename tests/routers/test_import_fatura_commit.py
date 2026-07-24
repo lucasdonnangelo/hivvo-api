@@ -171,6 +171,45 @@ def test_marca_competencia_passada_paga(session, as_user, users, cartoes):
     assert pag.data_pagamento is None  # Q3: histórico, nunca data falsa
 
 
+def test_marca_paga_grava_valor_pago_do_total_materializado(
+    session, as_user, users, cartoes
+):
+    # Cobertura (#9): o import grava valor_pago = total da fatura
+    # MATERIALIZADA da competência marcada. Esperado recomputado aqui por
+    # soma direta no banco (aritmética independente da função de produção).
+    resp = _commit(
+        as_user(users[0]), cartoes[0].id,
+        competencias_pagas=[{"mes": 6, "ano": 2026}],
+    )
+    assert resp.status_code == 200
+
+    parcelas = session.exec(
+        select(Parcela).where(
+            Parcela.cartao_id == cartoes[0].id,
+            Parcela.fatura_mes == 6,
+            Parcela.fatura_ano == 2026,
+            Parcela.cancelado == False,  # noqa: E712
+        )
+    ).all()
+    avulsas = session.exec(
+        select(Transacao).where(
+            Transacao.cartao_id == cartoes[0].id,
+            Transacao.fatura_mes == 6,
+            Transacao.fatura_ano == 2026,
+            Transacao.parcelado == False,  # noqa: E712
+            Transacao.tipo == "despesa",
+        )
+    ).all()
+    esperado = sum((p.valor_parcela for p in parcelas), Decimal("0")) + sum(
+        (t.valor for t in avulsas), Decimal("0")
+    )
+    assert esperado > 0  # a competência passada tem lançamento materializado
+
+    pag = session.exec(select(PagamentoFatura)).one()
+    assert pag.pago is True
+    assert Decimal(str(pag.valor_pago)) == Decimal(str(esperado))
+
+
 def test_competencia_paga_fora_do_historico_rejeita_e_desfaz(
     session, as_user, users, cartoes
 ):

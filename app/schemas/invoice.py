@@ -6,11 +6,16 @@ from pydantic import BaseModel
 
 # Status derivado da fatura (Leva 2 — PLANO_3D_PAGAMENTO_FATURA), nunca
 # materializado: `vazia` = competência SEM lançamento (nada a pagar, status
-# neutro — não é atrasada); `paga` = PagamentoFatura pago=True; `aberta` =
-# ainda aceita compras (fechamento não passou); `a_vencer`/`atrasada` = fechada
-# e não confirmada, antes/depois do vencimento. Só `FaturaDetalhe` chega a
-# emitir `vazia` (detalhe de uma competência que pode não ter lançamento).
-StatusFatura = Literal["vazia", "paga", "aberta", "a_vencer", "atrasada"]
+# neutro — não é atrasada); `paga` = pago=True e o pagamento COBRE o total
+# atual (valor_pago >= total); `paga_parcial` (#9) = pago=True mas o total
+# cresceu depois (compra retroativa) — falta (total − valor_pago), refletida
+# no a_pagar das estatísticas; `aberta` = ainda aceita compras (fechamento não
+# passou); `a_vencer`/`atrasada` = fechada e não confirmada, antes/depois do
+# vencimento. Só `FaturaDetalhe` chega a emitir `vazia` (detalhe de uma
+# competência que pode não ter lançamento).
+StatusFatura = Literal[
+    "vazia", "paga", "paga_parcial", "aberta", "a_vencer", "atrasada"
+]
 
 
 class ParcelaFaturaResponse(BaseModel):
@@ -97,11 +102,16 @@ class PagamentoFaturaUpdate(BaseModel):
 
 
 class PagamentoFaturaResponse(BaseModel):
-    """Estado da confirmação + o status derivado resultante."""
+    """Estado da confirmação + o status derivado resultante.
+
+    `valor_pago` (#9): snapshot do total no instante da confirmação — None
+    quando pago=False. Aditivo: o front pode exibir a cobertura sem recalcular.
+    """
 
     cartao_id: int
     ano: int
     mes: int
     pago: bool
+    valor_pago: Optional[Decimal] = None
     data_pagamento: Optional[dt.date] = None
     status: StatusFatura

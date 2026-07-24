@@ -13,7 +13,11 @@ from app.models.pagamento_fatura import PagamentoFatura
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.transaction import Transacao
 from app.schemas.statistics import CategoriaStats
-from app.services.faturas import vencimento_avulsa
+from app.services.faturas import (
+    totais_fatura_por_cartao,
+    totais_fatura_por_cartao_ano,
+    vencimento_avulsa,
+)
 from app.services.recorrencias import data_ocorrencia, valor_no_mes
 
 _ZERO = Decimal("0.00")
@@ -56,10 +60,13 @@ class LancamentoFluxo:
     recorrência (Fonte 4, à vista por definição) saem no ato → nunca a_pagar.
     Eixo INDEPENDENTE do `realizado` (tempo-no-mês-corrente ≠ dívida-de-
     crédito) e regra única por lançamento, sem olhar se o mês é corrente.
-    FRONTEIRA do pagamento: a marcação a_pagar é o ÚNICO consumidor de
-    PagamentoFatura em toda a projeção — topo, realizado/a_vir, anual, série
-    e consumo derivam exclusivamente de data/competência (§1.3: pagamento
-    não governa a projeção).
+    FRONTEIRA do pagamento: PagamentoFatura entra na projeção por DOIS
+    consumidores nomeados e nada mais — (1) esta marcação a_pagar e (2) a
+    DESCOBERTA (#9, descoberta_faturas_mes/_ano: fatura paga cujo total
+    cresceu depois contribui total − valor_pago, somada ao a_pagar na
+    resposta). Topo, realizado/a_vir, anual, série e consumo derivam
+    exclusivamente de data/competência (§1.3: pagamento não governa a
+    projeção).
 
     ``data``/``descricao`` (PLANO_RESUMO, /highlights): preenchidos APENAS
     pela trilha CONSUMO mensal (_lancamentos_consumo_mes — C1 pela Transacao,
@@ -222,12 +229,15 @@ def _cartoes_por_id(session: Session, usuario_id: int) -> dict[int, Cartao]:
 
 def _faturas_pagas_mes(
     session: Session, usuario_id: int, mes: int, ano: int
-) -> set[int]:
-    """cartao_ids com fatura CONFIRMADA PAGA (PagamentoFatura.pago=True) na
-    competência — 1 query, só chamada quando há lançamentos de cartão."""
-    return set(
+) -> dict[int, Optional[Decimal]]:
+    """{cartao_id: valor_pago} das faturas CONFIRMADAS PAGAS (pago=True) na
+    competência — 1 query, só chamada quando há lançamentos de cartão.
+    A flag a_pagar dos lançamentos usa só as CHAVES (`in` — pago=True tira o
+    lançamento do a_pagar individual, coberta ou não); a descoberta (#9) usa
+    o valor_pago."""
+    return dict(
         session.exec(
-            select(PagamentoFatura.cartao_id).where(
+            select(PagamentoFatura.cartao_id, PagamentoFatura.valor_pago).where(
                 PagamentoFatura.usuario_id == usuario_id,
                 PagamentoFatura.fatura_mes == mes,
                 PagamentoFatura.fatura_ano == ano,
@@ -239,22 +249,84 @@ def _faturas_pagas_mes(
 
 def _faturas_pagas_ano(
     session: Session, usuario_id: int, ano: int
-) -> dict[int, set[int]]:
-    """{fatura_mes: {cartao_ids pagos}} do ano — a variante anual de
+) -> dict[int, dict[int, Optional[Decimal]]]:
+    """{fatura_mes: {cartao_id: valor_pago}} do ano — a variante anual de
     _faturas_pagas_mes, em 1 query fixa (padrão do _lancamentos_ano)."""
-    pagas: dict[int, set[int]] = {m: set() for m in range(1, 13)}
-    for mes, cartao_id in session.exec(
-        select(PagamentoFatura.fatura_mes, PagamentoFatura.cartao_id).where(
+    pagas: dict[int, dict[int, Optional[Decimal]]] = {m: {} for m in range(1, 13)}
+    for mes, cartao_id, valor_pago in session.exec(
+        select(
+            PagamentoFatura.fatura_mes,
+            PagamentoFatura.cartao_id,
+            PagamentoFatura.valor_pago,
+        ).where(
             PagamentoFatura.usuario_id == usuario_id,
             PagamentoFatura.fatura_ano == ano,
             PagamentoFatura.pago == True,  # noqa: E712
         )
     ).all():
-        pagas[mes].add(cartao_id)
+        pagas[mes][cartao_id] = valor_pago
     return pagas
 
 
-def _parcela_a_pagar(parcela: Parcela, pagas: set[int], h) -> bool:
+def _soma_descobertas(
+    pagas: dict[int, Optional[Decimal]], totais: dict[int, Decimal]
+) -> Decimal:
+    """Σ (total − valor_pago) das faturas pagas cujo pagamento NÃO cobre o
+    total atual (#9 — a fatura `paga_parcial`). Kernel único do mensal e do
+    anual. valor_pago NULL (não deve existir com pago=True — CHECK/backfill)
+    degrada seguro: coberta, contribui 0. valor_pago acima do total (compra
+    removida depois de paga) nunca vira descoberta negativa."""
+    descoberta = _ZERO
+    for cartao_id, valor_pago in pagas.items():
+        if valor_pago is None:
+            continue
+        total = totais.get(cartao_id, _ZERO)
+        if valor_pago < total:
+            descoberta += total - valor_pago
+    return descoberta
+
+
+def descoberta_faturas_mes(
+    session: Session, usuario_id: int, mes: int, ano: int
+) -> Decimal:
+    """Descoberta do mês (#9): quanto do "A pagar" vem de fatura paga cujo
+    total cresceu depois (compra retroativa) — Σ (total − valor_pago) das
+    faturas pago=True com valor_pago < total atual.
+
+    Entra SOMADA ao _soma_a_pagar na resposta (routers/statistics): os
+    lançamentos de fatura confirmada continuam fora do a_pagar individual
+    (a descoberta é da FATURA, não de um lançamento específico). Totais pela
+    fonte única da composição (totais_fatura_por_cartao). Curto-circuito:
+    sem fatura paga na competência → zero, sem query de totais.
+    """
+    pagas = _faturas_pagas_mes(session, usuario_id, mes, ano)
+    if not pagas:
+        return _ZERO
+    totais = totais_fatura_por_cartao(session, usuario_id, mes, ano)
+    return _soma_descobertas(pagas, totais)
+
+
+def descoberta_faturas_ano(
+    session: Session, usuario_id: int, ano: int
+) -> dict[int, Decimal]:
+    """{mes: descoberta} do ano — variante anual de descoberta_faturas_mes
+    (2+1 queries fixas via totais_fatura_por_cartao_ano), para a série da
+    projeção somar a descoberta no mês certo sem 12× as queries mensais."""
+    pagas_ano = _faturas_pagas_ano(session, usuario_id, ano)
+    descobertas = {m: _ZERO for m in range(1, 13)}
+    if not any(pagas_ano.values()):
+        return descobertas
+    totais = totais_fatura_por_cartao_ano(session, usuario_id, ano)
+    for m in range(1, 13):
+        if pagas_ano[m]:
+            descobertas[m] = _soma_descobertas(
+                pagas_ano[m],
+                {cid: totais.get((m, cid), _ZERO) for cid in pagas_ano[m]},
+            )
+    return descobertas
+
+
+def _parcela_a_pagar(parcela: Parcela, pagas: dict[int, Optional[Decimal]], h) -> bool:
     """Regra a_pagar da Fonte 1 (Leva 2): COM cartão, segue a fatura
     (não confirmada = a_pagar, a vencer ou atrasada); SEM cartão (carnê,
     sem fatura confirmável), presunção por vencimento."""
@@ -384,7 +456,7 @@ def _lancamentos_mes(
     # lançamento de cartão para marcar (ÚNICO ponto da projeção que lê
     # PagamentoFatura — fronteira, ver LancamentoFluxo).
     tem_cartao = bool(avulsas) or any(p.cartao_id is not None for p in parcelas)
-    pagas = _faturas_pagas_mes(session, usuario_id, mes, ano) if tem_cartao else set()
+    pagas = _faturas_pagas_mes(session, usuario_id, mes, ano) if tem_cartao else {}
 
     # Fonte 1: parcelas na competência — realizado pelo VENCIMENTO real (dia
     # exato) no mês corrente, não pelo fatura_mes (§1.3.2); a_pagar enquanto
@@ -591,7 +663,7 @@ def _lancamentos_ano(
     pagas_ano = (
         _faturas_pagas_ano(session, usuario_id, ano)
         if tem_cartao
-        else {m: set() for m in range(1, 13)}
+        else {m: {} for m in range(1, 13)}
     )
 
     for p in parcelas:

@@ -9,6 +9,7 @@ validado do spike (números reais).
 
 import json
 import logging
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -104,13 +105,15 @@ def test_preview_faturas_passadas_marca_ja_paga(session, as_user, users, cartoes
     session.add_all([
         # pagamento confirmado de 05/2026 neste cartão → ja_paga True
         PagamentoFatura(usuario_id=users[0].id, cartao_id=cartoes[0].id,
-                        fatura_mes=5, fatura_ano=2026, pago=True),
+                        fatura_mes=5, fatura_ano=2026, pago=True,
+                        valor_pago=Decimal("100.00")),
         # "não paguei" de 04/2026 (pago=False) → NÃO conta como paga
         PagamentoFatura(usuario_id=users[0].id, cartao_id=cartoes[0].id,
                         fatura_mes=4, fatura_ano=2026, pago=False),
         # pago=True de 06/2026 em OUTRO cartão → não vaza para este
         PagamentoFatura(usuario_id=users[1].id, cartao_id=cartoes[1].id,
-                        fatura_mes=6, fatura_ano=2026, pago=True),
+                        fatura_mes=6, fatura_ano=2026, pago=True,
+                        valor_pago=Decimal("100.00")),
     ])
     session.commit()
 

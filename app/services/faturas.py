@@ -102,6 +102,7 @@ def status_fatura(
     fatura_ano: int,
     pagamento: Optional[PagamentoFatura],
     today: dt.date,
+    total: Decimal,
     vazia: bool = False,
 ) -> str:
     """Status derivado da fatura (PLANO_3D — NUNCA materializado):
@@ -112,19 +113,30 @@ def status_fatura(
       não pagamento — distinto de `paga` (tem lançamento + pago=True). Só o
       detalhe por cartão (`get_invoice`) chega aqui vazio; as demais lentes só
       chamam para faturas que existem.
-    - `paga`: registro de pagamento com pago=True (registro manda — vale
-      inclusive se a composição mudou depois, ex. compra retroativa).
+    - `paga`: pago=True e o pagamento COBRE o total atual (valor_pago >=
+      total). Derivado por cobertura (#9): remover compra de fatura parcial
+      baixa o total → volta a "paga" sozinha, sem write.
+    - `paga_parcial`: pago=True mas a composição cresceu depois (compra
+      retroativa) — valor_pago < total atual; falta (total − valor_pago),
+      que o "A pagar" das estatísticas reflete (descoberta). valor_pago NULL
+      com pago=True não deve existir (CHECK + backfill); se aparecer, degrada
+      seguro para "paga" (comportamento pré-cobertura, nunca parcial falsa).
     - `aberta`: a competência ainda aceita compras (hoje <= fechamento).
     - `a_vencer`: fechada, não confirmada (sem registro ou pago=False),
       vencimento >= hoje.
     - `atrasada`: fechada, não confirmada, vencimento < hoje — o usuário
       nunca marca "atrasada"; é consequência de não confirmar + tempo.
 
+    `total` = total ATUAL da fatura, sempre da fonte única da composição
+    (_cond_parcelas_fatura/_cond_avulsas_fatura — total_fatura_cartao,
+    totais_fatura_por_cartao ou a soma do detalhe).
     Vencimento via `vencimento_avulsa` (nunca None — fallback fim do mês).
     """
     if vazia:
         return "vazia"
     if pagamento is not None and pagamento.pago:
+        if pagamento.valor_pago is not None and pagamento.valor_pago < total:
+            return "paga_parcial"
         return "paga"
     if today <= data_fechamento_fatura(card, fatura_mes, fatura_ano):
         return "aberta"
@@ -163,19 +175,22 @@ def vencimento_avulsa(
 
 
 def _cond_parcelas_fatura(
-    usuario_id: int, mes: int, ano: int, cartao_id: Optional[int] = None
+    usuario_id: int, mes: Optional[int], ano: int, cartao_id: Optional[int] = None
 ) -> list:
     """Condições de "parcela que compõe uma fatura de cartão" na competência.
 
     HELPER ÚNICO da composição (PLANO_3D §6): get_invoice,
-    totais_fatura_por_cartao e fatura_existe usam as MESMAS condições —
-    a consistência entre as lentes deixa de ser por duplicação afirmada em
-    teste e passa a ser por construção. cartao_id=None = qualquer cartão
-    (cartao_id != None); parcela SEM cartão nunca pertence a fatura.
+    totais_fatura_por_cartao(_ano), fatura_existe e total_fatura_cartao usam
+    as MESMAS condições — a consistência entre as lentes deixa de ser por
+    duplicação afirmada em teste e passa a ser por construção. cartao_id=None
+    = qualquer cartão (cartao_id != None); parcela SEM cartão nunca pertence
+    a fatura. mes=None = ano inteiro (fatura_mes != None) — a variante anual
+    da descoberta (#9) agrupa por mês fora daqui.
     """
     return [
         Parcela.usuario_id == usuario_id,
-        Parcela.fatura_mes == mes,
+        Parcela.fatura_mes == mes if mes is not None
+        else Parcela.fatura_mes != None,  # noqa: E711
         Parcela.fatura_ano == ano,
         Parcela.cancelado == False,  # noqa: E712
         Parcela.cartao_id == cartao_id if cartao_id is not None
@@ -184,19 +199,45 @@ def _cond_parcelas_fatura(
 
 
 def _cond_avulsas_fatura(
-    usuario_id: int, mes: int, ano: int, cartao_id: Optional[int] = None
+    usuario_id: int, mes: Optional[int], ano: int, cartao_id: Optional[int] = None
 ) -> list:
     """Condições de "avulsa de cartão que compõe uma fatura" na competência
-    (parcelado=False, tipo='despesa') — par do _cond_parcelas_fatura."""
+    (parcelado=False, tipo='despesa') — par do _cond_parcelas_fatura
+    (mesmas semânticas de mes=None e cartao_id=None)."""
     return [
         Transacao.usuario_id == usuario_id,
-        Transacao.fatura_mes == mes,
+        Transacao.fatura_mes == mes if mes is not None
+        else Transacao.fatura_mes != None,  # noqa: E711
         Transacao.fatura_ano == ano,
         Transacao.parcelado == False,  # noqa: E712
         Transacao.tipo == "despesa",
         Transacao.cartao_id == cartao_id if cartao_id is not None
         else Transacao.cartao_id != None,  # noqa: E711
     ]
+
+
+def total_fatura_cartao(
+    session: Session, usuario_id: int, cartao_id: int, mes: int, ano: int
+) -> Decimal:
+    """Total ATUAL da fatura (cartao_id, mes, ano) — fonte única da composição.
+
+    2 SUMs sobre _cond_parcelas_fatura/_cond_avulsas_fatura — a MESMA
+    composição de get_invoice/totais_fatura_por_cartao, por construção.
+    Usado onde o total de UMA fatura é preciso fora das lentes de leitura:
+    o PUT de pagamento e o import gravam PagamentoFatura.valor_pago com este
+    valor (#9 — snapshot da cobertura no instante da confirmação).
+    """
+    parcelas = session.exec(
+        select(func.sum(Parcela.valor_parcela)).where(
+            *_cond_parcelas_fatura(usuario_id, mes, ano, cartao_id)
+        )
+    ).one()
+    avulsas = session.exec(
+        select(func.sum(Transacao.valor)).where(
+            *_cond_avulsas_fatura(usuario_id, mes, ano, cartao_id)
+        )
+    ).one()
+    return (parcelas or Decimal("0.00")) + (avulsas or Decimal("0.00"))
 
 
 def fatura_existe(
@@ -370,6 +411,49 @@ def totais_fatura_por_cartao(
         totais[cartao_id] = totais.get(cartao_id, Decimal("0.00")) + (total or Decimal("0.00"))
     for cartao_id, total in avulsas_rows:
         totais[cartao_id] = totais.get(cartao_id, Decimal("0.00")) + (total or Decimal("0.00"))
+
+    return totais
+
+
+def totais_fatura_por_cartao_ano(
+    session: Session, usuario_id: int, ano: int
+) -> dict[tuple[int, int], Decimal]:
+    """{(fatura_mes, cartao_id): total} das faturas do ANO inteiro.
+
+    Variante anual de :func:`totais_fatura_por_cartao` — mesmas condições
+    (_cond_* com mes=None), GROUP BY (fatura_mes, cartao_id), 2 queries fixas
+    para o ano. Consumidor: a descoberta anual do "A pagar" (#9,
+    estatisticas.descoberta_faturas_ano) — a projeção precisa dos totais mês a
+    mês sem 12× as queries mensais.
+    """
+    totais: dict[tuple[int, int], Decimal] = {}
+
+    parcelas_rows = session.exec(
+        select(
+            Parcela.fatura_mes,
+            Parcela.cartao_id,
+            func.sum(Parcela.valor_parcela),
+        )
+        .where(*_cond_parcelas_fatura(usuario_id, None, ano))
+        .group_by(Parcela.fatura_mes, Parcela.cartao_id)
+    ).all()
+
+    avulsas_rows = session.exec(
+        select(
+            Transacao.fatura_mes,
+            Transacao.cartao_id,
+            func.sum(Transacao.valor),
+        )
+        .where(*_cond_avulsas_fatura(usuario_id, None, ano))
+        .group_by(Transacao.fatura_mes, Transacao.cartao_id)
+    ).all()
+
+    for rows in (parcelas_rows, avulsas_rows):
+        for mes, cartao_id, total in rows:
+            chave = (mes, cartao_id)
+            totais[chave] = totais.get(chave, Decimal("0.00")) + (
+                total or Decimal("0.00")
+            )
 
     return totais
 

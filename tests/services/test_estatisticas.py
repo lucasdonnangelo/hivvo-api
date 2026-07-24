@@ -722,11 +722,14 @@ class TestAPagar:
         return _q(_soma_a_pagar(_lancamentos_mes(session, uid, mes, ano)))
 
     def _confirmar_fatura(self, session, cartao_id, mes, ano=2026, pago=True):
-        """Semeia a confirmação de pagamento da fatura (Leva 2)."""
+        """Semeia a confirmação de pagamento da fatura (Leva 2). valor_pago
+        cobre qualquer total destes testes (CHECK exige valor com pago=True;
+        cobertura parcial/descoberta #9 tem testes próprios)."""
         session.add(
             PagamentoFatura(
                 usuario_id=1, cartao_id=cartao_id, fatura_mes=mes,
                 fatura_ano=ano, pago=pago,
+                valor_pago=Decimal("999999.00") if pago else None,
                 data_pagamento=HOJE_LEITURAS if pago else None,
             )
         )

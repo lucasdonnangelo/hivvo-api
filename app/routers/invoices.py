@@ -32,6 +32,7 @@ from app.services.faturas import (
     fatura_existe,
     proxima_fatura_a_vencer,
     status_fatura,
+    total_fatura_cartao,
     totais_fatura_por_cartao,
 )
 
@@ -140,7 +141,9 @@ def list_invoices(
             total=data["total"],
             data_vencimento=_fatura_vencimento(card, mes, ano),
             total_itens=data["itens"],
-            status=status_fatura(card, mes, ano, pagamentos.get((mes, ano)), h),
+            status=status_fatura(
+                card, mes, ano, pagamentos.get((mes, ano)), h, data["total"]
+            ),
         )
         for (mes, ano), data in sorted(faturas.items(), key=lambda x: (x[0][1], x[0][0]), reverse=True)
     ]
@@ -185,6 +188,7 @@ def get_invoice(
             card, mes, ano,
             _get_pagamento(session, current_user.id, card_id, mes, ano),
             hoje(),
+            total,
             vazia=not parcelas and not avulsas,
         ),
         parcelas=[ParcelaFaturaResponse.model_validate(p) for p in parcelas],
@@ -250,7 +254,7 @@ def invoices_by_competencia(
             cartao_nome=cartoes[cid].nome,
             total=total,
             data_vencimento=_fatura_vencimento(cartoes[cid], mes, ano),
-            status=status_fatura(cartoes[cid], mes, ano, pagamentos.get(cid), h),
+            status=status_fatura(cartoes[cid], mes, ano, pagamentos.get(cid), h, total),
         )
         for cid, total in totais.items()
         if cid in cartoes  # cartão apagado sob a fatura: defensivo, não deve ocorrer (FK)
@@ -305,6 +309,8 @@ def set_invoice_payment(
             ),
         )
 
+    total = total_fatura_cartao(session, current_user.id, cartao_id, mes, ano)
+
     pagamento = _get_pagamento(session, current_user.id, cartao_id, mes, ano)
     if pagamento is None:
         pagamento = PagamentoFatura(
@@ -318,6 +324,10 @@ def set_invoice_payment(
     elif not body.pago:
         pagamento.data_pagamento = None
     pagamento.pago = body.pago
+    # Cobertura (#9): valor_pago = total da fatura NO INSTANTE da confirmação,
+    # em TODO PUT pago=True (não só na transição) — re-marcar paga após compra
+    # retroativa atualiza pro novo total e a fatura volta a "paga".
+    pagamento.valor_pago = total if body.pago else None
     session.add(pagamento)
     session.commit()
     session.refresh(pagamento)
@@ -327,6 +337,7 @@ def set_invoice_payment(
         ano=ano,
         mes=mes,
         pago=pagamento.pago,
+        valor_pago=pagamento.valor_pago,
         data_pagamento=pagamento.data_pagamento,
-        status=status_fatura(card, mes, ano, pagamento, h),
+        status=status_fatura(card, mes, ano, pagamento, h, total),
     )

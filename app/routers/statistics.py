@@ -44,6 +44,8 @@ from app.services.estatisticas import (
     _mes_seguinte,
     _soma_a_pagar,
     _variacao,
+    descoberta_faturas_ano,
+    descoberta_faturas_mes,
     inicio_projecao,
     mes_default,
 )
@@ -128,9 +130,12 @@ def monthly_stats(
         a_vir=a_vir,
         consumo=LeituraMes(receitas=rec_c, despesas=desp_c, saldo=rec_c - desp_c),
         categorias_consumo=_categorias(consumo_lanc),
-        # §"A pagar e Saldo" — só crédito não-saído (marcado nas fontes);
-        # aditivo: topo/saldo intocados (saldo já é o caixa fim de mês).
-        a_pagar=_soma_a_pagar(lancamentos),
+        # §"A pagar e Saldo" — só crédito não-saído (marcado nas fontes) +
+        # a DESCOBERTA (#9): fatura paga cujo total cresceu depois (compra
+        # retroativa) contribui (total − valor_pago) — nível fatura, fora da
+        # lista. Aditivo: topo/saldo intocados (saldo já é o caixa fim de mês).
+        a_pagar=_soma_a_pagar(lancamentos)
+        + descoberta_faturas_mes(session, current_user.id, mes, ano),
     )
 
 
@@ -168,10 +173,14 @@ def projection_stats(
 
     series = []
     por_mes: dict = {}
+    descobertas: dict = {}
     ano_carregado = None
     for _ in range(meses):
         if ano != ano_carregado:
             por_mes = _lancamentos_ano(session, current_user.id, ano)
+            # Descoberta (#9) por mês do ano — mesma cadência de carga do
+            # _lancamentos_ano; somada ao a_pagar como no /monthly.
+            descobertas = descoberta_faturas_ano(session, current_user.id, ano)
             ano_carregado = ano
         rec, desp = _agregar(por_mes[mes])
         series.append(
@@ -180,7 +189,7 @@ def projection_stats(
                 ano=ano,
                 receitas=rec,
                 despesas=desp,
-                a_pagar=_soma_a_pagar(por_mes[mes]),
+                a_pagar=_soma_a_pagar(por_mes[mes]) + descobertas[mes],
                 saldo=rec - desp,
             )
         )

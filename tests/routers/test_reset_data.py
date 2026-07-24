@@ -87,6 +87,7 @@ def _popular(session) -> Usuario:
             fatura_mes=7,
             fatura_ano=2026,
             pago=True,
+            valor_pago=Decimal("100.00"),
         )
     )
 

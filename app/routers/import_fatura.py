@@ -34,6 +34,7 @@ from app.schemas.import_fatura import (
     FaturaPreviewResponse,
     ReconciliacaoOut,
 )
+from app.services.faturas import total_fatura_cartao
 from app.services.import_fatura import extracao_pdf, gemini, redacao
 from app.services.import_fatura.persistencia import (
     ancora_competencia,
@@ -290,6 +291,13 @@ def commit_fatura(
                 )
             pagamento.pago = True
             pagamento.data_pagamento = None
+            # Cobertura (#9): valor_pago = total da fatura MATERIALIZADA desta
+            # competência (inclui lançamentos de imports anteriores) — fonte
+            # única da composição; o autoflush do exec garante que os
+            # lançamentos recém-criados nesta transação entram na soma.
+            pagamento.valor_pago = total_fatura_cartao(
+                session, current_user.id, cartao.id, mes, ano
+            )
             session.add(pagamento)
 
         session.commit()

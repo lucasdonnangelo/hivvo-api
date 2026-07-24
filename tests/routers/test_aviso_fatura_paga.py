@@ -13,6 +13,7 @@ test_transactions_router.TestT35RederivacaoDeFatura.
 """
 
 import datetime as dt
+from decimal import Decimal
 
 from sqlmodel import select
 
@@ -46,6 +47,9 @@ def marca_pagamento(session, usuario_id, cartao_id, mes, ano, pago=True):
             fatura_mes=mes,
             fatura_ano=ano,
             pago=pago,
+            # CHECK exige valor com pago=True; a detecção do aviso não lê
+            # valor_pago — qualquer cobertura serve.
+            valor_pago=Decimal("999999.00") if pago else None,
             data_pagamento=dt.date(2026, mes, 10) if pago else None,
         )
     )

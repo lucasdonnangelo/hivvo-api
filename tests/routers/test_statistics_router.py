@@ -213,7 +213,8 @@ class TestMonthlyAPagar:
         session.add(
             PagamentoFatura(
                 usuario_id=users[0].id, cartao_id=1, fatura_mes=7,
-                fatura_ano=2026, pago=True, data_pagamento=HOJE,
+                fatura_ano=2026, pago=True, valor_pago=Decimal("100.00"),
+                data_pagamento=HOJE,
             )
         )
         session.commit()

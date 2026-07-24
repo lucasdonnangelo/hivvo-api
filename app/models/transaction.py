@@ -11,7 +11,10 @@ class Transacao(SQLModel, table=True):
     # fatura_mes é nullable (avulsa sem cartão) — o CHECK só vale quando preenchido.
     __table_args__ = (
         CheckConstraint("valor > 0", name="ck_transacoes_valor_positivo"),
-        CheckConstraint("tipo IN ('receita', 'despesa')", name="ck_transacoes_tipo_valido"),
+        CheckConstraint(
+            "tipo IN ('receita', 'despesa', 'estorno')",
+            name="ck_transacoes_tipo_valido",
+        ),
         CheckConstraint(
             "fatura_mes IS NULL OR (fatura_mes BETWEEN 1 AND 12)",
             name="ck_transacoes_fatura_mes_valido",
@@ -21,7 +24,10 @@ class Transacao(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     usuario_id: int = Field(foreign_key="usuarios.id", index=True)
 
-    tipo: str  # "receita" | "despesa"
+    # "estorno" é uma compra devolvida: valor POSITIVO (CHECK valor>0 vale),
+    # as agregações de consumo SUBTRAEM. Nunca parcelado; flui pela mesma
+    # derivação de fatura/competência de uma despesa de crédito.
+    tipo: str  # "receita" | "despesa" | "estorno"
     data: dt.date
     descricao: str
     valor: Decimal = Field(sa_column=Column(Numeric(15, 2), nullable=False))

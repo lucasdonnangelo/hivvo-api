@@ -39,6 +39,9 @@ class TransacaoFaturaResponse(BaseModel):
     categoria: str
     data: dt.date
     tipo_gasto: str
+    # "despesa" | "estorno" — o estorno compõe a fatura ABATENDO (valor
+    # positivo, sinal aplicado no total); o front o estiliza pelo tipo.
+    tipo: str
 
     model_config = {"from_attributes": True}
 

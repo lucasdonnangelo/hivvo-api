@@ -3,7 +3,7 @@ import datetime as dt
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlmodel import Session, select
 
 from app.models.card import Cartao
@@ -198,19 +198,32 @@ def _cond_parcelas_fatura(
     ]
 
 
+# Tipos de Transacao que compõem uma fatura de cartão: a despesa SOMA, o
+# estorno SUBTRAI (valor positivo no banco, sinal aplicado na leitura).
+_TIPOS_AVULSA_FATURA = ("despesa", "estorno")
+
+# Valor LÍQUIDO de uma avulsa na composição — o par inseparável de
+# _cond_avulsas_fatura: quem soma avulsas soma ESTA expressão, nunca
+# Transacao.valor cru (senão o estorno somaria em vez de abater).
+valor_avulsa_liquido = case(
+    (Transacao.tipo == "estorno", -Transacao.valor), else_=Transacao.valor
+)
+
+
 def _cond_avulsas_fatura(
     usuario_id: int, mes: Optional[int], ano: int, cartao_id: Optional[int] = None
 ) -> list:
     """Condições de "avulsa de cartão que compõe uma fatura" na competência
-    (parcelado=False, tipo='despesa') — par do _cond_parcelas_fatura
-    (mesmas semânticas de mes=None e cartao_id=None)."""
+    (parcelado=False, tipo despesa OU estorno) — par do _cond_parcelas_fatura
+    (mesmas semânticas de mes=None e cartao_id=None). Somas usam
+    valor_avulsa_liquido (estorno abate)."""
     return [
         Transacao.usuario_id == usuario_id,
         Transacao.fatura_mes == mes if mes is not None
         else Transacao.fatura_mes != None,  # noqa: E711
         Transacao.fatura_ano == ano,
         Transacao.parcelado == False,  # noqa: E712
-        Transacao.tipo == "despesa",
+        Transacao.tipo.in_(_TIPOS_AVULSA_FATURA),  # type: ignore[attr-defined]
         Transacao.cartao_id == cartao_id if cartao_id is not None
         else Transacao.cartao_id != None,  # noqa: E711
     ]
@@ -233,7 +246,7 @@ def total_fatura_cartao(
         )
     ).one()
     avulsas = session.exec(
-        select(func.sum(Transacao.valor)).where(
+        select(func.sum(valor_avulsa_liquido)).where(
             *_cond_avulsas_fatura(usuario_id, mes, ano, cartao_id)
         )
     ).one()
@@ -337,9 +350,9 @@ def cartao_tem_lancamentos(session: Session, usuario_id: int, cartao_id: int) ->
     """O cartão tem ao menos uma compra lançada (em QUALQUER competência)?
 
     "Compra" = a MESMA composição da fatura, sem o filtro de competência:
-    parcela não cancelada OU avulsa de cartão (parcelado=False, tipo='despesa')
-    vinculada ao cartão. Espelho de :func:`fatura_existe` sem mes/ano (2 EXISTS
-    com curto-circuito).
+    parcela não cancelada OU avulsa de cartão (parcelado=False, tipo
+    despesa/estorno) vinculada ao cartão. Espelho de :func:`fatura_existe`
+    sem mes/ano (2 EXISTS com curto-circuito).
 
     Usado para BLOQUEAR a edição de dia_fechamento/dia_vencimento de um cartão
     com compras (mudar as datas congelaria o `fatura_mes` já materializado das
@@ -361,7 +374,7 @@ def cartao_tem_lancamentos(session: Session, usuario_id: int, cartao_id: int) ->
             Transacao.usuario_id == usuario_id,
             Transacao.cartao_id == cartao_id,
             Transacao.parcelado == False,  # noqa: E712
-            Transacao.tipo == "despesa",
+            Transacao.tipo.in_(_TIPOS_AVULSA_FATURA),  # type: ignore[attr-defined]
         )
         .limit(1)
     )
@@ -378,10 +391,11 @@ def totais_fatura_por_cartao(
 
     Fonte única da composição da fatura (a MESMA do GET
     /cards/{id}/invoices/{ano}/{mes} — ver invoices.get_invoice): parcelas não
-    canceladas (SUM valor_parcela) + avulsas de cartão (parcelado=False,
-    tipo='despesa'; SUM valor) cuja fatura_mes/ano == (mes, ano) — condições
-    compartilhadas em _cond_parcelas_fatura/_cond_avulsas_fatura. Agrega no
-    banco (SUM GROUP BY cartao_id), em vez de varrer objeto a objeto.
+    canceladas (SUM valor_parcela) + avulsas de cartão (parcelado=False, tipo
+    despesa/estorno; SUM valor_avulsa_liquido — estorno abate) cuja
+    fatura_mes/ano == (mes, ano) — condições compartilhadas em
+    _cond_parcelas_fatura/_cond_avulsas_fatura. Agrega no banco (SUM GROUP BY
+    cartao_id), em vez de varrer objeto a objeto.
 
     Só entram CARTÕES (cartao_id != None): a lente 3d é "1 mês × N cartões".
     Parcela sem cartão (cartao_id None) não pertence à fatura de cartão algum.
@@ -401,7 +415,7 @@ def totais_fatura_por_cartao(
     avulsas_rows = session.exec(
         select(
             Transacao.cartao_id,
-            func.sum(Transacao.valor),
+            func.sum(valor_avulsa_liquido),
         )
         .where(*_cond_avulsas_fatura(usuario_id, mes, ano))
         .group_by(Transacao.cartao_id)
@@ -442,7 +456,7 @@ def totais_fatura_por_cartao_ano(
         select(
             Transacao.fatura_mes,
             Transacao.cartao_id,
-            func.sum(Transacao.valor),
+            func.sum(valor_avulsa_liquido),
         )
         .where(*_cond_avulsas_fatura(usuario_id, None, ano))
         .group_by(Transacao.fatura_mes, Transacao.cartao_id)
@@ -482,7 +496,7 @@ def _competencias_com_fatura(session: Session, usuario_id: int) -> set[tuple[int
             Transacao.cartao_id != None,  # noqa: E711
             Transacao.fatura_mes != None,  # noqa: E711
             Transacao.parcelado == False,  # noqa: E712
-            Transacao.tipo == "despesa",
+            Transacao.tipo.in_(_TIPOS_AVULSA_FATURA),  # type: ignore[attr-defined]
         )
         .distinct()
     ).all()

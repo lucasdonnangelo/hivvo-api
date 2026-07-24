@@ -29,8 +29,8 @@ class TransacaoCreate(BaseModel):
     @field_validator("tipo")
     @classmethod
     def tipo_valido(cls, v: str) -> str:
-        if v not in ("receita", "despesa"):
-            raise ValueError("tipo deve ser 'receita' ou 'despesa'")
+        if v not in ("receita", "despesa", "estorno"):
+            raise ValueError("tipo deve ser 'receita', 'despesa' ou 'estorno'")
         return v
 
     @field_validator("valor")
@@ -42,6 +42,8 @@ class TransacaoCreate(BaseModel):
 
     @model_validator(mode="after")
     def valida_parcelamento(self) -> "TransacaoCreate":
+        if self.tipo == "estorno" and self.parcelado:
+            raise ValueError("estorno não pode ser parcelado")
         if self.parcelado and (self.total_parcelas is None or self.total_parcelas < 2):
             raise ValueError("total_parcelas deve ser >= 2 quando parcelado=True")
         if self.parcelado and self.valor < self.total_parcelas * Decimal("0.01"):
@@ -74,8 +76,8 @@ class TransacaoUpdate(BaseModel):
     @field_validator("tipo")
     @classmethod
     def tipo_valido(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in ("receita", "despesa"):
-            raise ValueError("tipo deve ser 'receita' ou 'despesa'")
+        if v is not None and v not in ("receita", "despesa", "estorno"):
+            raise ValueError("tipo deve ser 'receita', 'despesa' ou 'estorno'")
         return v
 
     @field_validator("valor")

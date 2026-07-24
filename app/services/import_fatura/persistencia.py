@@ -40,13 +40,14 @@ _TIPOS_GASTO = (TipoTransacao.compra, TipoTransacao.iof)
 
 @dataclass
 class ResultadoMaterializacao:
+    # transacoes_criadas conta TODA Transacao gravada (compras/IOF E estornos);
+    # estornos_importados é o subconjunto de estornos, destacado no recibo.
     transacoes_criadas: int = 0
     parcelas_criadas: int = 0
-    estornos_ignorados: int = 0
+    estornos_importados: int = 0
     # Parceladas puladas por dedup: a MESMA parcelada, já materializada por um
     # import ANTERIOR, reaparece nesta fatura (X/N vira (X+1)/N no mês seguinte).
-    # O skip NUNCA é silencioso — vai no recibo, como estornos_ignorados
-    # (MULTI-FATURA).
+    # O skip NUNCA é silencioso — vai no recibo (MULTI-FATURA).
     parceladas_deduplicadas: int = 0
 
 
@@ -172,8 +173,9 @@ def competencias_passadas_da_fatura(fatura: FaturaExtraida) -> set[tuple[int, in
     Reusa a MESMA âncora (ancora_competencia) e a MESMA distribuição de
     _materializar_parcelada — parcela j em âncora−(indice−j) via
     _competencia_menos — para não divergir do que o commit de fato grava.
-    Mesmos filtros da materialização: só gasto (compra/iof) e valor>0 (estorno
-    não vira parcela). Avulsas caem sempre na âncora, nunca no passado.
+    Só gasto (compra/iof) parcelado com valor>0 recua pro passado: estorno
+    materializa como avulsa NA ÂNCORA (nunca parcela) e linha degenerada não
+    materializa. Avulsas caem sempre na âncora, nunca no passado.
 
     NÃO aplica dedup: uma parcelada passada já materializada por import
     anterior segue no histórico desta fatura (o commit revalida como marcável
@@ -186,7 +188,7 @@ def competencias_passadas_da_fatura(fatura: FaturaExtraida) -> set[tuple[int, in
     for t in fatura.transacoes:
         if t.tipo not in _TIPOS_GASTO or t.parcela is None:
             continue
-        if Decimal(t.valor_brl) <= 0:  # estorno/linha degenerada não materializa
+        if Decimal(t.valor_brl) <= 0:  # estorno fica na âncora; degenerada some
             continue
         n, indice = t.parcela.total, t.parcela.indice
         for j in range(1, n + 1):
@@ -205,8 +207,9 @@ def materializar_fatura(
     - compra/iof parcelada (parcela X/N) → UMA transação parcelada + N parcelas
       distribuídas por competência a partir da âncora (B.2);
     - pagamento/ajuste_saldo → ignorados (não são despesa);
-    - estorno (compra negativa, barrado pelo CHECK valor>0) → não gravado,
-      contado em estornos_ignorados (B.3).
+    - estorno (compra negativa) → avulsa tipo="estorno" com valor POSITIVO na
+      âncora (as agregações subtraem), contado em estornos_importados. Nunca
+      parcela — t.parcela, se vier numa linha negativa, é ignorado.
     """
     ancora_mes, ancora_ano = ancora_competencia(fatura)
     res = ResultadoMaterializacao()
@@ -220,9 +223,16 @@ def materializar_fatura(
         if t.tipo not in _TIPOS_GASTO:
             continue
         valor = Decimal(t.valor_brl)
-        if valor <= 0:
-            if valor < 0:  # estorno; valor==0 é linha degenerada, sai calado
-                res.estornos_ignorados += 1
+        if valor == 0:
+            continue  # linha degenerada, sai calado
+        if valor < 0:
+            # Estorno: materializa como tipo="estorno" (valor positivo) na
+            # âncora — mesma derivação de uma avulsa de crédito.
+            _materializar_avulsa(
+                session, usuario_id, card, t, -valor, ancora_mes, ancora_ano,
+                res, tipo="estorno",
+            )
+            res.estornos_importados += 1
             continue
 
         if t.parcela is not None:
@@ -247,11 +257,12 @@ def _materializar_avulsa(
     ancora_mes: int,
     ancora_ano: int,
     res: ResultadoMaterializacao,
+    tipo: str = "despesa",
 ) -> None:
     session.add(
         Transacao(
             usuario_id=usuario_id,
-            tipo="despesa",
+            tipo=tipo,
             data=dt.date.fromisoformat(t.data),
             descricao=t.descricao,
             valor=valor,

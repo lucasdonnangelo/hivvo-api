@@ -80,6 +80,17 @@ class TestT11Transacoes:
         _tx(session, tipo="receita", valor=Decimal("100.00"), fatura_mes=12)
         session.commit()
 
+    def test_tipo_estorno_aceito(self, session):
+        # Estorno é tipo de primeira classe (CHECK expandido); o valor segue
+        # positivo — quem subtrai são as agregações, nunca o sinal no banco.
+        _tx(session, tipo="estorno", valor=Decimal("30.00"), fatura_mes=7)
+        session.commit()
+
+    def test_estorno_valor_negativo_rejeitado(self, session):
+        _tx(session, tipo="estorno", valor=Decimal("-30.00"))
+        with pytest.raises(IntegrityError):
+            session.commit()
+
 
 class TestT11Parcelas:
     def test_valor_parcela_zero_rejeitado(self, session):

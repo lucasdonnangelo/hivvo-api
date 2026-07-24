@@ -188,6 +188,12 @@ def update_transaction(
         if not new_card or new_card.usuario_id != current_user.id:
             raise HTTPException(status_code=404, detail="Cartão não encontrado")
 
+    # Estorno nunca é parcelado (mesma regra do POST): parcelada não vira estorno
+    if data.get("tipo") == "estorno" and transacao.parcelado:
+        raise HTTPException(
+            status_code=422, detail="Transação parcelada não pode virar estorno."
+        )
+
     # Parcelada: valor/data definem as parcelas já criadas — editar dessincronizaria
     # a soma das parcelas e as faturas (T-35)
     if transacao.parcelado and ("valor" in data or "data" in data):

@@ -25,6 +25,7 @@ from app.schemas.invoice import (
     TransacaoFaturaResponse,
 )
 from app.services.faturas import (
+    _TIPOS_AVULSA_FATURA,
     _cond_avulsas_fatura,
     _cond_parcelas_fatura,
     _fatura_vencimento,
@@ -34,6 +35,7 @@ from app.services.faturas import (
     status_fatura,
     total_fatura_cartao,
     totais_fatura_por_cartao,
+    valor_avulsa_liquido,
 )
 
 router = APIRouter(prefix="/cards", tags=["invoices"])
@@ -95,14 +97,14 @@ def list_invoices(
         select(
             Transacao.fatura_mes,
             Transacao.fatura_ano,
-            func.sum(Transacao.valor),
+            func.sum(valor_avulsa_liquido),  # estorno abate (fonte única)
             func.count(Transacao.id),
         )
         .where(
             Transacao.cartao_id == card_id,
             Transacao.usuario_id == current_user.id,
             Transacao.parcelado == False,
-            Transacao.tipo == "despesa",
+            Transacao.tipo.in_(_TIPOS_AVULSA_FATURA),  # type: ignore[attr-defined]
             Transacao.fatura_mes != None,  # noqa: E711
             Transacao.fatura_ano != None,  # noqa: E711
         )
@@ -175,8 +177,12 @@ def get_invoice(
         .order_by(Transacao.data.desc(), Transacao.id.desc())
     ).all()
 
+    # Total líquido: estorno (listado entre as avulsas) abate — o mesmo sinal
+    # de valor_avulsa_liquido, aplicado em Python porque aqui as linhas vêm
+    # inteiras para o detalhe.
     total = sum((p.valor_parcela for p in parcelas), Decimal("0.00")) + sum(
-        (t.valor for t in avulsas), Decimal("0.00")
+        (-t.valor if t.tipo == "estorno" else t.valor for t in avulsas),
+        Decimal("0.00"),
     )
 
     return FaturaDetalhe(

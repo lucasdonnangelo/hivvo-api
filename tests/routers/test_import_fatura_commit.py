@@ -64,7 +64,7 @@ def test_commit_feliz_recibo(as_user, users, cartoes):
     assert recibo["transacoes_criadas"] == 5
     assert recibo["parcelas_criadas"] == 7
     assert recibo["faturas_marcadas_pagas"] == 0
-    assert recibo["estornos_ignorados"] == 0  # Nubank não tem compra negativa
+    assert recibo["estornos_importados"] == 0  # Nubank não tem compra negativa
     assert recibo["reconciliacao_bate"] is True  # primário bate (206.06)
 
 
@@ -120,20 +120,66 @@ def test_pagamento_e_ajuste_nao_viram_lancamento(session, as_user, users, cartoe
     assert len(total) == 5  # 4 avulsas + 1 parcelada, nada de pagamento/ajuste
 
 
-# --- Estorno visível no recibo (compra negativa não grava) -------------------
+# --- Estorno materializa como tipo="estorno" (compra negativa não é dropada) --
 
-def test_estorno_nao_grava_mas_aparece_no_recibo(session, as_user, users, cartoes):
+def test_estorno_materializa_e_aparece_no_recibo(session, as_user, users, cartoes):
     fatura = copy.deepcopy(NUBANK)
     fatura["transacoes"].append({
         "data": "2026-06-20", "descricao": "Estorno de Blacktag",
         "valor_brl": "-50.00", "tipo": "compra",
         "parcela": None, "portador_final": None, "internacional": None,
     })
+    # O banco declara o consumo do ciclo JÁ líquido do estorno (202.65 − 50):
+    # a linha negativa abate em soma_gastos e a reconciliação segue batendo —
+    # materializar o estorno não toca o cheque (ele roda sobre as linhas).
+    fatura["total_compras_periodo"] = "152.65"
+
     resp = _commit(as_user(users[0]), cartoes[0].id, fatura=fatura)
     assert resp.status_code == 200
-    assert resp.json()["estornos_ignorados"] == 1
-    # nenhuma transação negativa foi gravada (o CHECK valor>0 impediria de qualquer forma)
-    assert session.exec(select(Transacao)).all().__len__() == 5
+    recibo = resp.json()
+    assert recibo["estornos_importados"] == 1
+    assert recibo["transacoes_criadas"] == 6  # 5 do run Nubank + o estorno
+    assert recibo["reconciliacao_bate"] is True
+
+    estorno = session.exec(
+        select(Transacao).where(Transacao.tipo == "estorno")
+    ).one()
+    # Valor POSITIVO (CHECK valor>0 vale) — quem subtrai são as agregações.
+    assert Decimal(str(estorno.valor)) == Decimal("50.00")
+    assert (estorno.fatura_mes, estorno.fatura_ano) == (7, 2026)  # âncora
+    assert estorno.parcelado is False
+    assert estorno.forma_pagamento == "Crédito"
+    assert estorno.origem == "importacao"
+    assert estorno.categoria == "Outros"  # default do request
+
+
+def test_estorno_abate_o_total_da_fatura_importada(session, as_user, users, cartoes):
+    # Composição líquida (fonte única): a fatura da âncora soma despesas e
+    # SUBTRAI o estorno. MUTAÇÃO-alvo: sem o sinal do estorno na composição,
+    # o total viria 50.00 maior.
+    from app.services.faturas import total_fatura_cartao
+
+    fatura = copy.deepcopy(NUBANK)
+    fatura["transacoes"].append({
+        "data": "2026-06-20", "descricao": "Estorno de Blacktag",
+        "valor_brl": "-50.00", "tipo": "compra",
+        "parcela": None, "portador_final": None, "internacional": None,
+    })
+    _commit(as_user(users[0]), cartoes[0].id, fatura=fatura)
+
+    avulsas_despesa = session.exec(
+        select(Transacao).where(
+            Transacao.fatura_mes == 7,
+            Transacao.fatura_ano == 2026,
+            Transacao.parcelado == False,  # noqa: E712
+            Transacao.tipo == "despesa",
+        )
+    ).all()
+    parcela_ancora = Decimal("105.26")  # parcela 4/7 na âncora
+    bruto = sum((Decimal(str(t.valor)) for t in avulsas_despesa), parcela_ancora)
+
+    total = total_fatura_cartao(session, users[0].id, cartoes[0].id, 7, 2026)
+    assert Decimal(str(total)) == bruto - Decimal("50.00")
 
 
 # --- Idempotência (guard atômico pelo UNIQUE do lote) ------------------------

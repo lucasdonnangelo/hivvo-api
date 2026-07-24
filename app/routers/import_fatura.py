@@ -307,16 +307,16 @@ def commit_fatura(
 
     logger.info(
         "[import] commit: cartao=%s competencia=%d/%d transacoes=%d parcelas=%d "
-        "pagas=%d dedup=%d estornos_ignorados=%d bate=%s",
+        "pagas=%d dedup=%d estornos_importados=%d bate=%s",
         cartao.id, ancora_mes, ancora_ano, res.transacoes_criadas,
         res.parcelas_criadas, len(competencias_pagas), res.parceladas_deduplicadas,
-        res.estornos_ignorados, rec.bate,
+        res.estornos_importados, rec.bate,
     )
     return FaturaCommitResponse(
         transacoes_criadas=res.transacoes_criadas,
         parcelas_criadas=res.parcelas_criadas,
         faturas_marcadas_pagas=len(competencias_pagas),
         parceladas_deduplicadas=res.parceladas_deduplicadas,
-        estornos_ignorados=res.estornos_ignorados,
+        estornos_importados=res.estornos_importados,
         reconciliacao_bate=rec.bate,
     )

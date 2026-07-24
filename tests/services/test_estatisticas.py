@@ -1242,11 +1242,16 @@ class TestDetalhesDaTrilhaConsumo:
         fluxo = _lancamentos_mes(session, 1, 7, 2026)
         assert fluxo and all(l.data is None and l.descricao is None for l in fluxo)
 
-    def test_cartao_id_so_na_trilha_consumo_mensal_c1(self, session, mocker):
-        # PLANO_RESUMO (/spending-by-card): cartao_id é aditivo — preenchido só
-        # na fonte C1 (Transacao) do consumo MENSAL. A pai parcelada o carrega
-        # (pelo valor cheio); a recorrência (C4) e a à vista sem cartão ficam
-        # None. TESTE-GUARDA: não vaza pro fluxo nem pro consumo ano/horizonte.
+    def test_cartao_id_nas_trilhas_consumo_c1_e_fluxo_fontes_1_2(
+        self, session, mocker
+    ):
+        # PLANO_RESUMO (/spending-by-card): no CONSUMO mensal, cartao_id vem
+        # da fonte C1 (Transacao) — a pai parcelada o carrega pelo valor
+        # cheio; recorrência (C4) e à vista sem cartão ficam None. No FLUXO
+        # (mensal/anual), as Fontes 1 (parcela) e 2 (avulsa) TAMBÉM o
+        # carregam — é a chave do clamp POR FATURA do a_pagar (estorno abate
+        # só na fatura dele). TESTE-GUARDA: consumo ano/horizonte e as
+        # Fontes 3/4 seguem None.
         mocker.patch(
             "app.services.estatisticas.hoje", return_value=dt.date(2026, 7, 15)
         )
@@ -1268,8 +1273,14 @@ class TestDetalhesDaTrilhaConsumo:
         assert _q(com_cartao[0].valor) == Decimal("1200.00")  # valor cheio
         assert all(l.cartao_id is None for l in consumo if l.recorrente)
 
-        # não vaza: fluxo mensal, consumo anual e consumo horizonte → tudo None
-        assert all(l.cartao_id is None for l in _lancamentos_mes(session, 1, 7, 2026))
+        # FLUXO mensal: a parcela (Fonte 1) carrega o cartão; Fonte 3 (pix) e
+        # Fonte 4 (recorrência) ficam None.
+        fluxo = _lancamentos_mes(session, 1, 7, 2026)
+        (parcela,) = [l for l in fluxo if l.cartao_id is not None]
+        assert parcela.cartao_id == 1
+        assert _q(parcela.valor) == Decimal("100.00")  # a fatia, não o cheio
+
+        # consumo anual e horizonte não o preenchem (aditivo só onde é usado)
         ano = _lancamentos_consumo_ano(session, 1, 2026)
         assert all(l.cartao_id is None for lst in ano.values() for l in lst)
         horizonte = _lancamentos_consumo_horizonte(session, 1, 3)

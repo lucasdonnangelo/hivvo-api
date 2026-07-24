@@ -216,7 +216,9 @@ class FaturaCommitResponse(BaseModel):
     # import ANTERIOR, reaparece nesta fatura (X/N → (X+1)/N). Visível para o
     # skip não sumir em silêncio (MULTI-FATURA).
     parceladas_deduplicadas: int
-    # Estornos (compra negativa) NÃO são graváveis (CHECK valor>0); aparecem
-    # aqui para não sumirem em silêncio. Netting contra a compra-mãe: adiado.
-    estornos_ignorados: int
+    # Estornos (compra negativa na fatura) materializados como transação
+    # tipo="estorno" (valor positivo, categoria da revisão/default "Outros") —
+    # as agregações de consumo/fatura os SUBTRAEM. Também contam em
+    # transacoes_criadas; aqui é o subconjunto, destacado.
+    estornos_importados: int
     reconciliacao_bate: bool

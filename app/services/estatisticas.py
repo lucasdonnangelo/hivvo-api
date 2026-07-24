@@ -14,6 +14,7 @@ from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.transaction import Transacao
 from app.schemas.statistics import CategoriaStats
 from app.services.faturas import (
+    _TIPOS_AVULSA_FATURA,
     totais_fatura_por_cartao,
     totais_fatura_por_cartao_ano,
     vencimento_avulsa,
@@ -74,12 +75,13 @@ class LancamentoFluxo:
     MESMA lista do donut (fonte única). Nas demais trilhas ficam None; a
     agregação (_agregar/_categorias) os ignora.
 
-    ``cartao_id`` (PLANO_RESUMO, /spending-by-card): preenchido APENAS pela
-    trilha CONSUMO mensal, na fonte C1 (pela Transacao) — a mesma trilha que
-    carrega data/descricao. Recorrência (C4) não passa por cartão → fica None.
-    As demais trilhas (fluxo mensal/anual, consumo ano/horizonte) NÃO o
-    preenchem (fica None) — é aditivo, o "gasto por cartão" é só do mês. A
-    agregação (_agregar/_categorias) o ignora.
+    ``cartao_id``: preenchido pela trilha CONSUMO mensal na fonte C1 (pela
+    Transacao — PLANO_RESUMO, /spending-by-card, junto de data/descricao) e
+    pelas Fontes 1 (parcela) e 2 (avulsa) do FLUXO mensal/anual — estas para
+    o clamp POR FATURA do a_pagar (_soma_a_pagar: estorno abate só na fatura
+    dele, net-negativa clampa em 0). Recorrência (C4/Fonte 4) e Fonte 3 não
+    passam por cartão → None; consumo ano/horizonte também não o preenche.
+    _agregar/_categorias o ignoram.
     """
 
     tipo: str
@@ -113,34 +115,64 @@ def _variacao(atual: Decimal, anterior: Decimal) -> Optional[Decimal]:
 
 
 def _agregar(itens: list[_Somavel]) -> tuple[Decimal, Decimal]:
-    """Retorna (receitas, despesas) para uma lista de lançamentos."""
+    """Retorna (receitas, despesas) para uma lista de lançamentos.
+
+    Despesas são LÍQUIDAS: Σ(despesa) − Σ(estorno), SEM clamp — o topo e o
+    saldo precisam do líquido real; clamp em 0 é regra dos breakdowns de
+    gráfico (donut/por-categoria/por-cartão), não dos totais.
+    """
     receitas = sum((t.valor for t in itens if t.tipo == "receita"), _ZERO)
     despesas = sum((t.valor for t in itens if t.tipo == "despesa"), _ZERO)
+    despesas -= sum((t.valor for t in itens if t.tipo == "estorno"), _ZERO)
     return receitas, despesas
 
 
 def _soma_a_pagar(itens: list[LancamentoFluxo]) -> Decimal:
-    """Total "A pagar" do mês: só crédito cuja saída ainda não ocorreu."""
-    return sum((l.valor for l in itens if l.a_pagar), _ZERO)
+    """Total "A pagar" do mês: só crédito cuja saída ainda não ocorreu.
+
+    Líquido POR FATURA (agrupa por cartao_id, preenchido pelas trilhas de
+    fluxo): o estorno abate só na fatura DELE e fatura net-negativa clampa em
+    0 — nunca vira "crédito" abatendo o a_pagar de outra fatura (a mesma
+    régua anti-subconta do #9). Parcela sem cartão (carnê) cai no bucket
+    None — só despesa, clamp inócuo.
+    """
+    por_fatura: dict[Optional[int], Decimal] = {}
+    for l in itens:
+        if not l.a_pagar:
+            continue
+        delta = -l.valor if l.tipo == "estorno" else l.valor
+        por_fatura[l.cartao_id] = por_fatura.get(l.cartao_id, _ZERO) + delta
+    return sum((max(v, _ZERO) for v in por_fatura.values()), _ZERO)
 
 
 def _categorias(itens: list[_Somavel]) -> list[CategoriaStats]:
-    """Agrupa despesas por categoria com percentual do total."""
-    despesas = [t for t in itens if t.tipo == "despesa"]
-    total = sum((t.valor for t in despesas), _ZERO)
-    if not total:
-        return []
+    """Agrupa despesas por categoria com percentual do total.
 
+    Estorno abate NA CATEGORIA DELE (o donut neta certo, Σ categorias ==
+    total). Borda: categoria net-negativa clampa em 0 — nesse caso raro,
+    aceita-se Σ categorias != total. Percentual sempre sobre o total
+    LÍQUIDO; total líquido <= 0 → donut vazio.
+    """
+    total = _ZERO
     grupos: dict[str, Decimal] = {}
-    for t in despesas:
-        grupos[t.categoria] = grupos.get(t.categoria, _ZERO) + t.valor
+    for t in itens:
+        if t.tipo == "despesa":
+            grupos[t.categoria] = grupos.get(t.categoria, _ZERO) + t.valor
+            total += t.valor
+        elif t.tipo == "estorno":
+            grupos[t.categoria] = grupos.get(t.categoria, _ZERO) - t.valor
+            total -= t.valor
+    if total <= _ZERO:
+        return []
 
     return sorted(
         [
             CategoriaStats(
                 categoria=cat,
-                total=val,
-                percentual=(val / total * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+                total=max(val, _ZERO),
+                percentual=(max(val, _ZERO) / total * 100).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                ),
             )
             for cat, val in grupos.items()
         ],
@@ -154,15 +186,19 @@ def _gasto_por_cartao(itens: list[LancamentoFluxo]) -> dict[Optional[int], Decim
 
     A célula do /spending-by-card (PLANO_RESUMO, Seção 1): agrupa por cartao_id
     CRU — crédito, débito ou ambos, sem olhar Cartao.tipo. Despesa-only
-    (receita não entra). None reúne PIX/à vista + recorrências (sem cartão).
-    Invariante: soma dos valores == despesas do donut de consumo (o mesmo
-    _lancamentos_consumo_mes), já que agrupa a MESMA lista.
+    (receita não entra); estorno ABATE no cartão dele. Invariante: soma dos
+    valores == despesas líquidas do donut de consumo (o mesmo
+    _lancamentos_consumo_mes), já que agrupa a MESMA lista — exceto na borda
+    do clamp: célula net-negativa clampa em 0 (mesma régua do donut), e aí a
+    soma difere do total líquido. None reúne PIX/à vista + recorrências.
     """
     grupos: dict[Optional[int], Decimal] = {}
     for l in itens:
         if l.tipo == "despesa":
             grupos[l.cartao_id] = grupos.get(l.cartao_id, _ZERO) + l.valor
-    return grupos
+        elif l.tipo == "estorno":
+            grupos[l.cartao_id] = grupos.get(l.cartao_id, _ZERO) - l.valor
+    return {cid: max(v, _ZERO) for cid, v in grupos.items()}
 
 
 def _buscar_mes(session: Session, usuario_id: int, mes: int, ano: int) -> list[Transacao]:
@@ -202,16 +238,17 @@ def _parcelas_competencia(
 def _avulsas_cartao_competencia(
     session: Session, usuario_id: int, mes: int, ano: int
 ) -> list[Transacao]:
-    """Despesas avulsas de cartão (não parceladas) faturadas na competência.
+    """Avulsas de cartão (não parceladas) faturadas na competência.
 
-    Mesmo filtro das avulsas em invoices.py: parcelado=False, tipo='despesa',
-    faturadas em (mes, ano) pela data de vencimento da compra.
+    Mesmo filtro das avulsas em invoices.py: parcelado=False, tipo
+    despesa/estorno (o estorno compõe a fatura abatendo), faturadas em
+    (mes, ano) pela data de vencimento da compra.
     """
     return session.exec(
         select(Transacao).where(
             Transacao.usuario_id == usuario_id,
             Transacao.parcelado == False,  # noqa: E712
-            Transacao.tipo == "despesa",
+            Transacao.tipo.in_(_TIPOS_AVULSA_FATURA),  # type: ignore[attr-defined]
             Transacao.fatura_mes == mes,
             Transacao.fatura_ano == ano,
         )
@@ -470,6 +507,7 @@ def _lancamentos_mes(
                 p.categoria,
                 realizado=realizado,
                 a_pagar=_parcela_a_pagar(p, pagas, h),
+                cartao_id=p.cartao_id,
             )
         )
 
@@ -487,6 +525,7 @@ def _lancamentos_mes(
                 realizado=(not corrente) or venc <= h,
                 a_pagar=t.cartao_id not in pagas if t.cartao_id is not None
                 else venc > h,
+                cartao_id=t.cartao_id,
             )
         )
 
@@ -651,7 +690,7 @@ def _lancamentos_ano(
         select(Transacao).where(
             Transacao.usuario_id == usuario_id,
             Transacao.parcelado == False,  # noqa: E712
-            Transacao.tipo == "despesa",
+            Transacao.tipo.in_(_TIPOS_AVULSA_FATURA),  # type: ignore[attr-defined]
             Transacao.fatura_ano == ano,
             Transacao.fatura_mes != None,  # noqa: E711
         )
@@ -675,6 +714,7 @@ def _lancamentos_ano(
                 p.categoria,
                 realizado=realizado,
                 a_pagar=_parcela_a_pagar(p, pagas_ano[p.fatura_mes], h),
+                cartao_id=p.cartao_id,
             )
         )
 
@@ -691,6 +731,7 @@ def _lancamentos_ano(
                 a_pagar=t.cartao_id not in pagas_ano[t.fatura_mes]
                 if t.cartao_id is not None
                 else venc > h,
+                cartao_id=t.cartao_id,
             )
         )
 
@@ -833,7 +874,7 @@ def _tem_historico(session: Session, usuario_id: int, mes: int, ano: int) -> boo
     fonte2 = select(Transacao.id).where(
         Transacao.usuario_id == usuario_id,
         Transacao.parcelado == False,  # noqa: E712
-        Transacao.tipo == "despesa",
+        Transacao.tipo.in_(_TIPOS_AVULSA_FATURA),  # type: ignore[attr-defined]
         Transacao.fatura_mes != None,  # noqa: E711
         or_(
             Transacao.fatura_ano < ano,

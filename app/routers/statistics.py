@@ -62,14 +62,18 @@ def _mes_anterior(mes: int, ano: int) -> tuple[int, int]:
 
 
 def _despesas_por_categoria(lancamentos) -> dict[str, Decimal]:
-    """Total de despesas por categoria de uma lista de lançamentos — a célula
-    básica do /evolution/categories e do /comparison (só despesa: categoria é
-    dimensão de gasto, como no donut)."""
+    """Total LÍQUIDO de despesas por categoria de uma lista de lançamentos —
+    a célula básica do /evolution/categories e do /comparison (categoria é
+    dimensão de gasto, como no donut). Estorno abate na categoria dele;
+    célula net-negativa clampa em 0 (mesma régua do donut — gráfico não
+    mostra barra/fatia negativa)."""
     grupos: dict[str, Decimal] = {}
     for lanc in lancamentos:
         if lanc.tipo == "despesa":
             grupos[lanc.categoria] = grupos.get(lanc.categoria, _ZERO) + lanc.valor
-    return grupos
+        elif lanc.tipo == "estorno":
+            grupos[lanc.categoria] = grupos.get(lanc.categoria, _ZERO) - lanc.valor
+    return {cat: max(v, _ZERO) for cat, v in grupos.items()}
 
 
 def _media(valores: list[Decimal], n: int) -> Decimal:
@@ -336,16 +340,25 @@ def highlights_stats(
     maior_despesa = None
     dia_maior_gasto = None
     if despesas:
+        # Maior despesa é BRUTA (um estorno nunca é "a maior despesa" e não
+        # rebaixa a compra que ele devolve — destaque, não total).
         top = max(despesas, key=lambda l: (l.valor, l.data, l.descricao))
         maior_despesa = MaiorDespesa(
             valor=top.valor, descricao=top.descricao,
             categoria=top.categoria, data=top.data,
         )
+        # Dia de maior gasto NETA (é agregação de consumo): estorno abate no
+        # dia DELE; dia net-negativo não concorre. Sem dia positivo → None.
         por_dia: dict = {}
         for l in despesas:
             por_dia[l.data] = por_dia.get(l.data, _ZERO) + l.valor
-        data, total = max(por_dia.items(), key=lambda item: (item[1], item[0]))
-        dia_maior_gasto = DiaMaiorGasto(data=data, total=total)
+        for l in lancamentos:
+            if l.tipo == "estorno":
+                por_dia[l.data] = por_dia.get(l.data, _ZERO) - l.valor
+        dias_positivos = [item for item in por_dia.items() if item[1] > _ZERO]
+        if dias_positivos:
+            data, total = max(dias_positivos, key=lambda item: (item[1], item[0]))
+            dia_maior_gasto = DiaMaiorGasto(data=data, total=total)
 
     num_recorrentes = sum(1 for l in lancamentos if l.recorrente)
     return HighlightsResponse(

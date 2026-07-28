@@ -211,7 +211,14 @@ class FaturaCommitResponse(BaseModel):
 
     transacoes_criadas: int
     parcelas_criadas: int
+    # Competências que ESTE commit confirmou como pagas (valor_pago = total
+    # materializado, um valor ASSUMIDO).
     faturas_marcadas_pagas: int
+    # Competências pedidas em `competencias_pagas` que JÁ estavam confirmadas e
+    # foram PRESERVADAS: o import nunca sobrescreve com o total assumido o valor
+    # REAL do extrato (#9) nem a confirmação explícita do usuário. Default 0 →
+    # retrocompatível.
+    faturas_ja_confirmadas: int = 0
     # Parceladas puladas por dedup: a MESMA parcelada, materializada por um
     # import ANTERIOR, reaparece nesta fatura (X/N → (X+1)/N). Visível para o
     # skip não sumir em silêncio (MULTI-FATURA).

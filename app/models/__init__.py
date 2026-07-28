@@ -9,5 +9,6 @@ from app.models.chat import ChatMessage
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.pagamento_fatura import PagamentoFatura
 from app.models.import_fatura_lote import ImportFaturaLote
+from app.models.import_extrato_lote import ImportExtratoLote
 
-__all__ = ["Usuario", "Cartao", "Transacao", "CategoriaCustomizada", "Parcela", "PasswordResetToken", "RefreshToken", "ChatMessage", "Recorrencia", "RecorrenciaVigencia", "PagamentoFatura", "ImportFaturaLote"]
+__all__ = ["Usuario", "Cartao", "Transacao", "CategoriaCustomizada", "Parcela", "PasswordResetToken", "RefreshToken", "ChatMessage", "Recorrencia", "RecorrenciaVigencia", "PagamentoFatura", "ImportFaturaLote", "ImportExtratoLote"]

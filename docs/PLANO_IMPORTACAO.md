@@ -237,10 +237,30 @@ marca por ele — e melhor do que o import de fatura conseguia.
 
 ### Escopo / fatiamento
 Dobra a superfície (receita, débito, boleto, PIX, TED, casamento de pagamento). **GG — várias sessões.**
-1. **SPIKE** — extração + classificação em três baldes, isolado, num extrato real Nubank anonimizado.
+1. ✅ **SPIKE** — extração + classificação em três baldes, isolado, num extrato real Nubank anonimizado.
    Valida a peça mais nova (a classificação) antes de wirar produção — como o spike da fatura.
-2. **Produção:** preview (classificação + auto-categoria + casamento + dedup receita×recorrência) →
-   commit → tela de revisão (três baldes).
+2. **Produção:** ✅ Batch 1 (preview stateless) → ✅ Batch 2 (enriquecimento: categoria sugerida,
+   casamento de fatura, flag de recorrência) → ✅ **Batch 3 (commit)** → tela de revisão (três baldes).
+
+### Batch 3 — o COMMIT (feito): decisões travadas
+- **Materialização:** `receita` → `Transacao(tipo="receita")`; `debito` → `Transacao(tipo="despesa",
+  forma_pagamento="Débito")` **sem cartao_id e sem fatura_mes/ano** (é caixa que JÁ SAIU: cai na
+  Fonte 3 da projeção, realizada, nunca `a_pagar` — travado por teste E2E no `/statistics/monthly`);
+  `pagamento_fatura` → `PagamentoFatura`, nunca lançamento; `rendimento` → receita `"Rendimentos"`
+  (categoria PADRÃO nova) na data final do período, só se > 0.
+- **Prevalência (#9) — real vence assumido, nas DUAS ordens:** o commit de extrato SEMPRE escreve
+  `valor_pago` = valor REAL da linha e `data_pagamento` = data REAL; e o commit de FATURA passou a
+  PRESERVAR competência que já tem `pago=True` (antes sobrescrevia com o total assumido e zerava a
+  data) — reportado no recibo em `faturas_ja_confirmadas`. Resíduo (proveniência) → PENDÊNCIA 32.
+- **Idempotência:** tabela `import_extrato_lote` com `UNIQUE(usuario_id, banco, periodo_de,
+  periodo_ate)`, inserida PRIMEIRO na transação (409 atômico). Banco normalizado → PENDÊNCIA 33.
+  Período ausente = 422 (sem ele não há chave). O `/auth/reset-data` passou a apagar os DOIS lotes de
+  importação — senão zerar os dados travaria o reimport em 409 para sempre.
+- **Revisão manda, servidor confere:** cada linha traz `importar` TRI-ESTADO — ausente significa
+  "não decidido" e o servidor aplica o default seguro, recomputando o casamento receita×recorrência
+  (a armadilha do salário mora no BACKEND, não na flag do front). Categoria revalidada contra a lista
+  do usuário; cartão contra a propriedade (404); competência contra `fatura_existe` (422 "importe a
+  fatura" — `PagamentoFatura` em competência vazia é fantasma invisível na UI).
 
 ---
 
@@ -256,11 +276,16 @@ Dobra a superfície (receita, débito, boleto, PIX, TED, casamento de pagamento)
 ## PRÓXIMO PASSO
 Importação de FATURA: **completa, validada E2E, VIVA em produção.** #9 e estorno entregues na mesma leva.
 
-**Próximo: EXTRATO** (a fatia seguinte, GG).
-1. **SPIKE** de validação — extração + três baldes, isolado, num extrato real Nubank (conta) anonimizado.
-2. **Produção:** preview do extrato (classificação + auto-categoria de débito via `/ai/suggest-category`
-   + casamento pagamento↔fatura proposto na revisão + dedup receita×recorrência) → commit → tela de
-   revisão dos três baldes.
+**EXTRATO — backend COMPLETO:** spike ✅ → preview ✅ (Batch 1) → enriquecimento ✅ (Batch 2) →
+commit ✅ (Batch 3, a primeira escrita: três baldes + rendimento, atômico e idempotente).
+
+1. **Próximo: a TELA DE REVISÃO dos três baldes** (`hivvo-web`) — é o que falta para o fluxo do
+   extrato existir para o usuário. O backend já entrega tudo que ela precisa: o preview traz a
+   proposta por linha (categoria sugerida, fatura candidata, flag de recorrência) e o commit recebe
+   as decisões (`importar` por linha, categoria, cartão+competência confirmados) e devolve o recibo.
+2. **Validar E2E em produção** com extrato real (como foi com a fatura), incluindo o caso que junta
+   as duas pontas: importar a fatura e o extrato do mesmo mês e ver a fatura virar `paga_parcial`
+   com o valor REAL.
 3. **Depois do extrato:** retenção — notificações (#6).
 
 **Follow-ups menores registrados:** "faltam R$X" nas lentes de lista/competência (expor `valor_pago`);

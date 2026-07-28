@@ -25,6 +25,8 @@ from app.core.database import get_session
 from app.models.card import Cartao
 from app.models.category import CategoriaCustomizada
 from app.models.chat import ChatMessage
+from app.models.import_extrato_lote import ImportExtratoLote
+from app.models.import_fatura_lote import ImportFaturaLote
 from app.models.installment import Parcela
 from app.models.pagamento_fatura import PagamentoFatura
 from app.models.password_reset_token import PasswordResetToken
@@ -290,6 +292,13 @@ def _purgar_dados_do_usuario(uid: int, session: Session) -> dict[str, int]:
     _apagar(delete(Parcela).where(Parcela.usuario_id == uid), "parcelas")
     _apagar(delete(Transacao).where(Transacao.usuario_id == uid), "transacoes")
     _apagar(delete(PagamentoFatura).where(PagamentoFatura.usuario_id == uid), "pagamentos_fatura")
+    # Lotes de importação: guards de idempotência, não lançamentos — mas quem
+    # zera os dados precisa poder REIMPORTAR o mesmo PDF, senão o 409 do guard
+    # trava o usuário para sempre. Explícitos porque nenhum cascade os cobre no
+    # reset: o de EXTRATO só depende de `usuarios` (que o reset preserva por
+    # definição) e o de fatura só sairia de carona no delete de `cartoes`.
+    _apagar(delete(ImportFaturaLote).where(ImportFaturaLote.usuario_id == uid), "import_fatura_lote")
+    _apagar(delete(ImportExtratoLote).where(ImportExtratoLote.usuario_id == uid), "import_extrato_lote")
     _apagar(delete(Cartao).where(Cartao.usuario_id == uid), "cartoes")
     # recorrencia_vigencias não tem usuario_id (liga por recorrencia_id) — daí a
     # subquery, e daí ela sair ANTES de recorrencias: depois, a subquery não

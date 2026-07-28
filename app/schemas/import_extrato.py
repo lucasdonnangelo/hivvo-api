@@ -241,3 +241,99 @@ class ExtratoPreviewResponse(BaseModel):
     # Um item por linha de extrato.linhas, na mesma ordem (Batch 2). O
     # `rendimento` do RESUMO não entra: não é linha.
     enriquecimento: list[EnriquecimentoLinha] = []
+
+
+# --- Batch 3: commit (materializa os três baldes + o rendimento) -------------
+#
+# O request reusa o contrato da extração por SUBCLASSE — herda campos e
+# validadores de LinhaExtrato/ExtratoExtraido sem duplicá-los e sem tocar no
+# schema que o Gemini consome (o mesmo padrão do TransacaoCommit da fatura). As
+# adições são as DECISÕES da revisão: importar?, categoria, e o cartão +
+# competência CONFIRMADOS para cada pagamento de fatura.
+
+
+class LinhaCommit(LinhaExtrato):
+    """Uma linha do extrato REVISADO — dado extraído + decisão do usuário.
+
+    `importar` é TRI-ESTADO de propósito:
+    - `True`/`False`: o usuário decidiu — vale sempre, sobrepõe tudo;
+    - `None` (ausente): NÃO decidido → o servidor aplica o default seguro
+      (services/import_extrato/persistencia.resolver_indecisos), que para
+      RECEITA recomputa o casamento com recorrência (a armadilha do salário
+      duplicado) e não importa quando casa. O default mora no BACKEND, não na
+      confiança de que o front mandou a flag certa.
+
+    `cartao_id`/`fatura_mes`/`fatura_ano` só existem no balde pagamento_fatura e
+    são OBRIGATÓRIOS quando a linha vai ser importada: o casamento é PROPOSTO no
+    preview e CONFIRMADO na revisão — o commit nunca adivinha qual fatura foi
+    quitada. Fora do balde, são zerados (dado limpo, como cartao_citado).
+    """
+
+    importar: bool | None = None
+    categoria: str = "Outros"  # revalidada contra as categorias DO USUÁRIO
+    cartao_id: int | None = None
+    fatura_mes: int | None = None
+    fatura_ano: int | None = None
+
+    @model_validator(mode="after")
+    def _decisao_de_pagamento_completa(self) -> "LinhaCommit":
+        if self.balde is not Balde.pagamento_fatura:
+            self.cartao_id = None
+            self.fatura_mes = None
+            self.fatura_ano = None
+            return self
+        if self.importar is False:
+            return self  # descartada: não precisa de confirmação
+        faltando = [
+            nome
+            for nome in ("cartao_id", "fatura_mes", "fatura_ano")
+            if getattr(self, nome) is None
+        ]
+        if faltando:
+            raise ValueError(
+                "pagamento de fatura sem confirmação de "
+                f"{', '.join(faltando)} — confirme o cartão e a competência na "
+                "revisão ou marque a linha como não importar"
+            )
+        if not 1 <= self.fatura_mes <= 12:
+            raise ValueError(f"mês de fatura fora de 1..12: {self.fatura_mes}")
+        if self.fatura_ano < 2000:
+            raise ValueError(f"ano de fatura inválido: {self.fatura_ano}")
+        return self
+
+
+class ExtratoCommit(ExtratoExtraido):
+    linhas: list[LinhaCommit]
+
+
+class ExtratoCommitRequest(BaseModel):
+    extrato: ExtratoCommit
+    # O rendimento do RESUMO vira receita "Rendimentos" (ACHADO 1). É decisão da
+    # revisão como qualquer linha — quem já acompanha o rendimento por fora
+    # desmarca. Só materializa se > 0.
+    importar_rendimento: bool = True
+
+
+class ExtratoCommitResponse(BaseModel):
+    """Recibo do commit — tudo que foi gravado, para o front conferir."""
+
+    # Linhas do balde `receita` que viraram Transacao. NÃO inclui o rendimento
+    # (que não é linha) — ele tem flag própria.
+    receitas_criadas: int
+    debitos_criados: int
+    # PagamentoFatura gravados (pago=True) com o valor e a data REAIS do
+    # extrato. Duas linhas para a MESMA (cartão, competência) somam num único
+    # registro — contam 1 aqui.
+    pagamentos_registrados: int
+    # Subconjunto: competências que JÁ tinham pago=True (valor ASSUMIDO pelo
+    # import de fatura, ou confirmação anterior) e cujo valor_pago foi
+    # substituído pelo valor REAL do extrato — a fonte autoritativa (#9).
+    pagamentos_sobrescritos: int
+    rendimento_importado: bool
+    # Linhas com decisão final "não importar" (explícita do usuário ou default
+    # seguro do servidor).
+    linhas_ignoradas: int
+    # Subconjunto de linhas_ignoradas: receitas INDECISAS que casaram com uma
+    # recorrência vigente e o servidor deixou de fora (armadilha do salário).
+    receitas_puladas_recorrencia: int
+    reconciliacao_bate: bool

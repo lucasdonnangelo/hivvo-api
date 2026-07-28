@@ -265,6 +265,7 @@ def commit_fatura(
             if competencias_pagas
             else set()
         )
+        ja_confirmadas = 0
         for mes, ano in competencias_pagas:
             if (mes, ano) not in marcaveis:
                 raise HTTPException(
@@ -282,6 +283,15 @@ def commit_fatura(
                     PagamentoFatura.fatura_ano == ano,
                 )
             ).first()
+            if pagamento is not None and pagamento.pago:
+                # PRESERVA confirmação que já existe (#9): o valor_pago daqui é
+                # ASSUMIDO (o total materializado), e sobrescrever apagaria um
+                # fato melhor — o valor e a data REAIS que o commit de EXTRATO
+                # grava, ou a confirmação explícita do usuário no PUT. Regra do
+                # produto: real vence assumido, independente da ORDEM em que os
+                # dois imports rodam. Não é silencioso: vai no recibo.
+                ja_confirmadas += 1
+                continue
             if pagamento is None:
                 pagamento = PagamentoFatura(
                     usuario_id=current_user.id,
@@ -307,15 +317,16 @@ def commit_fatura(
 
     logger.info(
         "[import] commit: cartao=%s competencia=%d/%d transacoes=%d parcelas=%d "
-        "pagas=%d dedup=%d estornos_importados=%d bate=%s",
+        "pagas=%d ja_confirmadas=%d dedup=%d estornos_importados=%d bate=%s",
         cartao.id, ancora_mes, ancora_ano, res.transacoes_criadas,
-        res.parcelas_criadas, len(competencias_pagas), res.parceladas_deduplicadas,
-        res.estornos_importados, rec.bate,
+        res.parcelas_criadas, len(competencias_pagas) - ja_confirmadas,
+        ja_confirmadas, res.parceladas_deduplicadas, res.estornos_importados, rec.bate,
     )
     return FaturaCommitResponse(
         transacoes_criadas=res.transacoes_criadas,
         parcelas_criadas=res.parcelas_criadas,
-        faturas_marcadas_pagas=len(competencias_pagas),
+        faturas_marcadas_pagas=len(competencias_pagas) - ja_confirmadas,
+        faturas_ja_confirmadas=ja_confirmadas,
         parceladas_deduplicadas=res.parceladas_deduplicadas,
         estornos_importados=res.estornos_importados,
         reconciliacao_bate=rec.bate,

@@ -101,3 +101,63 @@ EXTRATO_ENRIQUECIMENTO: dict = {
         },
     ],
 }
+
+
+# Extrato do BATCH 3 (commit), desenhado para materializar os TRÊS baldes + o
+# rendimento num só request:
+#   - 2 receitas (5000,00 casa a recorrência de salário quando o teste a cria;
+#     777,00 nunca casa);
+#   - 2 débitos (80,00 no total) — o balde "já saiu";
+#   - 1 pagamento_fatura de 200,00 em 10/06 (o teste confirma cartão +
+#     competência 06/2026);
+#   - rendimento 4,56 do RESUMO -> receita "Rendimentos" em 30/06.
+# O walk fecha: 1000 + 4,56 + 5777 − 80 − 200 = 6501,56.
+#
+# O pagamento (200,00) é DE PROPÓSITO menor que o total da fatura que os testes
+# materializam (350,00): é o que separa o valor REAL do extrato do valor
+# ASSUMIDO pelo import de fatura — trocar um pelo outro tem de matar o teste da
+# prevalência (#9), e o status da fatura vira `paga_parcial`.
+EXTRATO_COMMIT: dict = {
+    "banco": "Nubank",
+    "periodo": {"de": "2026-06-01", "ate": "2026-06-30"},
+    "saldo_inicial": "1000.00",
+    "saldo_final": "6501.56",
+    "rendimento": "4.56",
+    "linhas": [
+        {
+            "data": "2026-06-05",
+            "descricao": "Salario ACME LTDA",
+            "valor": "5000.00",
+            "balde": "receita",
+            "cartao_citado": None,
+        },
+        {
+            "data": "2026-06-08",
+            "descricao": "Compra no debito PADARIA CENTRAL",
+            "valor": "50.00",
+            "balde": "debito",
+            "cartao_citado": None,
+        },
+        {
+            "data": "2026-06-10",
+            "descricao": "Pagamento de fatura Nubank",
+            "valor": "200.00",
+            "balde": "pagamento_fatura",
+            "cartao_citado": "Nubank",
+        },
+        {
+            "data": "2026-06-15",
+            "descricao": "UBER TRIP",
+            "valor": "30.00",
+            "balde": "debito",
+            "cartao_citado": None,
+        },
+        {
+            "data": "2026-06-18",
+            "descricao": "Pix recebido de FULANO",
+            "valor": "777.00",
+            "balde": "receita",
+            "cartao_citado": None,
+        },
+    ],
+}

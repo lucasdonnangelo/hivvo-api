@@ -99,6 +99,10 @@ class ResetDataResponse(BaseModel):
     parcelas: int
     transacoes: int
     pagamentos_fatura: int
+    # Guards de idempotência da importação: saem junto para o usuário poder
+    # REIMPORTAR os mesmos PDFs depois de zerar (senão o 409 do guard travaria).
+    import_fatura_lote: int
+    import_extrato_lote: int
     cartoes: int
     recorrencia_vigencias: int
     recorrencias: int

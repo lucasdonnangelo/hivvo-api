@@ -12,6 +12,7 @@ run validado do spike (Blacktag 4/7 → âncora 07/2026: parcelas em
 """
 
 import copy
+import datetime as dt
 from decimal import Decimal
 
 import pytest
@@ -254,6 +255,37 @@ def test_marca_paga_grava_valor_pago_do_total_materializado(
     pag = session.exec(select(PagamentoFatura)).one()
     assert pag.pago is True
     assert Decimal(str(pag.valor_pago)) == Decimal(str(esperado))
+
+
+def test_nao_sobrescreve_pagamento_ja_confirmado(session, as_user, users, cartoes):
+    """O lado INVERSO da prevalência (#9): o import de fatura roda DEPOIS do
+    extrato. O valor_pago daqui é ASSUMIDO (total materializado) e a data é
+    None — sobrescrever apagaria o valor e a data REAIS que o extrato gravou.
+    Real vence assumido independente da ORDEM.
+
+    MUTAÇÃO-alvo: voltar o upsert incondicional faz esta asserção falhar.
+    """
+    session.add(
+        PagamentoFatura(
+            usuario_id=users[0].id, cartao_id=cartoes[0].id,
+            fatura_mes=6, fatura_ano=2026,
+            pago=True, valor_pago=Decimal("200.00"),  # valor REAL do extrato
+            data_pagamento=dt.date(2026, 6, 10),
+        )
+    )
+    session.commit()
+
+    resp = _commit(
+        as_user(users[0]), cartoes[0].id,
+        competencias_pagas=[{"mes": 6, "ano": 2026}],
+    )
+    assert resp.status_code == 200
+    assert resp.json()["faturas_marcadas_pagas"] == 0
+    assert resp.json()["faturas_ja_confirmadas"] == 1
+
+    pag = session.exec(select(PagamentoFatura)).one()
+    assert Decimal(str(pag.valor_pago)) == Decimal("200.00")  # intocado
+    assert pag.data_pagamento == dt.date(2026, 6, 10)
 
 
 def test_competencia_paga_fora_do_historico_rejeita_e_desfaz(

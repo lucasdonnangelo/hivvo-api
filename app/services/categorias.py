@@ -22,6 +22,13 @@ CATEGORIAS_PADRAO: list[CategoriaResponse] = [
     CategoriaResponse(nome="Salário",      icone="💰", tipo="receita", is_padrao=True),
     CategoriaResponse(nome="Freelance",    icone="💻", tipo="receita", is_padrao=True),
     CategoriaResponse(nome="Investimentos",icone="📈", tipo="receita", is_padrao=True),
+    # "Rendimentos" nasceu do import de EXTRATO (ACHADO 1: o "Rendimento
+    # líquido" do resumo vira receita própria — PLANO_IMPORTACAO). Entra como
+    # PADRÃO, e não como string solta na materialização, para (a) o picker do
+    # frontend conhecê-la, (b) casar_categoria parar de rebaixá-la a "Outros" e
+    # (c) a categorização em lote poder sugeri-la. Sem migration: a lista é
+    # código.
+    CategoriaResponse(nome="Rendimentos",  icone="💹", tipo="receita", is_padrao=True),
     CategoriaResponse(nome="Outros",       icone="📦", tipo="receita", is_padrao=True),
 ]
 

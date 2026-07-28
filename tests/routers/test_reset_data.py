@@ -25,6 +25,8 @@ from app.core.database import get_session
 from app.models.card import Cartao
 from app.models.category import CategoriaCustomizada
 from app.models.chat import ChatMessage
+from app.models.import_extrato_lote import ImportExtratoLote
+from app.models.import_fatura_lote import ImportFaturaLote
 from app.models.installment import Parcela
 from app.models.pagamento_fatura import PagamentoFatura
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
@@ -107,6 +109,22 @@ def _popular(session) -> Usuario:
             valor=Decimal("2500.00"),
             mes_inicio=1,
             ano_inicio=2026,
+        )
+    )
+
+    # Guards de idempotência da importação: sem sair na purga, o usuário zera os
+    # dados e nunca mais consegue reimportar os mesmos PDFs (409 eterno). O de
+    # EXTRATO é o caso que NENHUM cascade cobre no reset — só depende de
+    # `usuarios`, que o reset preserva por definição.
+    session.add(
+        ImportFaturaLote(
+            usuario_id=user.id, cartao_id=cartao.id, fatura_mes=7, fatura_ano=2026
+        )
+    )
+    session.add(
+        ImportExtratoLote(
+            usuario_id=user.id, banco="nubank",
+            periodo_de=dt.date(2026, 6, 1), periodo_ate=dt.date(2026, 6, 30),
         )
     )
 
@@ -237,6 +255,8 @@ class TestResetApagaEPreserva:
             "parcelas": 1,
             "transacoes": 1,
             "pagamentos_fatura": 1,
+            "import_fatura_lote": 1,
+            "import_extrato_lote": 1,
             "cartoes": 1,
             "recorrencia_vigencias": 1,
             "recorrencias": 1,

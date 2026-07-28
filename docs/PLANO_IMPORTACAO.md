@@ -1,24 +1,30 @@
 # Hivvo — Design da Importação de Fatura/Extrato
 
-> Status: **DESENHO FECHADO (17/07/2026).** Substitui a versão "EM DESENHO".
+> Status: **DESENHO FECHADO (17/07/2026).**
 > Decisões travadas em revisão com o Lucas. O que resta aberto está marcado "Ainda aberto".
 >
-> **SEQUÊNCIA DE ENTREGA (decidida 17/07):** importar **fatura primeiro**. Se a fatura validar
-> (extração vence a digitação manual), **o extrato entra em seguida** — é a próxima fatia, não um
-> "talvez". A importação de extrato está DESENHADA aqui (seção própria), mas só se implementa depois
-> de a fatura provar o valor. Fatura e extrato são entradas independentes que se reconciliam numa
-> única costura: o pagamento da fatura.
+> **SEQUÊNCIA DE ENTREGA:** fatura primeiro → validou → extrato em seguida. Fatura e extrato são
+> entradas independentes que se reconciliam numa única costura: o pagamento da fatura.
 >
-> **VALIDAÇÃO CONCLUÍDA (17/07):** spike rodado em 2 faturas reais (Nubank, Itaú) no Gemini free.
-> Extração impecável nas duas. Rota LLM confirmada. Ver seção "VALIDAÇÃO DO SPIKE".
+> **VALIDAÇÃO CONCLUÍDA:** spike em 2 faturas reais (Nubank, Itaú) no Gemini free. Extração impecável.
+> Rota LLM confirmada. Ver "VALIDAÇÃO DO SPIKE".
 >
-> **PROGRESSO DE PRODUÇÃO (17/07):**
+> **IMPORTAÇÃO DE FATURA — COMPLETA E VIVA EM PRODUÇÃO (validada E2E):**
 > - ✅ **Batch 1** — `POST /import/fatura/preview` (extração stateless + reconciliação). Commit `d1f1073`.
 > - ✅ **Batch 2** — `POST /import/fatura/commit` (materialização + idempotência atômica via
->   `import_fatura_lote`). Correto para UMA fatura. Commitado.
-> - ✅ **Batch 3 (multi-fatura)** — dedup de parcela ENTRE importações. Fork (Y) fechado e
->   implementado: ver seção "MULTI-FATURA". Materialização vira multi-mês sem duplicar a parcelada
->   em andamento.
+>   `import_fatura_lote`). Ver "MULTI-FATURA".
+> - ✅ **Batch 3** — multi-fatura: dedup de parcela ENTRE importações (fork Y). Ver "MULTI-FATURA".
+> - ✅ **Ajuste no preview** — `faturas_passadas` (competências passadas que o import cria, pra revisão).
+> - ✅ **Frontend** — a tela de revisão (wizard cartão+upload → preview → revisão → faturas passadas → commit).
+> - ✅ **Validado E2E em produção** (preview + commit em conta descartável).
+>
+> **DEPENDÊNCIAS / SINERGIAS (mesma leva):**
+> - **#9 cobertura de pagamento:** `PagamentoFatura.valor_pago`; o import grava `valor_pago` = total
+>   materializado ao confirmar faturas passadas pagas. Status `paga`/`paga_parcial` derivado por cobertura.
+> - **Estorno:** o import materializa linha negativa como `tipo="estorno"` (não dropa); recibo
+>   `estornos_importados`.
+> - **Infra:** migrations agora aplicam no deploy via `railway.json` `preDeployCommand` (o `release:` do
+>   Procfile era ignorado pelo Railway — causava drift silencioso).
 
 ---
 
@@ -52,10 +58,6 @@ meses diferentes. Falta dedup de parcela ENTRE importações. E multi-fatura nã
   cronograma já foi materializado); senão → materializa 1/N..N/N.
   - **Ordem-independente:** importar agosto (5/7, origem abr) primeiro e julho (4/7, origem abr) depois
     → mesma identidade → o segundo pula. Funciona em qualquer ordem.
-  - A identidade é **computável dos campos que já existem** (`cartao_id`, `descricao`, `total_parcelas`,
-    e a competência derivada de `transacao.data`/1ª parcela) — avaliar se um fingerprint guardado é mais
-    robusto que recomputar. Borda: duas parceladas de mesma descrição/total/origem no mesmo cartão
-    (raro) — desempatar por valor.
 
 **Impacto no código:** é ADIÇÃO ao `persistencia.py` do Batch 2 (uma checagem de dedup antes de
 materializar parcelada), não reescrita. Endpoint, guard do lote, atomicidade e testes ficam.
@@ -67,119 +69,79 @@ modelo real: todos os campos da identidade já estão persistidos — `cartao_id
 `Transacao`; a **origem implícita = competência da `Parcela` nº 1** (a materialização grava
 parcela j em âncora−(indice−j); j=1 ⇒ âncora−(indice−1) = origem — casa por construção com o Batch 2);
 descrição **limpa** na `Transacao.descricao` (a extração separa lojista de "Parcela X/N" → o match é
-limpa↔limpa, o sufixo `(i/N)` da `Parcela.descricao` nunca entra). Um fingerprint não seria mais
-robusto: hasheia o **mesmo** `norm(descricao)` frágil, e a única vantagem (um `UNIQUE` atômico) não é
-expressável nesta identidade (o valor precisa estar FORA para robustez e DENTRO para o desempate).
-Recompute evita coluna + migration + backfill das parceladas do Batch 2 já importadas.
+limpa↔limpa, o sufixo `(i/N)` da `Parcela.descricao` nunca entra). Recompute evita coluna + migration +
+backfill das parceladas do Batch 2 já importadas.
 
 **Identidade + skip (contra SNAPSHOT de imports ANTERIORES):** no topo da materialização tira-se um
 snapshot `{(desc_norm, total, origem_mes, origem_ano, valor_parcela_centavos)}` das parceladas já
 importadas do cartão (`origem="importacao"`, via `Parcela` nº 1), **antes de qualquer insert**. Cada
-linha parcelada nova computa a mesma chave; se está no snapshot → **PULA**; senão → materializa 1/N..N/N
-(lógica do Batch 2 intacta). Decidir contra o snapshot (não contra a query viva) garante: duas linhas
-**idênticas na MESMA fatura** são duas compras e **ambas materializam** (contar a mais é corrigível na
-revisão; a menos é invisível). Cross-fatura (import anterior) funde. Ordem-independente (julho→agosto e
-agosto→julho dão o mesmo resultado). Skip visível no recibo (`parceladas_deduplicadas`).
+linha parcelada nova computa a mesma chave; se está no snapshot → **PULA**; senão → materializa 1/N..N/N.
+Decidir contra o snapshot (não contra a query viva) garante: duas linhas **idênticas na MESMA fatura**
+são duas compras e **ambas materializam** (contar a mais é corrigível na revisão; a menos é invisível).
+Cross-fatura (import anterior) funde. Skip visível no recibo (`parceladas_deduplicadas`).
 
 **Desempate por valor:** o `valor_parcela` (em centavos) entra na CHAVE, não só na colisão. Duas
-parceladas de mesma desc/total/origem mas valor distinto (105,26 vs 200,00) são compras DISTINTAS →
-ambas materializam; um valor novo num import posterior nunca é engolido por uma existente (viés
-anti-perda-de-dado — perder lançamento real seria pior que duplicar).
+parceladas de mesma desc/total/origem mas valor distinto são compras DISTINTAS → ambas materializam;
+um valor novo num import posterior nunca é engolido (viés anti-perda-de-dado).
 
-**Confirmação de pagamento das passadas:** o gate deixa de exigir "competência ∈ o que ESTE import
-criou" e passa a aceitar competência **estritamente antes da âncora** que tenha **algum lançamento
-EXISTENTE deste cartão** (parcela ou avulsa — criado neste request OU por import anterior). Com dedup, a
-parcelada passada pode ter sido PULADA neste import e ainda assim ser marcável (ela existe de outro).
-Continua barrando fatura arbitrária (sem lançamento → 422) e a própria/futura (≥ âncora).
+**Confirmação de pagamento das passadas:** o gate aceita competência **estritamente antes da âncora**
+que tenha **algum lançamento EXISTENTE deste cartão** (parcela ou avulsa — criado neste request OU por
+import anterior). Com dedup, a parcelada passada pode ter sido PULADA neste import e ainda assim ser
+marcável. Barra fatura arbitrária (sem lançamento → 422) e a própria/futura (≥ âncora).
 
 ### Bordas documentadas (Batch 3)
-- **Drift de centavo da mesma parcelada** (última parcela arredondada: 105,26 vs 105,20) entre imports →
-  valor difere → **duplica**. Aceito e **visível** (duas transações); preço de seguir "desempate por
-  valor" à risca e nunca perder lançamento. O Batch 2 já não modela parcelas desiguais.
-- **Colisão com valores IGUAIS** (duas compras idênticas em desc/total/origem/valor, faturas diferentes)
-  → fundidas como uma (conservador; fundir idêntico > duplicar). Na MESMA fatura, ambas entram (snapshot).
-- **Descrição muda muito entre faturas** ("Blacktag" vs "BLACKTAG\*PARCELA") → quebra a identidade em
-  QUALQUER método (fingerprint idem) → duplicaria. Risco inerente à identidade, não ao recompute.
-  `norm` cobre caixa/espaço (colapsa espaços + casefold), NÃO acento.
-- **Manual vs import:** o dedup é escopo `origem="importacao"` — parcelada manual e importada coexistem
-  (o import não engole a manual). Fora de escopo aqui.
+- **Drift de centavo da mesma parcelada** entre imports → valor difere → duplica. Aceito e visível.
+- **Colisão com valores IGUAIS** (faturas diferentes) → fundidas como uma. Na MESMA fatura, ambas entram.
+- **Descrição muda muito entre faturas** → quebra a identidade em QUALQUER método. `norm` cobre
+  caixa/espaço (colapsa espaços + casefold), NÃO acento.
+- **Manual vs import:** o dedup é escopo `origem="importacao"` — parcelada manual e importada coexistem.
 - **Concorrência cross-competência:** dois commits simultâneos de competências distintas da MESMA
-  parcelada (fora do fluxo humano de revisão, 1 fatura por vez) têm janela TOCTOU no snapshot → possível
-  duplicata. Mitigação (advisory lock por cartão no Postgres) DEFERIDA; o rate-limit + fluxo humano
-  cobrem por ora.
+  parcelada têm janela TOCTOU no snapshot → possível duplicata. Mitigação (advisory lock) DEFERIDA; o
+  rate-limit + fluxo humano (1 fatura por vez) cobrem por ora.
 
 ---
 
 ## A DECISÃO-PIVÔ: extração via LLM, não parser determinístico
 
-O pedaço 🔴 do design nunca foi "ler o arquivo" — foi **interpretar** as linhas (isto é parcela?
-isto é IOF? isto é pagamento da fatura?). Duas rotas:
+O pedaço 🔴 nunca foi "ler o arquivo" — foi **interpretar** as linhas. Duas rotas:
+- **Parser determinístico (regex por banco):** dado não sai da infra, MAS frágil, muitos exemplos por
+  banco, **cauda de manutenção infinita** para dev solo. **REJEITADO.**
+- **LLM (texto → JSON):** um schema serve todos os bancos. **ESCOLHIDO.** A imperfeição é aceitável
+  porque a **tela de revisão obrigatória** é a rede.
 
-- **Parser determinístico (regex por banco):** dado nunca sai da infra, MAS é frágil, exige muitos
-  exemplos por banco, e tem **cauda de manutenção infinita** para um dev solo. **REJEITADO** por ser
-  o maior risco de desperdício de recurso.
-- **LLM (extração texto → JSON estruturado):** um schema serve todos os bancos, sem regex por banco.
-  **ESCOLHIDO.** A imperfeição é aceitável porque a **tela de revisão obrigatória** é a rede.
-
-### Régua da feature (o alvo certo)
-NÃO é acurácia de 100% (impossível, e é o alvo errado). É **"melhor que digitar à mão"**. A tela de
-revisão não é o remendo de uma feature imperfeita — **ela é o produto.**
+### Régua da feature
+NÃO é 100% de acurácia (impossível, alvo errado). É **"melhor que digitar à mão"**. A tela de revisão
+não é o remendo de uma feature imperfeita — **ela é o produto.**
 
 ---
 
 ## EXTRATOR PLUGÁVEL
 
-A extração é um **passo plugável** com contrato fixo: **texto da fatura entra → JSON estruturado sai.**
-Escolha do provedor de IA reversível sem tocar no resto (revisão, modelagem, commit não mudam).
-
-- **Gemini free** — só para VALIDAR qualidade (com fatura anonimizada). Nunca em produção: o free
-  treina com o dado e revisores humanos podem ver.
-- **Gemini pago** — produção contratualmente privada: **não treina**, retenção limitada, ZDR
-  disponível. Continua subprocessador (→ exige #4). Setup quase nulo.
-- **Modelo local self-hosted** — dado **nunca sai** da infra. Qualidade menor (a revisão fecha o gap).
-  Custo: infra + setup, NÃO manutenção por banco.
+Contrato fixo: **texto entra → JSON estruturado sai.** Provedor reversível sem tocar no resto.
+- **Gemini free** — só VALIDAÇÃO (fatura anonimizada). Nunca produção: treina + revisores humanos.
+- **Gemini pago** — produção: **não treina**, retenção limitada, ZDR. Subprocessador (→ #4). **EM USO.**
+- **Modelo local self-hosted** — dado nunca sai; qualidade menor; custo de infra. Alternativa futura.
 
 ---
 
 ## VALIDAÇÃO DO SPIKE (17/07/2026)
 
-Spike isolado em `scripts/spike_import/` (fora do app), rodado em **2 faturas reais** no **Gemini
-free**: `fatura_nubank_platinum.pdf` e `fatura_itau_platinum.pdf`.
+Spike isolado em `scripts/spike_import/`, em 2 faturas reais no Gemini free.
 
 ### Resultado: extração impecável nas duas
-Conferido campo a campo contra os PDFs. **Zero erro de conteúdo.**
-- **Nubank (8 linhas):** Blacktag Parcela 4/7, os dois IOF, Anthropic e Cloudflare com internacional
-  (USD, taxa, portador), pagamento como `pagamento`. A linha "Saldo restante" **duplicada é real no
-  PDF** — o modelo reproduziu fielmente, não alucinou.
-- **Itaú (2 linhas):** capturou tudo que a fatura tem (1 compra + 1 pagamento). Nada perdido.
-- Campos a corrigir na mão: **praticamente zero.** A régua "vence a digitação" está batida no free.
+Zero erro de conteúdo. Nubank (8 linhas, com a linha "Saldo restante" duplicada que é REAL no PDF),
+Itaú (2 linhas). Campos a corrigir na mão: praticamente zero. A régua "vence a digitação" batida.
 
 ### O achado: reconciliar pelo TOTAL DE COMPRAS DO CICLO, não pelo "total a pagar"
-O Itaú deu "NÃO BATE" — **não por erro de extração**, mas porque o modelo pegou "Total desta fatura =
-R$0,00" (o *líquido a pagar*, já quitado por débito automático) em vez do consumo bruto. O Nubank
-"bateu" por **coincidência do mês** (a fatura anterior foi 100% paga, então "Total a pagar" calhou de
-igualar o bruto; com saldo anterior sobrando, não bateria).
-
-**Correção travada:** a reconciliação ancora no **total de compras/lançamentos do ciclo**, que os dois
-bancos expõem explicitamente:
-- Itaú: "Total dos lançamentos atuais → R$93,95"
-- Nubank: "Total de compras 06 JUN a 06 JUL → R$202,65" + "IOF R$3,41" = R$206,06
-
-Com esse âncora, **as duas batem**. É fix de schema/código, não de LLM. O **cheque secundário**
-(gastos + excluídos vs total) fez o trabalho pra que foi desenhado: apontou "o total deste banco
-inclui pagamentos". Ganhou o lugar.
+O Itaú deu "NÃO BATE" — não por erro de extração, mas porque o modelo pegou "Total desta fatura = 0,00"
+(líquido a pagar, quitado por débito automático). A reconciliação ancora no **total de
+compras/lançamentos do ciclo** (Itaú "Total dos lançamentos atuais R$93,95"; Nubank "Total de compras
+R$202,65" + "IOF R$3,41"). O cheque secundário (`gastos + excluídos` vs total) diagnostica a semântica
+do total do banco.
 
 ### Privacidade: redação best-effort NÃO é blindagem
-No run de validação, o `--redact "Lucas Donnangelo"` **não pegou** o nome completo
-(`LUCAS JANNUZZI REIS DONNANGELO`, e a forma sem espaços do `layout=True`) nem o endereço do Itaú —
-foram pro Gemini free. Lição: **produção = Gemini pago + #4 declarado, não free-com-redação.** A
-redação é rede para o teste, não garantia.
-
-### Achados menores pro modelo de produção (anotar)
-- O pagamento do Nubank (-R$58,95) é da fatura **anterior** ("Fatura anterior / Pagamento recebido"),
-  não desta competência → na produção NÃO deve virar `PagamentoFatura` deste ciclo.
-- O `portador_final` (ex.: 4189) é a âncora confiável do portador — **não o nome** (o Itaú traz
-  variantes: `LUCASJRDONNANGELO` vs completo).
+O `--redact` não pegou o nome completo nem o endereço → foram pro Gemini free. Lição: **produção =
+Gemini pago + #4 declarado, não free-com-redação.**
 
 ---
 
@@ -187,140 +149,142 @@ redação é rede para o teste, não garantia.
 
 | # | Decisão | Resolvido |
 |---|---|---|
-| 1 | **Formato de entrada** | **PDF** (faturas de banco são PDF digital, texto extraível determinístico — 🟡). Interpretação das linhas = passo LLM. PDF escaneado/imagem → OCR (🔴), fora do escopo inicial. |
-| 2 | **Fatura vs extrato** | **Fatura por ciclo** (não extrato). Casa com competência de fatura. |
-| 3 | **Cartão obrigatório** | O cartão DEVE existir antes. Fluxo: **cadastra cartão → importa a fatura dele**. |
-| 4 | **Escopo do passado** | **Histórico completo.** Ver a armadilha do pagamento abaixo. |
-| 5 | **Parcelamento `X/Y`** | Cria as **futuras** (competência += 1 mês, valor = o mostrado). Com histórico completo, materializa também as passadas (como fatos já pagos após confirmação em bloco). |
-| 6 | **Revisão** | **Obrigatória.** Tela onde o usuário vê, corrige (categoria, valor, parcelamento) e confirma antes de gravar. |
-| 7 | **Múltiplos finais na mesma fatura** | **Mesma fatura = mesmo cartão no Hivvo.** O final é o portador físico (`portador_final` por linha). |
-| 8 | **Seção "Pagamentos e Financiamentos"** | **Excluir** da importação de transações (abatimento, não gasto). |
-| 9 | **IOF** | **Importar como despesa própria**, categoria "Taxas/IOF" (entra em `soma_gastos`, senão a fatura não fecha). |
-| 10 | **Conversão de moeda** | Usar o **valor em R$**. Conversão (moeda, valor orig, taxa) = metadado. |
+| 1 | **Formato de entrada** | **PDF** digital, texto extraível. Interpretação = LLM. PDF escaneado → OCR (🔴), fora do escopo. |
+| 2 | **Fatura vs extrato** | **Fatura por ciclo.** Casa com competência. |
+| 3 | **Cartão obrigatório** | O cartão DEVE existir antes. Cadastra cartão → importa a fatura dele. |
+| 4 | **Escopo do passado** | **Histórico completo.** Ver armadilha do pagamento. |
+| 5 | **Parcelamento `X/Y`** | Materializa 1/N..N/N (multi-fatura com dedup — ver "MULTI-FATURA"). |
+| 6 | **Revisão** | **Obrigatória.** Categoria + apagar linha (edição de valor/parcela = follow-up). |
+| 7 | **Múltiplos finais na mesma fatura** | Mesma fatura = mesmo cartão. `portador_final` por linha. |
+| 8 | **Seção "Pagamentos e Financiamentos"** | **Excluir** (abatimento, não gasto). |
+| 9 | **IOF** | Despesa própria, categoria "Taxas/IOF" (entra em `soma_gastos`). |
+| 10 | **Conversão de moeda** | Valor em R$. Conversão = metadado. |
 
-### ⚠️ Armadilha do histórico: importar passado quebra o "A pagar"
+### ⚠️ Armadilha do histórico
 O modelo **deriva status e nunca presume pago pela data**. Histórico cru → toda fatura passada nasce
-não-paga → o Bloco 1 "A pagar" explode. **Solução obrigatória:** passo de **confirmar em bloco o
-pagamento das faturas fechadas** na revisão.
+não-paga → "A pagar" explode. **Solução:** confirmar em bloco o pagamento das passadas na revisão (o
+import grava `valor_pago` = total materializado — sinergia #9).
 
-### Reconciliação — o guarda-costas determinístico da extração por LLM
-Depois que o LLM devolve o JSON, o **backend valida que a soma bate**, tudo em `Decimal`:
-- **Âncora = total de compras/lançamentos do ciclo** (o consumo bruto), NÃO "total a pagar"/"total
-  desta fatura" (que embutem saldo anterior/pagamentos e variam de banco pra banco). Ver
-  "VALIDAÇÃO DO SPIKE" — foi o achado das faturas reais.
-- `soma_gastos` = Σ das linhas `{compra, iof}` (parcelas do mês são linhas de compra; estornos são
-  compra negativa).
-- **Cheque secundário** (`soma_gastos + excluídos` vs total a pagar): quando o primário não bate,
-  distingue "semântica do total do banco" de "erro do LLM". Provou-se útil na fatura do Itaú.
-- Se não bater, sinaliza na revisão — nunca grava no escuro.
+### Reconciliação — o guarda-costas determinístico
+Backend valida a soma em `Decimal`: **âncora = total de compras/lançamentos do ciclo** (não "total a
+pagar"). `soma_gastos` = Σ `{compra, iof}` (estorno = compra negativa). Cheque secundário distingue
+semântica do banco de erro do LLM. Não bate → sinaliza na revisão, nunca grava no escuro.
 
 ---
 
 ## ARQUITETURA
-- **Fronteira:** extração + modelagem no **backend** (lógica de negócio nunca no front). Revisão é
-  display + edição. Commit re-valida no backend.
-- **Stateless — SEM tabela nova.** `POST` do PDF → backend extrai → valida (reconciliação) → devolve
-  JSON → frontend segura em memória → usuário revisa → `POST` final grava em `transacoes`/`parcelas`.
-  - ⚠️ **Se um dia** persistir o batch → tabela nova **COM `ENABLE ROW LEVEL SECURITY` no
-    `upgrade()`** (o Alembic não sabe de RLS → tabela nova nasce exposta). Começar SEM.
-- **Reuso:** a modelagem reusa o modelo de parcela/fatura que já existe.
+- **Fronteira:** extração + modelagem no **backend**. Revisão = display + edição. Commit re-valida.
+- **Stateless.** POST PDF → extrai → valida → devolve JSON → front segura → POST final grava. (Tabela
+  nova de idempotência `import_fatura_lote` COM RLS no `upgrade()` — a única persistência.)
+- **Reuso:** a modelagem reusa parcela/fatura/PagamentoFatura existentes.
 
 ---
 
-## IMPORTAÇÃO DE EXTRATO (fatia seguinte — implementa DEPOIS da fatura validar)
+## IMPORTAÇÃO DE EXTRATO (fatia ATUAL — fatura já validada e viva; extrato é o próximo)
 
-Fatura e extrato descrevem o **mesmo dinheiro por dois lados** — importá-los ingênuo **conta em
-dobro**. A linha "Pagamento fatura Nubank -R$500" no extrato **não é gasto novo** — é a quitação das
-compras que a fatura já capturou.
+Fatura e extrato descrevem o **mesmo dinheiro por dois lados** — importá-los ingênuo **conta em dobro**.
+A linha "Pagamento fatura Nubank -R$500" no extrato **não é gasto novo** — é a quitação das compras que
+a fatura já capturou.
+
+### Achados do spike de extrato (Nubank conta real) — dobrados no design
+Classificação impecável (7 receita + 1 pagamento_fatura). O pagamento_fatura de R$206,06 casou com a
+fatura Nubank importada — sinergia #9 validada ao vivo. O balance-walk pegou dois achados:
+
+- **RENDIMENTO — um `receita` que a extração só-movimentações perdia.** A conta Nubank rende juros
+  ("Rendimento líquido +0,45"), que aparece SÓ no resumo, não nas movimentações. Decisão: o schema
+  captura o rendimento do resumo e ele vira **receita** (categoria própria "Rendimentos"), e entra no
+  walk: `saldo_inicial + rendimento + Σreceita − Σdebito − Σpagamento_fatura = saldo_final`. Com ele,
+  o walk fecha.
+- **PII DE TERCEIROS — o extrato é muito mais pesado que a fatura.** Linhas de PIX/TED trazem nome,
+  CPF, agência e conta de CONTRAPARTES (que não consentiram). Decisão de produção: **redigir o
+  regex-confiável (CPF, agência, conta) ANTES de enviar ao Gemini** — nada disso é necessário pra
+  classificar. Nome de contraparte é best-effort. E o **#4 ganha uma linha** reconhecendo que o extrato
+  envia dado de terceiro ao subprocessador (ângulo distinto do dado do titular).
 
 ### A regra: extrato e fatura se RECONCILIAM, não se somam
 Toda linha do extrato cai em um de três baldes:
-1. **Receita** → nova entrada (alimenta Receitas).
+1. **Receita** → nova entrada (Receitas).
 2. **Débito / PIX / boleto direto** → despesa que já saiu (consumo + caixa).
-3. **Pagamento de fatura de cartão** → **NÃO é despesa.** Vira `PagamentoFatura`, casado com a fatura
-   daquele cartão/competência.
+3. **Pagamento de fatura de cartão** → **NÃO é despesa.** Vira `PagamentoFatura`.
 
-### O extrato resolve DE GRAÇA a armadilha do histórico
-O extrato **prova** quais faturas foram pagas e quando → cria o `PagamentoFatura` automaticamente. Em
-vez de o usuário marcar N faturas na mão, o extrato marca por ele.
+### O extrato resolve DE GRAÇA a armadilha do histórico (+ sinergia #9)
+O extrato **prova** quais faturas foram pagas, com **valor e data reais**. Cria o `PagamentoFatura`
+automaticamente com `valor_pago` = o valor real do extrato (cobertura EXATA do #9, não "assume total") e
+`data_pagamento` = a data real (não `None`). Em vez de o usuário marcar N faturas na mão, o extrato
+marca por ele — e melhor do que o import de fatura conseguia.
 
 ### Reforço de modelo: nenhuma mudança estrutural
-`PagamentoFatura` já é a fonte única de "fatura paga" → o extrato é só um novo *produtor* dele (+
-receitas + despesas de débito). A costura já existe.
+`PagamentoFatura` (agora com `valor_pago` do #9) já é a costura → o extrato é um novo *produtor* dele
+(+ receitas + despesas de débito). A costura já existe.
 
 ### "Associadas ou não" — três casos
-- **Os dois, mesmo cartão/período** → *associados*: o pagamento do extrato confirma a fatura. Não
-  duplica.
-- **Só o extrato** → tem-se a verdade de caixa, não as compras itemizadas → sinalizar "importe a
-  fatura pra ver o detalhe".
+- **Os dois, mesmo cartão/período** → *associados*: o pagamento do extrato confirma a fatura. Não duplica.
+- **Só o extrato** → verdade de caixa, sem as compras itemizadas → sinalizar "importe a fatura pra ver
+  o detalhe".
 - **Só a fatura** → fluxo já desenhado: pagamento confirmado pelo usuário.
 
-Casamento pagamento↔fatura por (cartão, valor, data ≈ vencimento), **proposto na revisão**, nunca em
-silêncio.
+### Sub-decisões — FECHADAS
+- **Receita × recorrência (armadilha do salário duplicado):** na revisão, receitas que casam com uma
+  recorrência existente (≈valor + ≈data) entram com default **"não importar — já é recorrência"**; o
+  usuário pode sobrepor. Evita duplicar o salário (a recorrência já o conta como realizado).
+- **Categorização do débito:** **auto-categoria via a sugestão do agente** (reusa `/ai/suggest-category`),
+  não default "Outros". (Follow-up: retrofitar a mesma auto-categoria na importação de FATURA, hoje
+  default "Outros" — consistência.)
+- **Casamento pagamento↔fatura:** proposto na REVISÃO (cartão + competência + valor), o usuário
+  confirma — nunca em silêncio. Usa a data real do extrato como `data_pagamento` e o valor real como
+  `valor_pago`.
+- **Primeiro banco:** Nubank conta.
 
-### Escopo
-Dobra a superfície (receita, débito, boleto, PIX, TED, casamento de pagamento). Fatia **seguinte**,
-não primeira — mas entrega firme assim que a fatura validar. Sub-decisões (categorização de débito;
-receita colidindo com recorrência já cadastrada, pra não duplicar salário): **Ainda aberto**, não
-bloqueia a fatura.
-
----
-
-## FATIA VERTICAL (a primeira entrega de produção)
-
-**Um banco (Nubank), fatura real, cartão já cadastrado, revisão obrigatória, ponta-a-ponta.** O
-segundo banco só depois do primeiro fechar. Não construir "importação" como plataforma antes de um
-caminho funcionar.
-
-### Fatiamento (esforço)
-1. Extração PDF → texto (determinístico): 🟡 — **validado no spike.**
-2. Interpretação texto → JSON (LLM, schema único): 🟡 — **validado no spike.**
-3. Reconciliação (âncora = total de compras): 🟢 — **corrigir âncora (ver achado).**
-4. Filtro de não-compras: 🟢-🟡.
-5. Modelagem → transações/parcelas (reusa o existente): 🟡.
-6. Confirmação de pagamento em bloco das faturas passadas: 🟡.
-7. Tela de revisão/edição: 🟡 frontend.
-
-**GG — várias sessões.** Uma fatia por vez, aprovação explícita antes de cada commit.
+### Escopo / fatiamento
+Dobra a superfície (receita, débito, boleto, PIX, TED, casamento de pagamento). **GG — várias sessões.**
+1. **SPIKE** — extração + classificação em três baldes, isolado, num extrato real Nubank anonimizado.
+   Valida a peça mais nova (a classificação) antes de wirar produção — como o spike da fatura.
+2. **Produção:** preview (classificação + auto-categoria + casamento + dedup receita×recorrência) →
+   commit → tela de revisão (três baldes).
 
 ---
 
-## PRÉ-REQUISITOS (antes da 1ª fatura REAL em produção)
-- **#4 Termos/Privacidade** — vira **pré-requisito técnico**: declarar **Google/Gemini como
-  subprocessador** antes de a importação mandar fatura real pro Gemini pago em produção.
-- **F-06** — confirmar se os filtros do Gemini ainda estão em `BLOCK_NONE`.
-- **Confirmar o tier do assistente hoje (free vs pago).** Se free, a exposição do chat já existe.
-
-*(A validação com fatura ANONIMIZADA no Gemini free — já concluída — não dependeu de #4.)*
+## PRÉ-REQUISITOS DE LANÇAMENTO — TODOS FECHADOS
+- ✅ **#4 Termos/Privacidade** — Gemini pago/subprocessador + fluxo de importação declarados.
+- ✅ **F-06** — o caminho de importação ganhou `BLOCK_ONLY_HIGH` explícito (não mais default do provedor).
+- ✅ **#7 fantasma "services vazio"** — corrigido em docs + brief + memória.
+- ✅ **Gemini pago** (billing) + `GEMINI_IMPORT_API_KEY` dedicada no Railway.
+- ✅ **`preDeployCommand`** — migrations aplicam no deploy (o `release:` do Procfile era ignorado).
 
 ---
 
 ## PRÓXIMO PASSO
-Importação de fatura CODE-COMPLETE ponta a ponta (backend + frontend). Falta validar e declarar.
-1. ✅ Ajuste no preview (faturas_passadas) — entregue.
-2. ✅ Tela de revisão (hivvo-web) — implementada (build/tsc/lint limpos). ⚠️ E2E isolado PENDENTE:
-   preview é read-only (E2E livre); o COMMIT escreve → só contra banco descartável, nunca o .env de prod.
-3. **E2E ponta a ponta** (upload → preview → revisão → commit) em conta descartável — onde os bugs
-   reais aparecem. Confirmar que "A pagar"/projeção se mexem após importar.
-4. **#4 Termos/Privacidade** — pré-requisito ANTES de abrir pra usuários reais (edições já redigidas).
-5. **Ir ao ar** com a fatura (fatia Nubank), tier pago + #4 no ar.
-6. **Extrato** — a fatia seguinte.
+Importação de FATURA: **completa, validada E2E, VIVA em produção.** #9 e estorno entregues na mesma leva.
+
+**Próximo: EXTRATO** (a fatia seguinte, GG).
+1. **SPIKE** de validação — extração + três baldes, isolado, num extrato real Nubank (conta) anonimizado.
+2. **Produção:** preview do extrato (classificação + auto-categoria de débito via `/ai/suggest-category`
+   + casamento pagamento↔fatura proposto na revisão + dedup receita×recorrência) → commit → tela de
+   revisão dos três baldes.
+3. **Depois do extrato:** retenção — notificações (#6).
+
+**Follow-ups menores registrados:** "faltam R$X" nas lentes de lista/competência (expor `valor_pago`);
+retrofitar auto-categoria na FATURA (hoje default "Outros"); netting de estorno contra a compra-mãe;
+TOCTOU cross-competência (raro); dívida dos `datetime.utcnow()`.
+
+**Áreas novas a discutir (antes da próxima sessão):** guia de onboarding pra usuário novo; área de
+feedback (anônimo ou não).
 
 ---
 
-## Anexo — o que a fatura do Nubank revelou (formato real)
+## Anexo — fatura Nubank (formato real)
 - Cabeçalho: "FATURA 13 JUL 2026", "EMISSÃO 06 JUL 2026", período "06 JUN a 06 JUL".
-- RESUMO: "Total de compras ... R$202,65" + "IOF R$3,41" = "Total a pagar R$206,06". Fatura anterior
-  R$58,95 / Pagamento recebido -R$58,95.
+- RESUMO: "Total de compras R$202,65" + "IOF R$3,41" = "Total a pagar R$206,06". Fatura anterior R$58,95
+  / Pagamento recebido -R$58,95.
 - Linhas: `DATA •••• final descrição R$ valor`. Parcelamento "Blacktag - Parcela 4/7".
 - Internacional: "Anthropic BRL 20.00 = USD 3.86 · Conversão BRL 5.35 = USD 1".
 - Seção "Pagamentos e Financiamentos": "Pagamento em 12 JUN -R$58,95"; "Saldo restante da fatura
   anterior R$0,00" (aparece DUAS vezes — é real).
 
-## Anexo — o que a fatura do Itaú revelou (formato real)
+## Anexo — fatura Itaú (formato real)
 - "Resumo da fatura em R$": Total da fatura anterior 0,00 · Pagamento efetuado 16/06 -93,95 · Saldo
-  financiado -93,95 · Lançamentos atuais 93,95 · **Total desta fatura 0,00** (líquido a pagar, já
-  quitado por débito automático).
+  financiado -93,95 · Lançamentos atuais 93,95 · **Total desta fatura 0,00** (líquido, quitado por
+  débito automático).
 - Âncora de consumo: "Total dos lançamentos atuais R$93,95".
 - Cartão `4705.XXXX.XXXX.4189` → portador 4189. Linha: "15/06 JIM.COMANALUIZAPEREZ 93,95".
 - **Lição:** "Total desta fatura" ≠ consumo do ciclo. Reconciliar por "Lançamentos atuais".

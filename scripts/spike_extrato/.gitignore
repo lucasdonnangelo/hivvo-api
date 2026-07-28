@@ -1,0 +1,4 @@
+# PDFs de extrato (reais, mesmo anonimizados) e outputs NUNCA commitam.
+extratos/
+out/
+.venv/

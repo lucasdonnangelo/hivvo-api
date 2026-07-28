@@ -43,3 +43,61 @@ EXTRATO_COM_RENDIMENTO: dict = {
         },
     ],
 }
+
+
+# Extrato do BATCH 2 (enriquecimento), desenhado para exercitar os três blocos:
+#   - 3 débitos, DOIS com a mesma descrição (alvo do dedup: 2 pedidos, não 3);
+#   - 1 pagamento_fatura em 10/06 citando "Nubank" (vence 13/06 -> distância 3);
+#   - 2 receitas: 5000,00 em 05/06 (casa o salário) e 777,00 em 18/06 (não casa).
+# O walk fecha: 1000 + 5777 − 130 − 200 = 6447.
+EXTRATO_ENRIQUECIMENTO: dict = {
+    "banco": "Nubank",
+    "periodo": {"de": "2026-06-01", "ate": "2026-06-30"},
+    "saldo_inicial": "1000.00",
+    "saldo_final": "6447.00",
+    "rendimento": "0.00",
+    "linhas": [
+        {
+            "data": "2026-06-05",
+            "descricao": "Salario ACME LTDA",
+            "valor": "5000.00",
+            "balde": "receita",
+            "cartao_citado": None,
+        },
+        {
+            "data": "2026-06-08",
+            "descricao": "Compra no debito PADARIA CENTRAL",
+            "valor": "50.00",
+            "balde": "debito",
+            "cartao_citado": None,
+        },
+        {
+            "data": "2026-06-09",
+            "descricao": "Compra no debito PADARIA CENTRAL",
+            "valor": "50.00",
+            "balde": "debito",
+            "cartao_citado": None,
+        },
+        {
+            "data": "2026-06-10",
+            "descricao": "Pagamento de fatura Nubank",
+            "valor": "200.00",
+            "balde": "pagamento_fatura",
+            "cartao_citado": "Nubank",
+        },
+        {
+            "data": "2026-06-15",
+            "descricao": "UBER TRIP",
+            "valor": "30.00",
+            "balde": "debito",
+            "cartao_citado": None,
+        },
+        {
+            "data": "2026-06-18",
+            "descricao": "Pix recebido de FULANO",
+            "valor": "777.00",
+            "balde": "receita",
+            "cartao_citado": None,
+        },
+    ],
+}

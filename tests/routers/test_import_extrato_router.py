@@ -32,6 +32,20 @@ def chave_import(monkeypatch):
     monkeypatch.setattr(settings, "GEMINI_IMPORT_API_KEY", "chave-de-teste")
 
 
+@pytest.fixture(autouse=True)
+def sem_categorizacao_real(monkeypatch):
+    """Neutraliza a 2ª chamada ao Gemini (categorização em lote do Batch 2).
+
+    Sem isto, o caminho feliz — que tem uma linha de débito — tentaria uma
+    chamada de REDE de verdade (a chave de teste existe, o client é real) e a
+    degradação graciosa esconderia o vazamento. Este arquivo cobre o contrato do
+    Batch 1; o enriquecimento tem arquivo próprio.
+    """
+    monkeypatch.setattr(
+        gemini, "categorizar_linhas", lambda pedidos, despesa, receita: {}
+    )
+
+
 def _post(client, conteudo=_PDF):
     return client.post(
         "/import/extrato/preview",
@@ -55,6 +69,9 @@ def test_preview_feliz_devolve_extrato_e_walk(as_user, users, monkeypatch, caplo
     assert extrato["banco"] == "Nubank"
     assert extrato["rendimento"] == "4.56"
     assert len(extrato["linhas"]) == 3
+
+    # Batch 2: um item de enriquecimento por linha, alinhado por índice explícito
+    assert [e["indice"] for e in body["enriquecimento"]] == [0, 1, 2]
 
     rec = body["reconciliacao"]
     assert rec["aplicavel"] is True

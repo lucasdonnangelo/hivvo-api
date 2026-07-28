@@ -1,4 +1,8 @@
-"""Chamada ao Gemini do extrato: texto redigido -> JSON no schema ExtratoExtraido.
+"""Chamadas ao Gemini do import de EXTRATO (duas, mesmo encanamento `_gerar`):
+
+1. `extrair_extrato` — texto redigido -> JSON no schema ExtratoExtraido.
+2. `categorizar_linhas` — N linhas -> categoria de cada uma, em UMA chamada
+   (Batch 2; N chamadas explodiriam a latência do preview).
 
 Usa EXCLUSIVAMENTE GEMINI_IMPORT_API_KEY (chave dedicada, tier pago, custo
 isolado) — a MESMA da importação de fatura, NUNCA a GEMINI_API_KEY do assistente
@@ -24,15 +28,17 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 
 from fastapi import HTTPException
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
+from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.gemini_safety import SAFETY_SETTINGS
-from app.schemas.import_extrato import ExtratoExtraido
+from app.schemas.import_extrato import CategorizacaoLote, ExtratoExtraido
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +100,27 @@ Extraia os números IMPRESSOS — NUNCA some as linhas você mesmo.
 --- TEXTO DO EXTRATO ---
 """
 
+# Prompt da categorização em LOTE — mesma semântica do /ai/suggest-category
+# ("responda com o nome de UMA categoria, exatamente como está na lista"),
+# estendida para N itens numa chamada e endereçada por índice.
+PROMPT_CATEGORIAS = """\
+Você classifica transações financeiras pessoais em categorias.
+
+Para CADA item da lista abaixo, devolva o `indice` recebido e UMA `categoria`,
+escrita EXATAMENTE como está na lista do TIPO daquele item. Não invente
+categorias, não explique e não omita itens: devolva um item de resposta para
+CADA item recebido, com o MESMO indice.
+
+Categorias para itens de tipo "despesa": {despesa}
+Categorias para itens de tipo "receita": {receita}
+
+Se um item não se encaixar claramente em nenhuma, use "Outros".
+
+Formato de cada item recebido: indice | tipo | valor | descrição
+
+--- ITENS ---
+"""
+
 # Client singleton próprio do extrato (mesma chave/timeout da fatura, instância
 # SEPARADA de propósito — mesmo padrão T-21 do assistente).
 _client: genai.Client | None = None
@@ -114,9 +141,14 @@ def _get_client() -> genai.Client:
     return _client
 
 
-def extrair_extrato(texto_redigido: str) -> str:
-    """Devolve o JSON CRU (texto) da resposta — a validação Pydantic é do
-    chamador, que mapeia rejeição de schema para 502 sem vazar o conteúdo.
+def _gerar(contents: str, response_schema: type) -> str:
+    """Uma chamada ao Gemini do import de extrato: JSON CRU (texto) da resposta.
+
+    Encanamento ÚNICO das duas chamadas do extrato (extração e categorização em
+    lote): client dedicado (GEMINI_IMPORT_API_KEY), temperature 0, structured
+    output e — F-06 — safety_settings EXPLÍCITO, a fonte única compartilhada com
+    o assistente (app/core/gemini_safety). Uma chamada nova neste módulo não tem
+    como esquecer a moderação: ela passa por aqui.
 
     Retry no padrão do assistente: max_attempts = len(GEMINI_RETRY_WAITS) + 1
     (o usuário está esperando; retry longo é para job assíncrono).
@@ -127,13 +159,11 @@ def extrair_extrato(texto_redigido: str) -> str:
         try:
             resposta = client.models.generate_content(
                 model=settings.GEMINI_IMPORT_MODEL,
-                contents=PROMPT_REGRAS + texto_redigido,
+                contents=contents,
                 config=types.GenerateContentConfig(
                     temperature=0,
                     response_mime_type="application/json",
-                    response_schema=ExtratoExtraido,
-                    # F-06: mesma moderação do assistente (fonte única em
-                    # app/core/gemini_safety) — o texto do extrato vai ao modelo.
+                    response_schema=response_schema,
                     safety_settings=SAFETY_SETTINGS,
                 ),
             )
@@ -164,3 +194,63 @@ def extrair_extrato(texto_redigido: str) -> str:
         status_code=503,
         detail="Serviço de importação temporariamente indisponível. Tente novamente em instantes.",
     )
+
+
+def extrair_extrato(texto_redigido: str) -> str:
+    """Devolve o JSON CRU (texto) da resposta — a validação Pydantic é do
+    chamador, que mapeia rejeição de schema para 502 sem vazar o conteúdo.
+    """
+    return _gerar(PROMPT_REGRAS + texto_redigido, ExtratoExtraido)
+
+
+@dataclass(frozen=True)
+class PedidoCategoria:
+    """Um item a categorizar. `indice` é a chave de volta (não a posição)."""
+
+    indice: int
+    descricao: str
+    valor: str
+    tipo: str  # "despesa" (balde debito) | "receita"
+
+
+def categorizar_linhas(
+    pedidos: list[PedidoCategoria],
+    nomes_despesa: list[str],
+    nomes_receita: list[str],
+) -> dict[int, str]:
+    """Categoriza TODAS as linhas numa chamada ÚNICA -> {indice: categoria CRUA}.
+
+    Uma chamada, não N: com 20-60 linhas por extrato, N chamadas seriam N× a
+    latência EM SÉRIE — o preview explodiria. O prompt aqui é minúsculo perto do
+    texto do extrato que a extração já envia numa chamada só.
+
+    O casamento contra a lista do usuário NÃO é feito aqui: quem chama aplica
+    `categorias.casar_categoria` com a lista do TIPO da linha (assim um débito
+    nunca recebe "Salário"). Índice devolvido fora do pedido é descartado —
+    alinhamento é por chave explícita, nunca por posição.
+    """
+    if not pedidos:
+        return {}
+
+    linhas_pedido = "\n".join(
+        f"{p.indice} | {p.tipo} | {p.valor} | {p.descricao}" for p in pedidos
+    )
+    prompt = PROMPT_CATEGORIAS.format(
+        despesa=", ".join(dict.fromkeys(nomes_despesa)),
+        receita=", ".join(dict.fromkeys(nomes_receita)),
+    ) + linhas_pedido
+
+    raw = _gerar(prompt, CategorizacaoLote)
+    try:
+        lote = CategorizacaoLote.model_validate_json(raw)
+    except ValidationError as e:
+        # Sem o conteúdo: o ValidationError embute os VALORES rejeitados.
+        logger.warning(
+            "[import] categorização rejeitada pelo schema: %d erros", len(e.errors())
+        )
+        raise HTTPException(
+            status_code=502, detail="A categorização retornou dados inválidos."
+        )
+
+    validos = {p.indice for p in pedidos}
+    return {i.indice: i.categoria for i in lote.itens if i.indice in validos}

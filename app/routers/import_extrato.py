@@ -1,11 +1,12 @@
-"""Importação de EXTRATO de conta — Batch 1: preview STATELESS.
+"""Importação de EXTRATO de conta — preview STATELESS (Batches 1 e 2).
 
 POST /import/extrato/preview: PDF de extrato de conta -> JSON extraído (schema
 portado do spike, com o achado do rendimento) + bloco de reconciliação (balance
-walk). NADA é persistido — nem o arquivo, nem o resultado: processa em memória e
-descarta. SEM cartao_id (o extrato é da CONTA, não de um cartão). Auto-categoria
-do débito, casamento pagamento↔fatura, dedup receita×recorrência e o commit
-(materialização) são batches seguintes.
+walk) + ENRIQUECIMENTO por linha (Batch 2: categoria sugerida, fatura proposta,
+flag de recorrência — ver services/import_extrato/enriquecimento.py). NADA é
+persistido — nem o arquivo, nem o resultado: processa em memória e descarta; o
+enriquecimento só LÊ o banco. SEM cartao_id (o extrato é da CONTA, não de um
+cartão). A revisão e o commit (materialização) são os batches seguintes.
 
 Espelha o preview de fatura (app/routers/import_fatura.py) e reusa o encanamento
 validado: o extrator de PDF (extracao_pdf), o client Gemini com
@@ -20,13 +21,15 @@ import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import ValidationError
+from sqlmodel import Session
 
 from app.core.auth import get_current_user
 from app.core.config import settings
+from app.core.database import get_session
 from app.core.rate_limit import _user_or_ip_key, limiter
 from app.models.user import Usuario
 from app.schemas.import_extrato import ExtratoExtraido, ExtratoPreviewResponse, ReconciliacaoExtratoOut
-from app.services.import_extrato import gemini, redacao
+from app.services.import_extrato import enriquecimento, gemini, redacao
 from app.services.import_extrato.reconciliacao import TOLERANCIA, reconciliar
 
 # Reúso do extrator de PDF da fatura — é infra genérica (extração da camada de
@@ -70,6 +73,7 @@ def preview_extrato(
     request: Request,
     arquivo: UploadFile = File(...),
     current_user: Usuario = Depends(get_current_user),
+    session: Session = Depends(get_session),
 ):
     if not settings.GEMINI_IMPORT_API_KEY:
         raise HTTPException(
@@ -132,13 +136,25 @@ def preview_extrato(
 
     rec = reconciliar(extrato, TOLERANCIA)
 
+    # Batch 2 — enriquecimento por linha. Só LEITURA (o preview segue stateless).
+    enriquecido = enriquecimento.enriquecer(session, current_user.id, extrato)
+
+    propostas = [e.fatura_proposta for e in enriquecido if e.fatura_proposta is not None]
     logger.info(
         "[import] preview extrato: bytes=%d paginas=%d chars=%d linhas=%d "
-        "aplicavel=%s bate=%s",
+        "aplicavel=%s bate=%s categorizadas=%d pagamentos=%d unico=%d ambiguo=%d "
+        "sem_match=%d flag_recorrencia=%d",
         len(dados), paginas, len(texto), len(extrato.linhas), rec.aplicavel, rec.bate,
+        sum(1 for e in enriquecido if e.categoria_sugerida is not None),
+        len(propostas),
+        sum(1 for p in propostas if p.status == "match_unico"),
+        sum(1 for p in propostas if p.status == "ambiguo"),
+        sum(1 for p in propostas if p.status == "sem_match"),
+        sum(1 for e in enriquecido if e.provavel_recorrencia),
     )
     return ExtratoPreviewResponse(
         extrato=extrato,
+        enriquecimento=enriquecido,
         reconciliacao=ReconciliacaoExtratoOut(
             aplicavel=rec.aplicavel,
             saldo_inicial=str(rec.saldo_inicial),

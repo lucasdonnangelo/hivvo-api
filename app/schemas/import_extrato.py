@@ -20,13 +20,20 @@ O balance walk NÃO faz parte deste contrato de propósito: LLM não faz aritmé
 confiável — o walk é calculado em Python (ver
 app/services/import_extrato/reconciliacao.py) e devolvido em ReconciliacaoExtratoOut,
 com decimais como string.
+
+Pela MESMA razão (schema dual-use), o enriquecimento do Batch 2 (categoria
+sugerida, fatura proposta, flag de recorrência) vive num array PARALELO
+(EnriquecimentoLinha), alinhado a `linhas` por índice explícito — nunca dentro de
+LinhaExtrato, que o Gemini preencheria.
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -141,7 +148,96 @@ class ReconciliacaoExtratoOut(BaseModel):
     bate: bool
 
 
+class ItemCategoria(BaseModel):
+    """Um item da resposta da categorização em LOTE (response_schema do Gemini).
+
+    `indice` é o índice do PEDIDO enviado (não o da linha do extrato): o
+    alinhamento é explícito, nunca por posição — o modelo pode devolver menos
+    itens, fora de ordem ou repetidos sem desalinhar as demais linhas.
+    """
+
+    indice: int
+    categoria: str
+
+
+class CategorizacaoLote(BaseModel):
+    """Resposta da chamada ÚNICA de categorização (ver services/import_extrato/gemini)."""
+
+    itens: list[ItemCategoria]
+
+
+class FaturaCandidataOut(BaseModel):
+    """Uma fatura (cartão + competência) que PODE ser a quitada pela linha.
+
+    O valor é sinal de CONFIANÇA, não filtro: `diferenca`/`valor_bate` anotam o
+    quanto o pagamento cobre o total ATUAL da fatura (pagamento parcial/mínimo
+    é real), mas nunca eliminam a candidata.
+    """
+
+    cartao_id: int
+    cartao_nome: str
+    fatura_mes: int
+    fatura_ano: int
+    total_fatura: str  # total ATUAL — fonte única da composição (services/faturas)
+    diferenca: str  # valor da linha − total_fatura
+    valor_bate: bool  # |diferenca| <= TOLERANCIA
+    ja_paga: bool  # já existe PagamentoFatura pago=True nessa competência
+
+
+class FaturaPropostaOut(BaseModel):
+    """PROPOSTA de casamento pagamento↔fatura — o preview nunca decide.
+
+    - `match_unico`: exatamente uma candidata (1 elemento em `candidatas`);
+    - `ambiguo`: N candidatas (ex.: dois cartões do mesmo banco), ordenadas por
+      confiança — a de valor exato vem primeiro, mas NÃO colapsa para match
+      único (o sistema não sabe qual é; o usuário confirma na revisão);
+    - `sem_match`: nenhuma (`motivo` diz se é emissor desconhecido ou fatura
+      não importada — "importe a fatura").
+    """
+
+    status: Literal["match_unico", "ambiguo", "sem_match"]
+    candidatas: list[FaturaCandidataOut] = []
+    motivo: str | None = None
+
+
+class RecorrenciaCasadaOut(BaseModel):
+    """A recorrência que provavelmente já explica esta receita (armadilha do salário)."""
+
+    id: uuid.UUID
+    descricao: str
+    categoria: str
+    valor_vigente: str
+    dia_do_mes: int
+    competencia_mes: int
+    competencia_ano: int
+
+
+class EnriquecimentoLinha(BaseModel):
+    """Enriquecimento de UMA linha, endereçado por `indice` em extrato.linhas.
+
+    Vive FORA de LinhaExtrato de propósito: LinhaExtrato é o response_schema do
+    Gemini de extração (ver topo do módulo) — engordá-la faria o modelo de
+    extração tentar preencher o enriquecimento. Array paralelo, alinhado por
+    índice EXPLÍCITO (não por posição).
+
+    Cada campo só é preenchido no balde a que pertence:
+    - `categoria_sugerida`: debito e receita (None = não foi possível sugerir —
+      a chamada de categorização falhou; "Outros" é palpite, None é ausência);
+    - `fatura_proposta`: pagamento_fatura;
+    - `provavel_recorrencia`/`recorrencia_casada`: receita.
+    """
+
+    indice: int
+    categoria_sugerida: str | None = None
+    fatura_proposta: FaturaPropostaOut | None = None
+    provavel_recorrencia: bool = False
+    recorrencia_casada: RecorrenciaCasadaOut | None = None
+
+
 class ExtratoPreviewResponse(BaseModel):
     # Sem cartao_id: o extrato é da CONTA, não de um cartão.
     extrato: ExtratoExtraido
     reconciliacao: ReconciliacaoExtratoOut
+    # Um item por linha de extrato.linhas, na mesma ordem (Batch 2). O
+    # `rendimento` do RESUMO não entra: não é linha.
+    enriquecimento: list[EnriquecimentoLinha] = []

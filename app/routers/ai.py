@@ -17,10 +17,9 @@ from app.core.config import settings
 from app.core.database import get_session
 from app.core.gemini_safety import SAFETY_SETTINGS
 from app.core.rate_limit import _user_or_ip_key, limiter
-from app.models.category import CategoriaCustomizada
 from app.models.chat import ChatMessage
 from app.models.user import Usuario
-from app.services.categorias import CATEGORIAS_PADRAO
+from app.services.categorias import casar_categoria, nomes_categorias_do_usuario
 from app.services.estatisticas import (
     _agregar,
     _categorias,
@@ -404,18 +403,6 @@ def chat(
     return ChatResponse(resposta=texto)
 
 
-def _match_categoria(resposta: str, nomes: list[str]) -> str:
-    """Garante que a sugestão é uma categoria que o cliente conhece."""
-    limpo = resposta.strip().strip(".\"'")
-    for nome in nomes:
-        if limpo.casefold() == nome.casefold():
-            return nome
-    for nome in nomes:
-        if nome.casefold() in resposta.casefold():
-            return nome
-    return "Outros"
-
-
 @router.post("/suggest-category", response_model=SuggestCategoryResponse)
 def suggest_category(
     body: SuggestCategoryRequest,
@@ -434,19 +421,10 @@ def suggest_category(
             detail="Serviço de IA indisponível: GEMINI_API_KEY não configurada.",
         )
 
-    # Categorias válidas: padrão + customizadas ativas do usuário (por tipo)
-    nomes = [
-        c.nome for c in CATEGORIAS_PADRAO if body.tipo is None or c.tipo == body.tipo
-    ]
-    stmt = select(CategoriaCustomizada).where(
-        CategoriaCustomizada.usuario_id == current_user.id,
-        CategoriaCustomizada.ativa == True,  # noqa: E712
-    )
-    if body.tipo is not None:
-        stmt = stmt.where(CategoriaCustomizada.tipo == body.tipo)
-    for c in session.exec(stmt).all():
-        if c.nome not in nomes:
-            nomes.append(c.nome)
+    # Categorias válidas: padrão + customizadas ativas do usuário (por tipo).
+    # Fonte única em services/categorias — a MESMA lista que a categorização em
+    # lote do import de extrato usa.
+    nomes = nomes_categorias_do_usuario(session, current_user.id, body.tipo)
 
     system_instruction = (
         "Você classifica transações financeiras pessoais em categorias. "
@@ -462,4 +440,4 @@ def suggest_category(
     contents = [types.Content(role="user", parts=[types.Part(text=" | ".join(partes))])]
 
     resposta = _gemini_generate(contents, system_instruction)
-    return SuggestCategoryResponse(categoria=_match_categoria(resposta, nomes))
+    return SuggestCategoryResponse(categoria=casar_categoria(resposta, nomes))

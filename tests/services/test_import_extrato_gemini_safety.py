@@ -14,11 +14,18 @@ class _FakeResponse:
     text = "{}"
 
 
-def _fake_client(captura: dict):
+# A extração devolve o JSON cru (quem valida é o router); a categorização valida
+# aqui dentro — por isso o fake precisa de um lote bem-formado.
+_LOTE_VAZIO = '{"itens": []}'
+
+
+def _fake_client(captura: dict, texto: str = "{}"):
     class _Models:
         def generate_content(self, **kwargs):
             captura.update(kwargs)
-            return _FakeResponse()
+            resposta = _FakeResponse()
+            resposta.text = texto
+            return resposta
 
     class _Client:
         models = _Models()
@@ -59,3 +66,40 @@ def test_extrato_usa_a_mesma_constante_do_assistente(monkeypatch):
     gemini_extrato.extrair_extrato("texto qualquer redigido do extrato")
 
     assert captura["config"].safety_settings == SAFETY_SETTINGS
+
+
+def _pedido():
+    return gemini_extrato.PedidoCategoria(
+        indice=0, descricao="Compra no debito PADARIA", valor="50.00", tipo="despesa"
+    )
+
+
+def test_categorizacao_em_lote_tambem_passa_o_safety(monkeypatch):
+    """A 2ª chamada do extrato (Batch 2) não pode rodar no default do provedor:
+    a descrição das linhas vai ao modelo tanto quanto o texto do extrato."""
+    from app.core.gemini_safety import SAFETY_SETTINGS
+
+    captura: dict = {}
+    monkeypatch.setattr(
+        gemini_extrato, "_get_client", lambda: _fake_client(captura, _LOTE_VAZIO)
+    )
+
+    gemini_extrato.categorizar_linhas([_pedido()], ["Alimentação"], ["Salário"])
+
+    assert captura["config"].safety_settings == SAFETY_SETTINGS
+
+
+def test_categorizacao_em_lote_usa_a_chave_de_importacao(monkeypatch):
+    """Custo isolado: a categorização do import passa pelo MESMO client do extrato
+    (GEMINI_IMPORT_API_KEY), nunca pelo do assistente."""
+    chamadas: list[int] = []
+
+    def _fake_get_client():
+        chamadas.append(1)
+        return _fake_client({}, _LOTE_VAZIO)
+
+    monkeypatch.setattr(gemini_extrato, "_get_client", _fake_get_client)
+
+    gemini_extrato.categorizar_linhas([_pedido()], ["Alimentação"], ["Salário"])
+
+    assert chamadas == [1]

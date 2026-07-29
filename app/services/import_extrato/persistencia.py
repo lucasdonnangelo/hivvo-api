@@ -3,7 +3,8 @@
 Os três baldes do extrato NÃO viram a mesma coisa (PLANO_IMPORTACAO — "extrato e
 fatura se RECONCILIAM, não se somam"):
 
-- `receita`  → Transacao(tipo="receita") pela data da linha;
+- `receita`  → Transacao(tipo="receita", forma_pagamento="PIX") pela data da
+  linha — entrada por transferência na conta, não "Débito";
 - `debito`   → Transacao(tipo="despesa", forma_pagamento="Débito") — o dinheiro
   JÁ SAIU na data: SEM cartao_id e SEM fatura_mes/ano. É o que faz a projeção
   tratá-la como consumo realizado (Fonte 3 de services/estatisticas: `a_pagar`
@@ -217,14 +218,14 @@ def materializar_extrato(
             _criar_transacao(
                 session, usuario_id, "receita",
                 dt.date.fromisoformat(linha.data), linha.descricao, valor,
-                categorias.get(i, "Outros"),
+                categorias.get(i, "Outros"), forma_pagamento="PIX",
             )
             res.receitas_criadas += 1
         else:
             _criar_transacao(
                 session, usuario_id, "despesa",
                 dt.date.fromisoformat(linha.data), linha.descricao, valor,
-                categorias.get(i, "Outros"),
+                categorias.get(i, "Outros"), forma_pagamento="Débito",
             )
             res.debitos_criados += 1
 
@@ -232,10 +233,13 @@ def materializar_extrato(
     if importar_rendimento and rendimento > 0:
         # Data = fim do período: o rendimento é do CICLO, não de um dia — e o
         # extrato só o imprime consolidado no resumo.
+        # Rendimento NÃO é transferência recebida (não é PIX): é rendimento da
+        # própria conta — fica no default de caixa "Débito", como uma receita
+        # criada à mão.
         _criar_transacao(
             session, usuario_id, "receita",
             dt.date.fromisoformat(extrato.periodo.ate), DESCRICAO_RENDIMENTO,
-            rendimento, CATEGORIA_RENDIMENTO,
+            rendimento, CATEGORIA_RENDIMENTO, forma_pagamento="Débito",
         )
         res.rendimento_importado = True
 
@@ -250,6 +254,8 @@ def _criar_transacao(
     descricao: str,
     valor: Decimal,
     categoria: str,
+    *,
+    forma_pagamento: str,
 ) -> None:
     """Uma avulsa de CAIXA — o denominador comum dos três casos que escrevem.
 
@@ -258,10 +264,13 @@ def _criar_transacao(
     nunca `a_pagar`) — derivar fatura aqui transformaria caixa que JÁ SAIU em
     dívida de crédito, o oposto do balde.
 
-    `forma_pagamento="Débito"` é a saída pela CONTA (o balde 2). Para receita o
-    campo não se aplica — o extrato não diz por onde a entrada veio — e o valor
-    é o mesmo default do modelo que uma receita criada à mão recebe; inventar
-    "Pix"/"TED" por heurística de descrição seria pior que o default.
+    `forma_pagamento` é decisão do CHAMADOR: débito é a saída pela conta
+    ("Débito"); receita de linha é transferência recebida ("PIX" — o valor
+    canônico do front; "Débito" numa entrada era simplesmente errado);
+    rendimento fica em "Débito" (é da própria conta, não transferência). Só a
+    materialização do EXTRATO fixa isso — o default "Débito" do MODELO continua
+    valendo para a despesa manual. Refinamento futuro (não agora): detectar PIX
+    vs TED pela descrição em vez de fixar "PIX".
     """
     session.add(
         Transacao(
@@ -271,7 +280,7 @@ def _criar_transacao(
             descricao=descricao,
             valor=valor,
             categoria=categoria,
-            forma_pagamento="Débito",
+            forma_pagamento=forma_pagamento,
             tipo_gasto="Variável",
             origem=ORIGEM_IMPORT,
             cartao_id=None,

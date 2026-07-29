@@ -11,10 +11,12 @@ from app.models.installment import Parcela
 from app.models.transaction import Transacao
 from app.models.user import Usuario
 from app.schemas.card import (
+    MSG_VENCIMENTO_ANTES_DO_FECHAMENTO,
     CartaoComFaturaResponse,
     CartaoCreate,
     CartaoResponse,
     CartaoUpdate,
+    fechamento_vencimento_coerentes,
 )
 from app.services.faturas import _current_open_fatura, cartao_tem_lancamentos
 
@@ -169,6 +171,20 @@ def update_card(
                 "com compras lançadas. Crie um novo cartão."
             ),
         )
+
+    # Fechamento×vencimento: update é PARCIAL — mescla o que veio com o que está
+    # no cartão e valida o RESULTADO, mas SÓ quando o update toca algum campo da
+    # regra. Assim edição de nome/limite num cartão pré-existente inválido
+    # (nascido antes da validação do create) não trava. Borda documentada em
+    # PENDENCIAS #34: cartão inválido COM lançamentos fica preso — o 422 acima
+    # bloqueia mudar as datas.
+    campos_regra = {"dia_fechamento", "dia_vencimento", "mes_offset_vencimento"}
+    if campos_regra & data.keys():
+        resultado = {c: data.get(c, getattr(card, c)) for c in campos_regra}
+        if not fechamento_vencimento_coerentes(**resultado):
+            raise HTTPException(
+                status_code=422, detail=MSG_VENCIMENTO_ANTES_DO_FECHAMENTO
+            )
 
     for field, value in data.items():
         setattr(card, field, value)

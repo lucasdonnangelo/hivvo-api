@@ -220,6 +220,110 @@ class TestBloqueioEdicaoDatasComCompras:
         assert resp.json()["nome"] == "Novo"
 
 
+class TestValidacaoFechamentoVencimento:
+    """Regra fechamento×vencimento: com mes_offset_vencimento=0 ("mesmo mês") a
+    fatura não pode vencer antes de (nem no dia de) fechar. No update PARCIAL o
+    router mescla o body com o cartão atual e valida o RESULTADO — mas só quando
+    o update toca algum campo da regra (nome/limite num cartão pré-existente
+    inválido seguem editáveis; borda do cartão preso: PENDENCIAS #34)."""
+
+    def _card_invalido_preexistente(self, session, usuario_id: int) -> Cartao:
+        # Direto na sessão (bypassa o schema): simula cartão criado ANTES da
+        # validação — offset 0 com vencimento antes do fechamento.
+        card = Cartao(
+            usuario_id=usuario_id, nome="Legado", tipo="Crédito",
+            dia_fechamento=20, dia_vencimento=10, mes_offset_vencimento=0,
+        )
+        session.add(card)
+        session.commit()
+        session.refresh(card)
+        return card
+
+    def test_create_mesmo_mes_vencimento_antes_422(self, users, as_user):
+        user_a, _ = users
+        resp = as_user(user_a).post(
+            "/cards",
+            json={
+                "nome": "Nubank", "tipo": "Crédito",
+                "dia_fechamento": 10, "dia_vencimento": 5,
+                "mes_offset_vencimento": 0,
+            },
+        )
+        assert resp.status_code == 422
+        assert "mesmo mês do fechamento" in str(resp.json())
+
+    def test_create_mesmo_mes_vencimento_depois_201(self, users, as_user):
+        user_a, _ = users
+        resp = as_user(user_a).post(
+            "/cards",
+            json={
+                "nome": "Nubank", "tipo": "Crédito",
+                "dia_fechamento": 10, "dia_vencimento": 15,
+                "mes_offset_vencimento": 0,
+            },
+        )
+        assert resp.status_code == 201
+
+    def test_create_mes_seguinte_vencimento_antes_201(self, users, as_user):
+        # offset 1: venc < fech é o arranjo comum (fecha dia 25, vence dia 5).
+        user_a, _ = users
+        resp = as_user(user_a).post(
+            "/cards",
+            json={
+                "nome": "Nubank", "tipo": "Crédito",
+                "dia_fechamento": 25, "dia_vencimento": 5,
+                "mes_offset_vencimento": 1,
+            },
+        )
+        assert resp.status_code == 201
+
+    def test_update_offset_para_zero_com_datas_atuais_invalidas_422(
+        self, session, users, as_user
+    ):
+        # Mescla: só o offset no body; fechamento 25 / vencimento 5 vêm do
+        # cartão → resultado offset=0 com venc<fech é inválido.
+        user_a, _ = users
+        card = make_card(session, user_a.id)  # fech 25, venc 5, offset 1
+        resp = as_user(user_a).put(f"/cards/{card.id}", json={"mes_offset_vencimento": 0})
+        assert resp.status_code == 422
+        assert "mesmo mês do fechamento" in resp.json()["detail"]
+
+    def test_update_datas_para_conjunto_invalido_422(self, session, users, as_user):
+        user_a, _ = users
+        card = make_card(session, user_a.id)
+        resp = as_user(user_a).put(
+            f"/cards/{card.id}",
+            json={"dia_fechamento": 22, "dia_vencimento": 20, "mes_offset_vencimento": 0},
+        )
+        assert resp.status_code == 422
+
+    def test_update_para_conjunto_valido_200(self, session, users, as_user):
+        # O escape do cartão inválido SEM lançamentos: corrigir as datas passa.
+        user_a, _ = users
+        card = self._card_invalido_preexistente(session, user_a.id)
+        resp = as_user(user_a).put(f"/cards/{card.id}", json={"mes_offset_vencimento": 1})
+        assert resp.status_code == 200
+        assert resp.json()["mes_offset_vencimento"] == 1
+
+    def test_update_nome_em_cartao_invalido_preexistente_200(
+        self, session, users, as_user
+    ):
+        # O carve-out: o update não toca campo da regra → a mescla nem roda e a
+        # edição de nome/limite não trava no cartão que nasceu inválido.
+        user_a, _ = users
+        card = self._card_invalido_preexistente(session, user_a.id)
+        resp = as_user(user_a).put(f"/cards/{card.id}", json={"nome": "Renomeado"})
+        assert resp.status_code == 200
+        assert resp.json()["nome"] == "Renomeado"
+
+    def test_update_nome_em_cartao_valido_200(self, session, users, as_user):
+        user_a, _ = users
+        card = make_card(session, user_a.id)
+        resp = as_user(user_a).put(f"/cards/{card.id}", json={"nome": "Novo nome"})
+        assert resp.status_code == 200
+        assert resp.json()["nome"] == "Novo nome"
+
+
 class TestTemLancamentosNoGetCards:
     """GET /cards expõe `tem_lancamentos` para o front desabilitar os campos de
     data no form de edição (mesma composição do bloqueio, sem query extra)."""

@@ -138,6 +138,9 @@ def test_receita_materializa_como_transacao(session, as_user, users, cartoes, fa
     assert Decimal(str(receita.valor)) == Decimal("5000.00")
     assert receita.data == dt.date(2026, 6, 5)
     assert receita.categoria == "Outros"  # default do request, revalidado
+    # Receita de extrato é transferência RECEBIDA na conta → "PIX" (o valor
+    # canônico do front), não o default "Débito" do modelo (que é saída).
+    assert receita.forma_pagamento == "PIX"
     assert receita.origem == "importacao"
     assert receita.parcelado is False
     assert receita.cartao_id is None
@@ -182,6 +185,9 @@ def test_rendimento_vira_receita_rendimentos(session, as_user, users, cartoes, f
     assert rendimento.tipo == "receita"
     assert Decimal(str(rendimento.valor)) == Decimal("4.56")
     assert rendimento.data == dt.date(2026, 6, 30)  # fim do período, não uma linha
+    # Rendimento NÃO é transferência recebida (não é PIX): fica no default de
+    # caixa, como uma receita criada à mão.
+    assert rendimento.forma_pagamento == "Débito"
 
 
 def test_rendimento_zero_nao_materializa(session, as_user, users, cartoes, fatura_junho):

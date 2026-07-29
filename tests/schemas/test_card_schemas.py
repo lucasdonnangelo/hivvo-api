@@ -67,3 +67,39 @@ class TestMesOffset:
 def test_update_parcial_vazio_continua_valido():
     update = CartaoUpdate()
     assert update.model_dump(exclude_unset=True) == {}
+
+
+class TestFechamentoVencimentoNoCreate:
+    """offset 0 ("mesmo mês") exige vencimento DEPOIS do fechamento — a fatura
+    não pode vencer antes de fechar. offset >= 1: qualquer par é válido.
+    O update NÃO valida no schema (é parcial) — a mescla vive no router."""
+
+    @pytest.mark.parametrize("venc", [5, 10])  # antes E no mesmo dia do fechamento
+    def test_mesmo_mes_vencimento_nao_posterior_rejeitado(self, venc):
+        with pytest.raises(ValidationError, match="mesmo mês do fechamento"):
+            CartaoCreate(
+                nome="Nubank", tipo="Crédito",
+                dia_fechamento=10, dia_vencimento=venc, mes_offset_vencimento=0,
+            )
+
+    def test_mesmo_mes_vencimento_posterior_aceito(self):
+        card = CartaoCreate(
+            nome="Nubank", tipo="Crédito",
+            dia_fechamento=10, dia_vencimento=15, mes_offset_vencimento=0,
+        )
+        assert card.dia_vencimento == 15
+
+    @pytest.mark.parametrize("fech, venc", [(25, 5), (10, 10), (5, 25)])
+    def test_mes_seguinte_qualquer_par_aceito(self, fech, venc):
+        # offset 1: o mês virou entre fechar e vencer — venc < fech é o caso comum.
+        card = CartaoCreate(
+            nome="Nubank", tipo="Crédito",
+            dia_fechamento=fech, dia_vencimento=venc, mes_offset_vencimento=1,
+        )
+        assert card.mes_offset_vencimento == 1
+
+    def test_offset_zero_sem_dias_nao_aciona_a_regra(self):
+        # Dias ausentes (crédito sem datas ainda é aceito; débito nem as tem):
+        # não há o que comparar — a regra não dispara.
+        card = CartaoCreate(nome="Nubank", tipo="Crédito", mes_offset_vencimento=0)
+        assert card.dia_fechamento is None

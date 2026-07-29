@@ -2,7 +2,32 @@ import datetime as dt
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# Mensagem ÚNICA para create (validator) e update (router, que mescla com o
+# cartão atual) — o front mostra o detail/msg direto ao usuário.
+MSG_VENCIMENTO_ANTES_DO_FECHAMENTO = (
+    "Quando o vencimento é no mesmo mês do fechamento, o dia de vencimento "
+    "precisa ser maior que o do fechamento. Se vence no mês seguinte, escolha "
+    "'Mês seguinte ao fechamento'."
+)
+
+
+def fechamento_vencimento_coerentes(
+    dia_fechamento: Optional[int],
+    dia_vencimento: Optional[int],
+    mes_offset_vencimento: Optional[int],
+) -> bool:
+    """offset 0 ("mesmo mês") exige vencimento DEPOIS do fechamento — a fatura
+    não pode vencer antes de fechar. offset >= 1 ("mês seguinte"): qualquer par
+    de dias é válido (o mês virou entre fechar e vencer). Dias ausentes (débito
+    não tem fatura; crédito sem datas ainda é aceito) não acionam a regra.
+    """
+    if mes_offset_vencimento != 0:
+        return True
+    if dia_fechamento is None or dia_vencimento is None:
+        return True
+    return dia_vencimento > dia_fechamento
 
 
 class CartaoCreate(BaseModel):
@@ -42,7 +67,19 @@ class CartaoCreate(BaseModel):
             raise ValueError("mes_offset_vencimento deve ser >= 0")
         return v
 
+    @model_validator(mode="after")
+    def vencimento_depois_do_fechamento(self) -> "CartaoCreate":
+        if not fechamento_vencimento_coerentes(
+            self.dia_fechamento, self.dia_vencimento, self.mes_offset_vencimento
+        ):
+            raise ValueError(MSG_VENCIMENTO_ANTES_DO_FECHAMENTO)
+        return self
 
+
+# CartaoUpdate NÃO tem o model_validator acima de propósito: o update é PARCIAL
+# (um campo da regra pode vir sozinho) — a mescla com os valores atuais do cartão
+# e a validação do RESULTADO acontecem no router (update_card), e só quando o
+# update toca algum campo da regra.
 class CartaoUpdate(BaseModel):
     nome: Optional[str] = Field(None, max_length=200)  # F-22
     tipo: Optional[str] = Field(None, max_length=20)

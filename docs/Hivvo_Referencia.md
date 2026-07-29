@@ -1,7 +1,13 @@
 # Hivvo — Documento de Referência do Produto
 
 **Brand Guide | Arquitetura | Telas | Estado de Qualidade | Roadmap**
-Atualizado em 10 de junho de 2026 | Lucas Donnangelo
+Atualizado em 29 de julho de 2026 | Lucas Donnangelo
+
+> **Nota de versão (29/07/2026):** documentadas as features da leva de importação, todas verificadas no
+> código antes de escritas: importação de **fatura** e de **extrato** por PDF (§3 telas, §5 endpoints,
+> **§5.1** o fluxo inteiro), **cobertura de pagamento** (`paga_parcial`, #9), **estorno** como terceiro
+> tipo de transação, a **validação fechamento×vencimento** do cartão e o **`preDeployCommand`** que
+> aplica migrations no deploy (§8). A estrutura de pastas dos dois repos foi reconferida contra o disco.
 
 > **Nota de versão (10/06/2026):** documento sincronizado com o estado real do código após as auditorias de segurança e técnica (`docs/AUDITORIA_SEGURANCA.md`, `docs/AUDITORIA_TECNICA.md`). Correções relevantes: a arquitetura em camadas (Repository Pattern) **descrita anteriormente como pronta não existe no código** — está planejada para o pós-deploy. Ver §5 e §8.
 
@@ -118,7 +124,8 @@ colors: {
 
 - **Perfil** (`/profile`) — nome (editável), e-mail (read-only), trocar senha, sair, Termos e Privacidade.
 - **Configurações** (`/settings`) — Categorias (despesa/receita) · Recorrências · Assistente IA
-  (Resetar Assistente) · Meus dados (Importar CSV · Exportar transações JSON · Excluir minha conta).
+  (Resetar Assistente) · Meus dados (Importar CSV · **Importar fatura (PDF)** → `/import/fatura` ·
+  **Importar extrato (PDF)** → `/import/extrato` · Exportar transações JSON · Excluir minha conta).
 
 > Histórico: até 14/07/2026 esta linha afirmava que o menu tinha 5 itens (Importar CSV · Backup ·
 > Gerenciar categorias · Configurações da conta · Termos e Privacidade). **Era falso e nunca existiu**
@@ -142,6 +149,8 @@ colors: {
 **Ver Resumo Detalhado** — toggle Mês/Trimestre/Ano; métricas (receitas, despesas, saldo líquido, parcelas do próximo mês); comparativo percentual vs. período anterior; pizza por categoria; barras de evolução mensal com média; top categorias; exportar relatório.
 
 **Auth / Conta** — login, cadastro (username auto-gerado a partir do e-mail), recuperação de senha (forgot/reset), troca de senha, toggle de visibilidade de senha, refresh token automático, Termos de Uso e Política de Privacidade (base LGPD).
+
+**Importação por PDF (29/07/2026)** — dois wizards independentes, alcançados por Configurações → Meus dados. **Fatura** (`/import/fatura`, 4 passos): escolher cartão + upload → revisão linha a linha (categoria, descartar) → confirmar em bloco o pagamento das faturas passadas → recibo. **Extrato** (`/import/extrato`, 3 passos): upload → revisão dos três baldes (receita · débito · pagamento de fatura), com categoria sugerida, fatura candidata para o pagamento e a receita-que-casa-com-recorrência já desmarcada → recibo. Em ambos a revisão é **obrigatória** — é a rede que torna a extração por LLM aceitável. Ver §5.1.
 
 ---
 
@@ -173,13 +182,17 @@ hivvo-web/
     ├── pages/        Dashboard, Transactions(/Summary), AddTransaction,
     │                 Cards(/Invoices/Parcelas), Assistant, Auth
     │                 (Login, Register, ForgotPassword, ResetPassword),
-    │                 Settings, Import, Legal(Terms, Privacy)
+    │                 Settings, Legal(Terms, Privacy),
+    │                 Import/ (CSV + ImportFaturaPage com fatura/{Step*},
+    │                          ImportExtratoPage com extrato/{Step*})
     ├── components/    ui/, charts/, transaction/, cards/
     ├── hooks/         useBreakpoint, useTransactions, useCategories,
-    │                  useStatistics, useCards, useAuth, useInstallments
+    │                  useStatistics, useCards, useAuth, useInstallments,
+    │                  useImportFatura, useImportExtrato
+    ├── lib/           unwrapList, extractDetail, tipoTransacao, observability
     ├── store/         authStore, uiStore
     ├── services/      api, auth, transactions, categories, cards, ai,
-    │                  statistics, installments
+    │                  statistics, installments, importFatura, importExtrato
     └── styles/        tokens.css
 ```
 
@@ -208,9 +221,9 @@ hivvo-web/
 | Banco de dados | PostgreSQL (Supabase) |
 | Migrations | Alembic |
 | Autenticação | JWT (httpOnly cookie) + bcrypt; refresh token rotativo |
-| IA | Google Gemini API (google-genai) |
+| IA | Google Gemini API (google-genai) — chave separada para a importação (`GEMINI_IMPORT_API_KEY`) |
 | E-mail | Resend (recuperação de senha) |
-| Deploy | Railway ou Render (free tier) |
+| Deploy | Railway — `railway.json` com `preDeployCommand: "alembic upgrade head"` |
 
 ### Estrutura de Pastas (estado REAL)
 
@@ -222,17 +235,20 @@ hivvo-api/
     ├── models/          SQLModel models
     ├── repositories/    ⚠️ VAZIO hoje (só __init__.py — sem camada de acesso a dados separada)
     ├── services/        parcelas, faturas, estatisticas, categorias, recorrencias,
-    │                    import_fatura/ (extração PDF, redação PII, Gemini,
-    │                    reconciliação, materialização) — ~2.170 linhas
+    │                    import_fatura/ e import_extrato/ (extração PDF, redação PII,
+    │                    Gemini, reconciliação, enriquecimento, materialização)
+    │                    — ~3.570 linhas
     ├── routers/         auth, transactions, categories, cards, invoices,
-    │                    installments, statistics, ai, recorrencias, import_fatura
+    │                    installments, statistics, ai, recorrencias, import_fatura,
+    │                    import_extrato
     │                    ← orquestração (auth/sessão/request-response); parte da
     │                    lógica de domínio ainda vive aqui também
     ├── schemas/         Pydantic (request/response)
-    └── core/            auth.py (JWT+bcrypt), database.py, config.py
+    └── core/            auth.py (JWT+bcrypt), database.py, config.py,
+                         gemini_safety.py (SAFETY_SETTINGS — fonte única)
 ```
 
-> **Estado real da arquitetura em camadas:** `repositories/` está **vazio** (só `__init__.py`) — não existe camada de acesso a dados separada da regra de negócio. `services/` **não está vazio**: concentra lógica de domínio em `parcelas.py`, `faturas.py`, `estatisticas.py`, `categorias.py`, `recorrencias.py` e o pacote `import_fatura/` (extração de PDF, redação de PII, chamada ao Gemini, reconciliação, materialização) — ao todo ~2.170 linhas. Essas funções recebem `Session` e fazem suas próprias queries — não é o Repository Pattern completo (acesso a dados separado da regra de negócio); é serviço com lógica + I/O misturados. Os routers fazem orquestração (auth, sessão, mapeamento request/response) e chamam `services/`; parte da lógica de domínio ainda vive direto nos routers, em funções privadas. Separar `services/` (regra) de `repositories/` (dados) é o refactor pendente (ver §7/§8) — não a criação de `services/` do zero, que já existe.
+> **Estado real da arquitetura em camadas:** `repositories/` está **vazio** (só `__init__.py`) — não existe camada de acesso a dados separada da regra de negócio. `services/` **não está vazio**: concentra lógica de domínio em `parcelas.py`, `faturas.py`, `estatisticas.py`, `categorias.py`, `recorrencias.py` e os pacotes `import_fatura/` e `import_extrato/` (extração de PDF, redação de PII, chamada ao Gemini, reconciliação, enriquecimento, materialização) — ao todo ~3.570 linhas. Essas funções recebem `Session` e fazem suas próprias queries — não é o Repository Pattern completo (acesso a dados separado da regra de negócio); é serviço com lógica + I/O misturados. Os routers fazem orquestração (auth, sessão, mapeamento request/response) e chamam `services/`; parte da lógica de domínio ainda vive direto nos routers, em funções privadas. Separar `services/` (regra) de `repositories/` (dados) é o refactor pendente (ver §7/§8) — não a criação de `services/` do zero, que já existe.
 
 ### Endpoints por Domínio (estado real)
 
@@ -247,12 +263,115 @@ hivvo-api/
 | Estatísticas | `GET /statistics/monthly`, `GET /statistics/default-month`, `GET /statistics/projection`, `GET /statistics/yearly` †, `GET /statistics/categories` |
 | Estatísticas — Resumo/análise (13/07/2026) | `GET /statistics/evolution`, `GET /statistics/evolution/categories`, `GET /statistics/comparison`, `GET /statistics/highlights`, `GET /statistics/coverage` — base CONSUMO, fonte única `_lancamentos_consumo_horizonte` (PLANO_RESUMO.md) |
 | IA | `POST /ai/chat`, `GET /ai/historico`, `DELETE /ai/historico` |
+| Importação por PDF (29/07/2026) | `POST /import/fatura/preview`, `POST /import/fatura/commit`, `POST /import/extrato/preview`, `POST /import/extrato/commit` — ver §5.1 |
 
 > ✅ **Aplicado (T-28):** todas as rotas vivem sob `/api/v1` (`main.py`, os 10 routers). Os caminhos desta tabela são **relativos ao prefixo** — o real é `/api/v1/auth/login` etc. Este doc já descreveu o prefixo como "planejado", o que era falso.
 >
 > † **`/statistics/yearly` — candidato a aposentadoria (13/07/2026):** com o `/evolution` (série histórica do Resumo), o yearly perde o papel de "evolução mensal" — mas **não são equivalentes** (yearly = FLUXO em ano-calendário fixo; evolution = CONSUMO em horizonte relativo). Neste repo só testes/docs o referenciam. **Não remover** antes de confirmar que o hivvo-web não o consome.
 >
 > ‡ **`DELETE /auth/me` existe no backend desde sempre** (`app/routers/auth.py`, exige `{password}` → `204`) — este doc já o listou como "planejado", o que era falso. O que **não** existe é a exposição na UI: nenhuma tela chama a rota. Ver `PLANO_PERFIL_CONFIG.md` (§ INVENTÁRIO) — a exclusão de conta é feature de UI pendente, não de API.
+
+### 5.1 Importação de fatura e extrato por PDF (29/07/2026)
+
+**Estado: implementada e viva, backend + frontend, nas duas metades.** Design completo e racional das
+decisões em `PLANO_IMPORTACAO.md` — aqui fica só o que existe no código.
+
+**A decisão-pivô:** a interpretação das linhas é feita por **LLM (Gemini pago, chave dedicada
+`GEMINI_IMPORT_API_KEY`)**, não por parser determinístico por banco. Um schema serve todos os bancos; a
+imperfeição é aceitável porque a **tela de revisão obrigatória é a rede** — e é o produto, não o remendo.
+
+**Fluxo (idêntico nas duas metades): `preview` → revisão → `commit`.**
+
+- **`preview` é STATELESS** — nada é persistido, nem o arquivo nem o resultado: processa em memória e
+  descarta. Guardas de entrada: teto de bytes (`IMPORT_MAX_PDF_BYTES`, confirmado lendo `limite+1`, não
+  pelo `Content-Length` que o cliente pode mentir), teto de páginas, **magic bytes `%PDF-`** (não o
+  content-type), e PDF escaneado (sem camada de texto) → 422 explícito. Rate limit por IP e por usuário
+  + cota diária, no preview E no commit.
+- **`commit` é a ÚNICA rota que escreve**, e é **atômica**: tudo numa transação de banco; qualquer falha
+  = rollback total, nunca uma importação meio-gravada.
+- **Idempotência por lote, airtight:** tabelas `import_fatura_lote` e `import_extrato_lote` (ambas com
+  RLS ativada no `upgrade()`). O lote é inserido **PRIMEIRO**, na mesma transação — o `UNIQUE` é o
+  mecanismo, e reimportar levanta `IntegrityError` no flush → **409**. Um `EXISTS` pré-checado não
+  fecharia a corrida de duplo-clique; o `UNIQUE` fecha. Chave da fatura: `(usuário, cartão,
+  competência)`. Chave do extrato: `(usuário, banco normalizado, período de/até)`.
+- **A revisão manda, o servidor confere.** O commit recebe o que o front editou e **revalida tudo**:
+  categoria contra a lista do usuário (desconhecida → "Outros", nunca suja o banco), cartão contra a
+  propriedade (404 — anti-enumeração, nunca 403), competência contra a existência da fatura (422).
+- **PII:** o texto do PDF **nunca** vai para log — só metadados (bytes, páginas, chars, nº de linhas).
+  `ValidationError` do schema é logado por contagem e `loc`, nunca inteiro (ele embute os valores
+  rejeitados). Antes de ir ao Gemini, o texto passa por redação **best-effort** (declaradamente rede, não
+  blindagem) — na fatura com pseudonimização reversível do portador; no extrato sem mapa reverso, cobrindo
+  CPF, agência/conta **por rótulo de contexto** e o nome do titular.
+
+**Fatura — o que é específico.** Reconcilia pelo **total de compras/lançamentos do ciclo**, não pelo
+"total a pagar" (achado do spike: um banco pode imprimir "Total desta fatura 0,00" quando há débito
+automático). Não bater **não é erro HTTP**: devolve 200 sinalizando, e o usuário decide. Materializa
+parcelamento `X/N` como `1/N..N/N`, e **deduplica a parcelada ENTRE importações** por identidade
+recomputada (`cartão + descrição normalizada + total de parcelas + origem implícita + valor da parcela`),
+decidida contra um **snapshot** tirado antes de qualquer insert — sem isso, importar julho e agosto
+duplicaria a parcelada que aparece nas duas faturas, que é o uso central (o Resumo só floresce com vários
+meses). O preview devolve `faturas_passadas` para a revisão confirmar em bloco o pagamento do histórico —
+senão todo mês importado nasce não-pago e o "A pagar" explode.
+
+**Extrato — os três baldes.** Fatura e extrato descrevem o mesmo dinheiro por dois lados: importá-los
+ingênuo **conta em dobro**. Por isso cada linha cai em um de três baldes que **não viram a mesma coisa**
+(`services/import_extrato/persistencia.py`):
+
+| Balde | Vira | Por quê |
+|---|---|---|
+| `receita` | `Transacao(tipo="receita", forma_pagamento="PIX")` na data da linha | entrada por transferência, não "Débito" |
+| `debito` | `Transacao(tipo="despesa", forma_pagamento="Débito")` **sem `cartao_id` e sem `fatura_mes/ano`** | o dinheiro JÁ SAIU: é consumo realizado, nunca dívida de cartão a pagar |
+| `pagamento_fatura` | `PagamentoFatura` — **NÃO é lançamento** | é a quitação das compras que a fatura já capturou |
+
+Mais o **`rendimento`**, que não é linha: vem do RESUMO do extrato (o Nubank imprime "Rendimento
+líquido" só ali) e vira receita da categoria padrão **"Rendimentos"** na data final do período. O
+preview roda um **balance walk** (`saldo_inicial + rendimento + Σreceita − Σdébito − Σpagamento =
+saldo_final`) em `Decimal` como guarda-costas determinístico, e um **enriquecimento por linha**
+(categoria sugerida, fatura candidata para o pagamento, flag de recorrência) que só LÊ o banco.
+
+**A armadilha do salário duplicado** (e o padrão que ela fixou): uma receita do extrato que casa com uma
+recorrência vigente (≈valor + ≈dia) já é contada pela projeção — importá-la duplicaria o salário. Então
+ela nasce **desmarcada**. O ponto de arquitetura é onde a regra mora: o `importar` de cada linha é
+**TRI-ESTADO** — ausente significa "não decidido", e o servidor **recomputa o casamento** com o mesmo
+matcher do preview. O default de segurança não pode depender de o front ter mandado a flag certa.
+
+**A costura com o #9 — real vence assumido, nas duas ordens.** O extrato **prova** quais faturas foram
+pagas, com valor e data REAIS. O commit de extrato sempre grava `valor_pago` = valor real da linha e
+`data_pagamento` = data real; o commit de FATURA, que só conhece o total ASSUMIDO, **preserva**
+competência que já tem `pago=True` (e reporta em `faturas_ja_confirmadas`). Funciona independente de qual
+import rodar primeiro. Duas linhas do mesmo extrato para a mesma fatura **somam** num único
+`PagamentoFatura` (pagar em duas transferências é real), com a data mais recente. Resíduo conhecido:
+sem coluna de proveniência, dois extratos de períodos diferentes sobrescrevem em vez de somar
+(PENDÊNCIAS #32).
+
+### Cobertura de pagamento — `paga` vs `paga_parcial` (#9)
+
+`PagamentoFatura.valor_pago` guarda **quanto** foi pago; o status é **derivado, nunca materializado**
+(`status_fatura` em `services/faturas.py`): `pago=True` e `valor_pago >= total` atual → **`paga`**;
+`valor_pago < total` → **`paga_parcial`**. A consequência é a que resolve o furo da compra retroativa:
+lançar uma compra numa fatura já paga faz o total crescer → a fatura vira `paga_parcial` sozinha, e a
+diferença `total − valor_pago` volta ao **"A pagar"** das estatísticas — sem nenhum write. Remover a
+compra a devolve para `paga`, também sem write. `valor_pago` NULL com `pago=True` (que o CHECK impede)
+degradaria seguro para `paga`, nunca para uma parcial falsa.
+
+### Estorno — o terceiro tipo de transação
+
+`tipo` aceita **`"receita" | "despesa" | "estorno"`** (CHECK no banco). Estorno é uma compra devolvida:
+guardado com **valor POSITIVO** (o `CHECK valor > 0` continua valendo) e o **sinal é aplicado na
+leitura** — ele SUBTRAI. Não é receita (não é renda nova) nem despesa. Compõe a fatura **abatendo**
+(fonte única `valor_avulsa_liquido` em `faturas.py`) e as agregações de consumo o netam. Duas exceções
+deliberadas: "maior despesa" do mês é BRUTA (um estorno nunca é a maior despesa) e o a_pagar clampa por
+fatura (fatura net-negativa não vira crédito). Estorno **nunca é parcelado** — barrado no POST e no PUT.
+
+### Validação fechamento × vencimento do cartão
+
+Com `mes_offset_vencimento = 0` ("mesmo mês"), o vencimento tem que ser **estritamente depois** do
+fechamento — uma fatura não pode vencer antes de fechar. Com offset ≥ 1 ("mês seguinte") o mês virou
+entre fechar e vencer, então qualquer par vale. Regra única em `schemas/card.py`
+(`fechamento_vencimento_coerentes`), aplicada no create e no update; o update é **parcial**, então
+mescla o que veio com o que está no cartão e valida o RESULTADO — mas **só quando toca algum campo da
+regra**, para que editar o nome de um cartão pré-existente inválido não trave. Espelhada no form do
+`hivvo-web` (`CardFormModal`, `superRefine`) com o mesmo carve-out.
 
 ### Decisões de domínio (fixas)
 
@@ -334,6 +453,16 @@ O backend passou por duas auditorias somente-leitura:
 **Regra de privacidade (dura, idêntica nos dois):** nunca enviar ao Sentry valor/descrição de transação, conteúdo de chat, senha, token ou cookie — só metadados. A defesa é em três camadas (no-op sem DSN → cortar na origem → refiltro no `beforeSend`), com **deny-all** onde não dá para saber se o dado é sensível e allowlist onde dá. Ao mexer em qualquer um dos dois arquivos, mantenha o espelho.
 
 **Pendente (ops, não código):** setar `SENTRY_DSN` nos ambientes de deploy.
+
+### Migrations no deploy — `preDeployCommand` (17/07/2026)
+
+`railway.json` declara `deploy.preDeployCommand: "alembic upgrade head"` — o Railway roda isso **uma vez
+por deploy, antes de a versão nova entrar no ar**. Antes disso o `Procfile` tinha
+`release: alembic upgrade head`, que é **convenção do Heroku e o Railway ignora em silêncio**: o banco de
+produção driftou do código e a `import_fatura_lote` simplesmente não nasceu. A linha `release:` foi
+removida do `Procfile` para não haver dois mecanismos aparentes, um deles morto. **Regra:** migration
+nova entra em produção pelo `preDeployCommand` — não há passo manual, e não se deve reintroduzir
+`release:`.
 
 ### Arquitetura-alvo (pós-deploy)
 

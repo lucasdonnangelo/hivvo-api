@@ -1,10 +1,12 @@
 # Hivvo — Design da Importação de Fatura/Extrato
 
-> Status: **DESENHO FECHADO (17/07/2026).**
-> Decisões travadas em revisão com o Lucas. O que resta aberto está marcado "Ainda aberto".
+> Status: **FEATURE COMPLETA (29/07/2026)** — as duas metades (fatura e extrato) entregues ponta a
+> ponta, backend + frontend. O desenho abaixo fica como está: é o racional que produziu o código, e
+> nenhuma decisão travada foi revertida na implementação. O que mudou desta data para trás é só
+> **estado/progresso**.
 >
-> **SEQUÊNCIA DE ENTREGA:** fatura primeiro → validou → extrato em seguida. Fatura e extrato são
-> entradas independentes que se reconciliam numa única costura: o pagamento da fatura.
+> **SEQUÊNCIA DE ENTREGA (cumprida):** fatura primeiro → validou → extrato em seguida. Fatura e extrato
+> são entradas independentes que se reconciliam numa única costura: o pagamento da fatura.
 >
 > **VALIDAÇÃO CONCLUÍDA:** spike em 2 faturas reais (Nubank, Itaú) no Gemini free. Extração impecável.
 > Rota LLM confirmada. Ver "VALIDAÇÃO DO SPIKE".
@@ -17,6 +19,21 @@
 > - ✅ **Ajuste no preview** — `faturas_passadas` (competências passadas que o import cria, pra revisão).
 > - ✅ **Frontend** — a tela de revisão (wizard cartão+upload → preview → revisão → faturas passadas → commit).
 > - ✅ **Validado E2E em produção** (preview + commit em conta descartável).
+>
+> **IMPORTAÇÃO DE EXTRATO — COMPLETA (29/07/2026), backend + frontend:**
+> - ✅ **Batch 1** — `POST /import/extrato/preview` stateless (extração + redação de PII +
+>   balance walk). Commit `5ce8f09`.
+> - ✅ **Batch 2** — enriquecimento por linha do preview: categoria sugerida, casamento
+>   pagamento↔fatura, flag de recorrência. Commit `0bd9802`.
+> - ✅ **Batch 3** — `POST /import/extrato/commit`: materialização dos 3 baldes + rendimento,
+>   idempotência atômica (`import_extrato_lote`) e prevalência do #9. Commit `bdd635c`.
+> - ✅ **Frontend** — tela de revisão dos 3 baldes (upload → revisão → recibo). Commit `3357d35`
+>   (`hivvo-web`).
+> - ✅ **Os dois achados do spike foram DOBRADOS no produto** (não ficaram no relatório): o
+>   rendimento virou receita "Rendimentos"; a redação de PII de terceiro roda antes do Gemini.
+> - Refinamentos abertos (não bloqueiam): PENDÊNCIAS **#35** (CPF mascarado do banco escapa da
+>   redação), **#36** (a revisão mostra a descrição REDIGIDA, não a original), **#37** (detectar
+>   PIX vs TED pela descrição em vez de fixar "PIX").
 >
 > **DEPENDÊNCIAS / SINERGIAS (mesma leva):**
 > - **#9 cobertura de pagamento:** `PagamentoFatura.valor_pago`; o import grava `valor_pago` = total
@@ -180,13 +197,13 @@ semântica do banco de erro do LLM. Não bate → sinaliza na revisão, nunca gr
 
 ---
 
-## IMPORTAÇÃO DE EXTRATO (fatia ATUAL — fatura já validada e viva; extrato é o próximo)
+## IMPORTAÇÃO DE EXTRATO (ENTREGUE — o desenho abaixo é o que virou código)
 
 Fatura e extrato descrevem o **mesmo dinheiro por dois lados** — importá-los ingênuo **conta em dobro**.
 A linha "Pagamento fatura Nubank -R$500" no extrato **não é gasto novo** — é a quitação das compras que
 a fatura já capturou.
 
-### Achados do spike de extrato (Nubank conta real) — dobrados no design
+### Achados do spike de extrato (Nubank conta real) — dobrados no design E no código
 Classificação impecável (7 receita + 1 pagamento_fatura). O pagamento_fatura de R$206,06 casou com a
 fatura Nubank importada — sinergia #9 validada ao vivo. O balance-walk pegou dois achados:
 
@@ -200,6 +217,17 @@ fatura Nubank importada — sinergia #9 validada ao vivo. O balance-walk pegou d
   regex-confiável (CPF, agência, conta) ANTES de enviar ao Gemini** — nada disso é necessário pra
   classificar. Nome de contraparte é best-effort. E o **#4 ganha uma linha** reconhecendo que o extrato
   envia dado de terceiro ao subprocessador (ângulo distinto do dado do titular).
+
+**Como os dois ficaram no código** (o que separa este plano de um relatório de spike):
+- Rendimento: `CATEGORIA_RENDIMENTO = "Rendimentos"` em `services/import_extrato/persistencia.py`,
+  materializado na data FINAL do período (é do ciclo, não de um dia) e só se `> 0`; a categoria foi
+  promovida a **padrão do produto** (`services/categorias.CATEGORIAS_PADRAO`) para o picker conhecê-la
+  e `casar_categoria` não a rebaixar para "Outros". Entra no balance walk como no desenho.
+- Redação: `services/import_extrato/redacao.py`, chamada no boundary **antes** de `gemini.extrair_extrato`.
+  Sem mapa reverso (o extrato não pseudonimiza portador, ao contrário da fatura). Cobre CPF (formatado
+  e corrido), agência/conta **por rótulo de contexto** (nunca "qualquer número", que comeria valores e
+  datas) e o nome do titular. O nome de contraparte segue como resíduo DOCUMENTADO — decisão, não
+  esquecimento. Buracos conhecidos que sobraram: PENDÊNCIAS #35 e #36.
 
 ### A regra: extrato e fatura se RECONCILIAM, não se somam
 Toda linha do extrato cai em um de três baldes:
@@ -240,7 +268,8 @@ Dobra a superfície (receita, débito, boleto, PIX, TED, casamento de pagamento)
 1. ✅ **SPIKE** — extração + classificação em três baldes, isolado, num extrato real Nubank anonimizado.
    Valida a peça mais nova (a classificação) antes de wirar produção — como o spike da fatura.
 2. **Produção:** ✅ Batch 1 (preview stateless) → ✅ Batch 2 (enriquecimento: categoria sugerida,
-   casamento de fatura, flag de recorrência) → ✅ **Batch 3 (commit)** → tela de revisão (três baldes).
+   casamento de fatura, flag de recorrência) → ✅ Batch 3 (commit) → ✅ **tela de revisão (três
+   baldes)**. **Fatia fechada.**
 
 ### Batch 3 — o COMMIT (feito): decisões travadas
 - **Materialização:** `receita` → `Transacao(tipo="receita")`; `debito` → `Transacao(tipo="despesa",
@@ -262,6 +291,27 @@ Dobra a superfície (receita, débito, boleto, PIX, TED, casamento de pagamento)
   do usuário; cartão contra a propriedade (404); competência contra `fatura_existe` (422 "importe a
   fatura" — `PagamentoFatura` em competência vazia é fantasma invisível na UI).
 
+### A TELA DE REVISÃO dos três baldes (feita — `hivvo-web`)
+
+Fecha o fluxo do extrato para o usuário. Wizard de **três** passos (o extrato não tem "faturas
+passadas"): `upload → revisão → recibo` (`pages/Import/ImportExtratoPage.tsx`, com
+`extrato/StepUpload|StepRevisao|StepRecibo.tsx` + `extrato/helpers.ts`). Estado do wizard em
+`useReducer` local, **não** Zustand nem TanStack — o extrato e as decisões não cruzam navegação nem
+persistem; RESET é uma ação. Mesmo molde do `ImportFaturaPage`.
+
+Decisões da tela que importam para o contrato:
+- **Join linha↔enriquecimento pelo `indice` EXPLÍCITO, nunca por posição** — o array de enriquecimento
+  pode vir menor, fora de ordem ou vazio sem desalinhar nada.
+- **Os defaults nascem do backend, e o backend os recomputa.** Receita flagada como recorrência nasce
+  DESMARCADA (a armadilha do salário duplicado), `sem_match` e balde desconhecido ficam de fora. Mas o
+  `importar` viaja TRI-ESTADO: o que a tela não decide, o servidor decide de novo — o default de
+  segurança não pode depender de o front ter mandado a flag certa.
+- **Fallback neutro por balde** (`presentBalde` em `extrato/helpers.ts`) — mesmo molde do `presentTipo`
+  e do `InvoiceStatusBadge`: um balde que a API mande e o front não conheça vira selo neutro, sem sinal
+  e fora do import, em vez de quebrar a tela.
+- **Período digitável** quando o extrato não o imprime — o commit o exige (é a chave do lote), então a
+  tela oferece o campo em vez de deixar o 422 sem saída.
+
 ---
 
 ## PRÉ-REQUISITOS DE LANÇAMENTO — TODOS FECHADOS
@@ -273,24 +323,31 @@ Dobra a superfície (receita, débito, boleto, PIX, TED, casamento de pagamento)
 
 ---
 
-## PRÓXIMO PASSO
-Importação de FATURA: **completa, validada E2E, VIVA em produção.** #9 e estorno entregues na mesma leva.
+## ESTADO FINAL E PRÓXIMO PASSO
 
-**EXTRATO — backend COMPLETO:** spike ✅ → preview ✅ (Batch 1) → enriquecimento ✅ (Batch 2) →
-commit ✅ (Batch 3, a primeira escrita: três baldes + rendimento, atômico e idempotente).
+**A FEATURE #5 ESTÁ FECHADA.** As duas metades existem para o usuário:
 
-1. **Próximo: a TELA DE REVISÃO dos três baldes** (`hivvo-web`) — é o que falta para o fluxo do
-   extrato existir para o usuário. O backend já entrega tudo que ela precisa: o preview traz a
-   proposta por linha (categoria sugerida, fatura candidata, flag de recorrência) e o commit recebe
-   as decisões (`importar` por linha, categoria, cartão+competência confirmados) e devolve o recibo.
-2. **Validar E2E em produção** com extrato real (como foi com a fatura), incluindo o caso que junta
-   as duas pontas: importar a fatura e o extrato do mesmo mês e ver a fatura virar `paga_parcial`
-   com o valor REAL.
-3. **Depois do extrato:** retenção — notificações (#6).
+| | Backend | Frontend |
+|---|---|---|
+| **Fatura** | preview ✅ · commit ✅ · multi-fatura/dedup ✅ · `faturas_passadas` ✅ | wizard de 4 passos ✅ |
+| **Extrato** | preview ✅ · enriquecimento ✅ · commit (3 baldes + rendimento) ✅ | wizard de 3 passos ✅ |
 
-**Follow-ups menores registrados:** "faltam R$X" nas lentes de lista/competência (expor `valor_pago`);
-retrofitar auto-categoria na FATURA (hoje default "Outros"); netting de estorno contra a compra-mãe;
-TOCTOU cross-competência (raro); dívida dos `datetime.utcnow()`.
+Na mesma leva vieram **#9** (cobertura de pagamento, `valor_pago` + `paga_parcial` derivado) e o
+**estorno** (`tipo="estorno"`, valor positivo que ABATE nas agregações e na composição da fatura) — não
+são acessórios da importação: são o que faz o dado importado assentar certo no resto do produto.
+
+**Próximo passo — fora desta feature:** retenção, **#6 notificações**. Ver `PENDENCIAS_PRIORIZADAS.md`
+§SUGESTÃO DE SEQUÊNCIA.
+
+**Refinamentos do extrato (P3, registrados como pendências — não bloqueiam nada):** **#35** redação de
+CPF mascarado do banco; **#36** a revisão mostra a descrição REDIGIDA em vez da original; **#37**
+detectar PIX vs TED pela descrição em vez de fixar `"PIX"`.
+
+**Follow-ups menores registrados:** "faltam R$X" nas lentes de lista/competência (o DETALHE já mostra —
+falta nas outras); retrofitar auto-categoria na FATURA (hoje default "Outros"); netting de estorno
+contra a compra-mãe; TOCTOU cross-competência (raro); dívida dos `datetime.utcnow()`; e as pendências
+estruturais que a feature deixou: **#31** (encanamento Gemini duplicado), **#32** (proveniência do
+`PagamentoFatura`), **#33** (idempotência dependente do nome do banco extraído pelo LLM).
 
 **Áreas novas a discutir (antes da próxima sessão):** guia de onboarding pra usuário novo; área de
 feedback (anônimo ou não).

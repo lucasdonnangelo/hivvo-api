@@ -1,0 +1,37 @@
+[
+  {
+    "titulo": "identidade de parcelada usa a descricao CRUA (o estado que duplicava a parcela)",
+    "arquivo": "app/services/import_fatura/descricao.py",
+    "de": "    return \" \".join(limpar_rabo_do_emissor(descricao).split()).casefold()",
+    "para": "    return \" \".join(descricao.split()).casefold()",
+    "teste": "tests/routers/test_import_fatura_rabo_emissor.py::test_limpa_depois_com_rabo_nao_duplica"
+  },
+  {
+    "titulo": "idem, na ordem inversa dos meses",
+    "arquivo": "app/services/import_fatura/descricao.py",
+    "de": "    return \" \".join(limpar_rabo_do_emissor(descricao).split()).casefold()",
+    "para": "    return \" \".join(descricao.split()).casefold()",
+    "teste": "tests/routers/test_import_fatura_rabo_emissor.py::test_com_rabo_depois_limpa_nao_duplica"
+  },
+  {
+    "titulo": "camada 1 casa historico com a descricao CRUA (perde o aprendizado)",
+    "arquivo": "app/services/import_fatura/descricao.py",
+    "de": "    return \" \".join(limpar_rabo_do_emissor(descricao).split()).casefold()",
+    "para": "    return \" \".join(descricao.split()).casefold()",
+    "teste": "tests/routers/test_import_fatura_rabo_emissor.py::test_historico_casa_apesar_do_rabo"
+  },
+  {
+    "titulo": "limpeza corta a ULTIMA palavra maiuscula (sem exigir o ponto) — come lojista legitimo",
+    "arquivo": "app/services/import_fatura/descricao.py",
+    "de": "r\"\\s+[A-ZÀ-Ü]{4,}\\.[A-Za-zÀ-ü]*\\s*$\"",
+    "para": "r\"\\s+[A-ZÀ-Ü][A-Za-zÀ-ü]*\\.?[A-Za-zÀ-ü]*\\s*$\"",
+    "teste": "tests/routers/test_import_fatura_rabo_emissor.py::test_nao_come_descricao_legitima"
+  },
+  {
+    "titulo": "limpeza colapsa lojistas distintos (ignora tudo antes do rabo)",
+    "arquivo": "app/services/import_fatura/descricao.py",
+    "de": "    return \" \".join(limpar_rabo_do_emissor(descricao).split()).casefold()",
+    "para": "    return limpar_rabo_do_emissor(descricao).split(\" \")[0].casefold()",
+    "teste": "tests/routers/test_import_fatura_rabo_emissor.py::test_lojistas_diferentes_continuam_diferentes"
+  }
+]

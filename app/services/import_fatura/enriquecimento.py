@@ -58,6 +58,7 @@ from app.services.categorias import (
     nomes_categorias_do_usuario,
     validar_nome_categoria,
 )
+from app.services.import_fatura.descricao import chave_descricao
 
 # Só compra e IOF materializam (persistencia._TIPOS_GASTO). Repetido aqui em vez
 # de importado para não criar ciclo entre os dois módulos do pacote.
@@ -78,12 +79,16 @@ _TIPOS_DB_POR_CATEGORIA = {
 
 
 def _norm_descricao(descricao: str) -> str:
-    """Descrição canônica para o match do histórico: colapsa espaços e casefold.
+    """Descrição canônica para o match do histórico — a MESMA chave da dedup de
+    parcelada (`descricao.chave_descricao`), e pela mesma razão.
 
-    A MESMA de `persistencia._norm_descricao`, pela mesma razão: o drift real
-    entre faturas é caixa/espaço, não acento.
+    O rabo " CATEGORIA.CIDADE" que o emissor cola (#40) entra e sai da extração
+    sozinho: sem tirá-lo, "SONDAJACANA" no histórico não casaria
+    "SONDAJACANA ALIMENTAÇÃO.SAOPAULO" na fatura nova e a camada 1 perderia o
+    aprendizado. Aqui o dano é fraco (sugestão pior); na identidade de parcela é
+    corrupção — mas é o mesmo drift, então é a mesma função.
     """
-    return " ".join(descricao.split()).casefold()
+    return chave_descricao(descricao)
 
 
 def categoria_do_historico(

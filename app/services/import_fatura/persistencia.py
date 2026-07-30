@@ -28,6 +28,7 @@ from app.schemas.import_fatura import (
     TransacaoCommit,
 )
 from app.services.faturas import _competencia_menos, vencimento_avulsa
+from app.services.import_fatura.descricao import chave_descricao
 
 # Proveniência: distingue o que veio do import (filtro/UX). `origem` é string
 # livre no banco (sem CHECK) — valor novo não precisa de migration.
@@ -69,18 +70,16 @@ def ancora_competencia(fatura: FaturaExtraida) -> tuple[int, int]:
 
 _CENTS = Decimal("0.01")
 
-# Chave estável de uma parcelada: (descrição normalizada, total, origem
-# implícita (mes, ano), valor da parcela em centavos). A MESMA compra tem a
-# MESMA chave em qualquer fatura/ordem de import. O cartão fica implícito
-# (o snapshot já é por cartão).
+# Chave estável de uma parcelada: (descrição canônica, total, origem implícita
+# (mes, ano), valor da parcela em centavos). A MESMA compra tem a MESMA chave em
+# qualquer fatura/ordem de import. O cartão fica implícito (o snapshot já é por
+# cartão).
+#
+# "Canônica" carrega peso (#40): a descrição CRUA não serve como chave porque o
+# emissor cola " CATEGORIA.CIDADE" nela e a extração leva esse rabo de forma
+# não-determinística — duas importações da MESMA parcelada não casariam e o
+# cronograma seria duplicado. Ver services/import_fatura/descricao.py.
 Identidade = tuple[str, int, int, int, str]
-
-
-def _norm_descricao(descricao: str) -> str:
-    """Descrição canônica para o match: colapsa espaços e casefold. NÃO tira
-    acento — o mesmo lojista não troca acento entre faturas; o drift real é
-    caixa/espaço."""
-    return " ".join(descricao.split()).casefold()
 
 
 def _identidade_parcelada(
@@ -89,7 +88,7 @@ def _identidade_parcelada(
     """Valor entra na chave: parceladas de mesma desc/total/origem mas valor
     distinto são compras DISTINTAS (desempate por valor)."""
     valor_cents = str(Decimal(str(valor_parcela)).quantize(_CENTS))
-    return (_norm_descricao(descricao), total, mes, ano, valor_cents)
+    return (chave_descricao(descricao), total, mes, ano, valor_cents)
 
 
 def _snapshot_identidades_parcelada(

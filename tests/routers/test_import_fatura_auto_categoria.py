@@ -346,6 +346,24 @@ def test_commit_sem_categoria_recomputa_no_servidor(
     assert tx.categoria == "Alimentação"
 
 
+def test_commit_com_categoria_null_explicito_recomputa(
+    session, as_user, users, cartao, extracao
+):
+    """`"categoria": null` é o que o FRONT manda de verdade na linha intocada.
+
+    Os outros testes OMITEM a chave; o `buildPayload` do hivvo-web a envia
+    explicitamente nula (`state.categorias[idx] ?? null`). Para o Pydantic é o
+    mesmo `None`, mas o formato do fio merece um teste próprio — é ele que
+    trafega em produção.
+    """
+    fatura = _fatura_com(["IFD*DUBARCOMEDORIAC"])
+    fatura["transacoes"][0]["categoria"] = None
+
+    assert _commit(as_user(users[0]), cartao.id, fatura).status_code == 200
+
+    assert session.exec(select(Transacao)).one().categoria == "Alimentação"
+
+
 def test_commit_com_categoria_valida_e_preservada(
     session, as_user, users, cartao, extracao
 ):

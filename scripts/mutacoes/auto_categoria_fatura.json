@@ -1,0 +1,51 @@
+[
+  {
+    "titulo": "camada 1 aprende de 'Outros' (remove o filtro do WHERE)",
+    "arquivo": "app/services/import_fatura/enriquecimento.py",
+    "de": "            TransacaoDB.categoria != CATEGORIA_NEUTRA,\n",
+    "para": "",
+    "teste": "tests/routers/test_import_fatura_auto_categoria.py::test_camada_1_nunca_aprende_de_outros"
+  },
+  {
+    "titulo": "camada 1 ignora o TIPO (historico de receita decide compra de cartao)",
+    "arquivo": "app/services/import_fatura/enriquecimento.py",
+    "de": "            col(TransacaoDB.tipo).in_(_TIPOS_DB_POR_CATEGORIA[tipo_categoria]),\n",
+    "para": "",
+    "teste": "tests/routers/test_import_fatura_auto_categoria.py::test_camada_1_respeita_o_tipo"
+  },
+  {
+    "titulo": "empate desempatado por acaso (remove o corte)",
+    "arquivo": "app/services/import_fatura/enriquecimento.py",
+    "de": "        if len(ranking) > 1 and ranking[0][1] == ranking[1][1]:\n            continue  # empate: não desempata por acaso — desce para a camada 2\n",
+    "para": "",
+    "teste": "tests/routers/test_import_fatura_auto_categoria.py::test_empate_cai_para_a_camada_2"
+  },
+  {
+    "titulo": "commit recomputa so pela REGRA (ignora o historico)",
+    "arquivo": "app/services/import_fatura/enriquecimento.py",
+    "de": "        aprendida = historico.get(_norm_descricao(descricao))\n",
+    "para": "        aprendida = None\n",
+    "teste": "tests/routers/test_import_fatura_auto_categoria.py::test_commit_usa_o_historico_e_nao_so_a_regra"
+  },
+  {
+    "titulo": "enriquecimento montado por POSICAO (nao por indice explicito)",
+    "arquivo": "app/services/import_fatura/enriquecimento.py",
+    "de": "            indice=i,\n            categoria_sugerida=sugestoes[i][0],\n            origem_sugestao=sugestoes[i][1],\n        )\n        for i in indices\n",
+    "para": "            indice=posicao,\n            categoria_sugerida=sugestoes[i][0],\n            origem_sugestao=sugestoes[i][1],\n        )\n        for posicao, i in enumerate(indices)\n",
+    "teste": "tests/routers/test_import_fatura_auto_categoria.py::test_so_linha_materializavel_recebe_item"
+  },
+  {
+    "titulo": "commit grava a categoria do cliente SEM revalidar (o estado de antes deste batch)",
+    "arquivo": "app/services/import_fatura/enriquecimento.py",
+    "de": "            resolvidas[i] = casar_categoria(crua, nomes)",
+    "para": "            resolvidas[i] = crua",
+    "teste": "tests/routers/test_import_fatura_auto_categoria.py::test_commit_com_categoria_desconhecida_cai_em_outros"
+  },
+  {
+    "titulo": "keyword de lojista promovida na frente do substring (sequestra categoria customizada)",
+    "arquivo": "app/services/categorias.py",
+    "de": "    for nome in nomes:\n        if nome.casefold() in entrada.casefold():\n            return nome, \"substring\"\n\n    normalizada = _normalizar(entrada)",
+    "para": "    normalizada = _normalizar(entrada)",
+    "teste": "tests/services/test_categorias_regras.py::test_substring_vence_keyword"
+  }
+]

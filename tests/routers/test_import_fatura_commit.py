@@ -111,7 +111,10 @@ def test_avulsas_caem_na_ancora(session, as_user, users, cartoes):
         assert a.tipo == "despesa"
         assert a.forma_pagamento == "Crédito"
         assert a.origem == "importacao"
-        assert a.categoria == "Outros"  # default do request (ausente na fatura)
+        # Categoria ausente no request → o servidor recomputou a auto-categoria
+        # e nenhuma camada teve o que dizer ("Blacktag", "Anthropic",
+        # "Cloudflare" não casam regra nenhuma e o usuário não tem histórico).
+        assert a.categoria == "Outros"
 
 
 def test_pagamento_e_ajuste_nao_viram_lancamento(session, as_user, users, cartoes):
@@ -151,7 +154,10 @@ def test_estorno_materializa_e_aparece_no_recibo(session, as_user, users, cartoe
     assert estorno.parcelado is False
     assert estorno.forma_pagamento == "Crédito"
     assert estorno.origem == "importacao"
-    assert estorno.categoria == "Outros"  # default do request
+    # Sem categoria no request (a tela não dá seletor ao estorno) e sem regra
+    # que case a descrição → o servidor cai no neutro. Ver
+    # test_estorno_recebe_categoria_recomputada para o caso em que ele acha.
+    assert estorno.categoria == "Outros"
 
 
 def test_estorno_abate_o_total_da_fatura_importada(session, as_user, users, cartoes):

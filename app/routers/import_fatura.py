@@ -12,6 +12,7 @@ HTTP: devolve 200 com bate=false e o cliente decide.
 """
 
 import logging
+from collections import Counter
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import ValidationError
@@ -36,6 +37,10 @@ from app.schemas.import_fatura import (
 )
 from app.services.faturas import total_fatura_cartao
 from app.services.import_fatura import extracao_pdf, gemini, redacao
+from app.services.import_fatura.enriquecimento import (
+    enriquecer_fatura,
+    resolver_categorias,
+)
 from app.services.import_fatura.persistencia import (
     ancora_competencia,
     competencias_passadas_com_lancamentos,
@@ -178,9 +183,19 @@ def preview_fatura(
     redacao.restaurar_finais(fatura, mapa_reverso)
     rec = reconciliar(fatura, TOLERANCIA)
 
+    # Auto-categoria: histórico do usuário -> regra de lojista -> nada. Só
+    # LEITURA (o preview segue stateless) e sem chamada ao modelo — o custo é
+    # de 2 queries, invisível ao lado da extração.
+    enriquecimento = enriquecer_fatura(session, current_user.id, fatura)
+
+    # Contadores por camada, nunca descrição/valor: é o que diz depois qual
+    # camada está carregando o peso.
+    por_origem = Counter(e.origem_sugestao or "nenhuma" for e in enriquecimento)
     logger.info(
-        "[import] preview: cartao=%s bytes=%d paginas=%d chars=%d transacoes=%d bate=%s",
+        "[import] preview: cartao=%s bytes=%d paginas=%d chars=%d transacoes=%d "
+        "bate=%s categoria_historico=%d categoria_regra=%d categoria_nenhuma=%d",
         cartao.id, len(dados), paginas, len(texto), len(fatura.transacoes), rec.bate,
+        por_origem["historico"], por_origem["regra"], por_origem["nenhuma"],
     )
     return FaturaPreviewResponse(
         cartao_id=cartao.id,
@@ -196,6 +211,7 @@ def preview_fatura(
             bate_secundario=rec.bate_secundario,
         ),
         faturas_passadas=_faturas_passadas(session, current_user.id, cartao.id, fatura),
+        enriquecimento=enriquecimento,
     )
 
 
@@ -249,7 +265,11 @@ def commit_fatura(
     # lançamentos — nada de fatura meio-gravada. O rollback é explícito porque
     # nos testes o get_session é sobrescrito e não faz o unwind sozinho.
     try:
-        res = materializar_fatura(session, current_user.id, cartao, fatura)
+        # A tela PROPÕE, o servidor DECIDE de novo: categoria ausente = o
+        # servidor recomputa a própria sugestão; presente = revalidada contra as
+        # categorias DO USUÁRIO. Nunca grava a string do request direto.
+        categorias = resolver_categorias(session, current_user.id, fatura)
+        res = materializar_fatura(session, current_user.id, cartao, fatura, categorias)
 
         # Faturas passadas marcadas pagas: REVALIDA no servidor que cada
         # competência é passado REAL deste cartão (tem lançamento EXISTENTE

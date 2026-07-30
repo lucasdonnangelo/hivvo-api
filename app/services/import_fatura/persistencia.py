@@ -199,7 +199,11 @@ def competencias_passadas_da_fatura(fatura: FaturaExtraida) -> set[tuple[int, in
 
 
 def materializar_fatura(
-    session: Session, usuario_id: int, card: Cartao, fatura: FaturaCommit
+    session: Session,
+    usuario_id: int,
+    card: Cartao,
+    fatura: FaturaCommit,
+    categorias: dict[int, str],
 ) -> ResultadoMaterializacao:
     """Cria transações/parcelas da fatura NA SESSÃO (sem commit).
 
@@ -210,6 +214,12 @@ def materializar_fatura(
     - estorno (compra negativa) → avulsa tipo="estorno" com valor POSITIVO na
       âncora (as agregações subtraem), contado em estornos_importados. Nunca
       parcela — t.parcela, se vier numa linha negativa, é ignorado.
+
+    `categorias` chega RESOLVIDO do boundary ({indice: categoria válida} —
+    enriquecimento.resolver_categorias), nunca lido de `t.categoria` direto: o
+    request pode não ter decidido (tri-estado) e pode ter mandado nome que não
+    existe. Mesma divisão de trabalho do commit de extrato, onde
+    `materializar_extrato` também recebe as categorias prontas.
     """
     ancora_mes, ancora_ano = ancora_competencia(fatura)
     res = ResultadoMaterializacao()
@@ -219,30 +229,32 @@ def materializar_fatura(
     # ambas materializam (contar a mais é corrigível na revisão; a menos, não).
     snapshot = _snapshot_identidades_parcelada(session, usuario_id, card.id)
 
-    for t in fatura.transacoes:
+    for indice, t in enumerate(fatura.transacoes):
         if t.tipo not in _TIPOS_GASTO:
             continue
         valor = Decimal(t.valor_brl)
         if valor == 0:
             continue  # linha degenerada, sai calado
+        categoria = categorias.get(indice, "Outros")
         if valor < 0:
             # Estorno: materializa como tipo="estorno" (valor positivo) na
             # âncora — mesma derivação de uma avulsa de crédito.
             _materializar_avulsa(
-                session, usuario_id, card, t, -valor, ancora_mes, ancora_ano,
-                res, tipo="estorno",
+                session, usuario_id, card, t, categoria, -valor, ancora_mes,
+                ancora_ano, res, tipo="estorno",
             )
             res.estornos_importados += 1
             continue
 
         if t.parcela is not None:
             _materializar_parcelada(
-                session, usuario_id, card, t, valor, ancora_mes, ancora_ano,
-                snapshot, res,
+                session, usuario_id, card, t, categoria, valor, ancora_mes,
+                ancora_ano, snapshot, res,
             )
         else:
             _materializar_avulsa(
-                session, usuario_id, card, t, valor, ancora_mes, ancora_ano, res
+                session, usuario_id, card, t, categoria, valor, ancora_mes,
+                ancora_ano, res,
             )
 
     return res
@@ -253,6 +265,7 @@ def _materializar_avulsa(
     usuario_id: int,
     card: Cartao,
     t: TransacaoCommit,
+    categoria: str,
     valor: Decimal,
     ancora_mes: int,
     ancora_ano: int,
@@ -266,7 +279,7 @@ def _materializar_avulsa(
             data=dt.date.fromisoformat(t.data),
             descricao=t.descricao,
             valor=valor,
-            categoria=t.categoria,
+            categoria=categoria,
             forma_pagamento="Crédito",
             tipo_gasto="Variável",
             origem=ORIGEM_IMPORT,
@@ -285,6 +298,7 @@ def _materializar_parcelada(
     usuario_id: int,
     card: Cartao,
     t: TransacaoCommit,
+    categoria: str,
     valor_parcela: Decimal,
     ancora_mes: int,
     ancora_ano: int,
@@ -311,7 +325,7 @@ def _materializar_parcelada(
         data=dt.date.fromisoformat(t.data),  # origem back-datada (data impressa)
         descricao=t.descricao,
         valor=valor_parcela * n,  # parcelas iguais = valor mostrado × N
-        categoria=t.categoria,
+        categoria=categoria,
         forma_pagamento="Crédito",
         tipo_gasto="Variável",
         origem=ORIGEM_IMPORT,
@@ -342,7 +356,7 @@ def _materializar_parcelada(
                 # fim do mês (vencimento_avulsa nunca retorna None).
                 data_vencimento=vencimento_avulsa(card, mes_j, ano_j),
                 descricao=f"{t.descricao} ({j}/{n})",
-                categoria=t.categoria,
+                categoria=categoria,
                 cartao_id=card.id,
                 fatura_mes=mes_j,
                 fatura_ano=ano_j,

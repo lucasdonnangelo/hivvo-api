@@ -21,6 +21,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -169,6 +170,30 @@ class FaturaPassadaOut(BaseModel):
     ja_paga: bool
 
 
+class EnriquecimentoFaturaLinha(BaseModel):
+    """Auto-categoria de UMA linha, endereçada por `indice` em fatura.transacoes.
+
+    Vive FORA de Transacao de propósito, exatamente como o EnriquecimentoLinha do
+    extrato vive fora de LinhaExtrato: `FaturaExtraida` é o response_schema do
+    Gemini de EXTRAÇÃO, e engordá-la faria o modelo tentar preencher o
+    enriquecimento. Array paralelo, alinhado por índice EXPLÍCITO — nunca por
+    posição.
+
+    Só linha que MATERIALIZA recebe item: compra/iof com valor != 0 (inclusive
+    valor negativo, que vira Transacao(tipo="estorno") e leva categoria).
+    Pagamento e ajuste_saldo não viram lançamento e não têm categoria.
+
+    - `categoria_sugerida`: None = nenhuma camada teve o que dizer (a tela mostra
+      "Outros", o neutro). É NOME, não id: `Transacao.categoria` é string.
+    - `origem_sugestao`: qual camada carregou o peso. Instrumentação, não
+      decoração — é como vamos medir depois onde investir.
+    """
+
+    indice: int
+    categoria_sugerida: str | None = None
+    origem_sugestao: Literal["historico", "regra"] | None = None
+
+
 class FaturaPreviewResponse(BaseModel):
     cartao_id: int
     fatura: FaturaExtraida
@@ -177,6 +202,9 @@ class FaturaPreviewResponse(BaseModel):
     # parcelas desta fatura — para a revisão marcar as já pagas. Vazia quando a
     # fatura não tem parcelada que recue para o passado.
     faturas_passadas: list[FaturaPassadaOut] = []
+    # Um item por linha MATERIALIZÁVEL, ordenado por índice. Default [] →
+    # aditivo: cliente que não conhece o campo continua funcionando.
+    enriquecimento: list[EnriquecimentoFaturaLinha] = []
 
 
 # --- Batch 2: commit (grava transações/parcelas a partir da fatura revisada) ---
@@ -184,12 +212,25 @@ class FaturaPreviewResponse(BaseModel):
 # O request reusa o contrato da extração por SUBCLASSE — herda campos e
 # validadores de Transacao/FaturaExtraida sem duplicá-los, e sem tocar no
 # schema que o Gemini consome. A ÚNICA adição é `categoria` por linha: ela é
-# do request (a revisão no front categoriza), NUNCA da extração — default
-# "Outros" quando ausente.
+# do request (a revisão no front categoriza), NUNCA da extração.
 
 
 class TransacaoCommit(Transacao):
-    categoria: str = "Outros"
+    """Uma linha da fatura REVISADA — dado extraído + decisão do usuário.
+
+    `categoria` é TRI-ESTADO, a mesma forma do `importar` do extrato:
+    - string (INCLUSIVE "Outros"): o usuário decidiu — vale sempre, e só passa
+      pelo guarda-corpo de "esta categoria existe para você, neste tipo?";
+    - None (ausente): NÃO decidido → o servidor RECOMPUTA a própria sugestão
+      (services/import_fatura/enriquecimento.resolver_categorias), com o mesmo
+      matcher do preview. O default mora no BACKEND, não na confiança de que o
+      front mandou a categoria certa.
+
+    Retrocompatível: cliente que manda "Outros" explícito continua gravando
+    "Outros" — explícito vence, como no `importar`.
+    """
+
+    categoria: str | None = None
 
 
 class FaturaCommit(FaturaExtraida):

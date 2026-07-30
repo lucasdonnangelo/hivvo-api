@@ -24,18 +24,22 @@ DIFERENÇA DELIBERADA vs. produção: por padrão a chamada roda SEM timeout, pa
 MEDIR quanto ela realmente leva (produção corta em GEMINI_IMPORT_TIMEOUT_MS=60000).
 Use --timeout-ms 60000 para reproduzir o corte de produção.
 Produção também NÃO seta max_output_tokens nem thinking_config; este script
-espelha isso (não setar) para o finish_reason/usage refletirem o comportamento real.
+espelha isso por padrão (--thinking-budget ausente = não setado, igual produção).
+--thinking-budget é só INSTRUMENTAÇÃO DO HARNESS — nenhum código de produção
+seta isso ainda; é para medir o efeito antes de decidir se entra em app/.
 
 PII: o relatório imprime trechos da resposta (conteúdo de fatura) e roda em
 terminal local, por design — é o que revela o truncamento. Não redirecione a
-saída para arquivo versionado.
+saída para arquivo versionado. --dump-json grava em scripts/spike_import/out/
+(gitignored) por padrão — não aponte para pasta versionada.
 
 Uso (a partir da raiz do hivvo-api):
 
     $env:GEMINI_IMPORT_API_KEY = "<a chave dedicada da importação>"
     venv\\Scripts\\python scripts\\spike_import\\repro_fatura_grande.py C:\\caminho\\fatura.pdf
 
-Flags: --timeout-ms N | --model NOME | --max-paginas N | --redigir-nome "Fulano" (repetível)
+Flags: --timeout-ms N | --model NOME | --max-paginas N | --redigir-nome "Fulano"
+(repetível) | --thinking-budget N | --dump-json CAMINHO
 """
 
 from __future__ import annotations
@@ -142,6 +146,20 @@ def main() -> int:
         help="nome a redigir antes do envio (produção passa nome_completo/username "
              "do usuário). Repetível. Sem isso, só CPF e finais são tratados.",
     )
+    p.add_argument(
+        "--thinking-budget", type=int, default=None, metavar="N",
+        help="INSTRUMENTAÇÃO DO HARNESS — produção não seta isso ainda. Ausente = "
+             "thinking_config não setado (igual produção, orçamento default do "
+             "modelo). Presente = ThinkingConfig(thinking_budget=N); aceita 0 "
+             "(desliga o thinking).",
+    )
+    p.add_argument(
+        "--dump-json", default=None, metavar="CAMINHO",
+        help="grava o JSON extraído (indent=2, sort_keys=True, ensure_ascii=False, "
+             "estável para diff entre execuções). CAMINHO relativo cai dentro de "
+             "scripts/spike_import/out/ (gitignored) — passe um caminho absoluto "
+             "só se quiser fugir disso de propósito.",
+    )
     args = p.parse_args()
 
     if not args.pdf.is_file():
@@ -175,7 +193,11 @@ def main() -> int:
     print(f"modelo              : {args.model}")
     print(f"timeout do client   : {'SEM TIMEOUT (default do httpx desativado)' if args.timeout_ms is None else f'{args.timeout_ms} ms'}")
     print(f"max_output_tokens   : NÃO SETADO (igual produção)")
-    print(f"thinking_config     : NÃO SETADO (igual produção)")
+    if args.thinking_budget is None:
+        print(f"thinking_config     : NÃO SETADO (igual produção — orçamento default do modelo)")
+    else:
+        print(f"thinking_config     : ThinkingConfig(thinking_budget={args.thinking_budget}) "
+              f"[INSTRUMENTAÇÃO DO HARNESS — produção não seta isso]")
     print(f"prompt              : PROMPT_REGRAS de {_GEMINI_PROD.relative_to(_RAIZ)} ({len(prompt)} chars)")
     print(f"schema              : app.schemas.import_fatura.FaturaExtraida")
     print(f"safety              : app.core.gemini_safety.SAFETY_SETTINGS ({len(SAFETY_SETTINGS)} categorias)")
@@ -222,17 +244,25 @@ def main() -> int:
         kwargs_client["http_options"] = types.HttpOptions(timeout=args.timeout_ms)
     client = genai.Client(**kwargs_client)
 
+    config_kwargs = dict(
+        temperature=0,
+        response_mime_type="application/json",
+        response_schema=FaturaExtraida,
+        safety_settings=SAFETY_SETTINGS,
+    )
+    if args.thinking_budget is not None:
+        # Só entra na config se a flag foi passada — ausência de flag preserva
+        # o comportamento de produção (thinking_config não setado).
+        config_kwargs["thinking_config"] = types.ThinkingConfig(
+            thinking_budget=args.thinking_budget
+        )
+
     t0 = time.perf_counter()
     try:
         resposta = client.models.generate_content(
             model=args.model,
             contents=conteudo,
-            config=types.GenerateContentConfig(
-                temperature=0,
-                response_mime_type="application/json",
-                response_schema=FaturaExtraida,
-                safety_settings=SAFETY_SETTINGS,
-            ),
+            config=types.GenerateContentConfig(**config_kwargs),
         )
     except Exception as e:
         # Sem máscara: produção mapeia TUDO isso para o mesmo 503 e loga só a
@@ -330,8 +360,38 @@ def main() -> int:
     print(f"gemini              : {dt_gemini:.3f}s")
     print(f"parse+reconciliação : {dt_parse:.3f}s")
     print(f"TOTAL (sem upload)  : {dt_leitura + dt_extracao + dt_redacao + dt_gemini + dt_parse:.3f}s")
+
+    uso = resposta.usage_metadata
+    thoughts = getattr(uso, "thoughts_token_count", None) or 0
+    candidates_tok = getattr(uso, "candidates_token_count", None) or 0
+    tokens_gerados = thoughts + candidates_tok
+    if dt_gemini > 0 and tokens_gerados > 0:
+        print(f"tokens/s (gemini)   : {tokens_gerados / dt_gemini:.1f}  "
+              f"(={thoughts} thoughts + {candidates_tok} candidates ÷ {dt_gemini:.3f}s "
+              "— comparável entre documentos de tamanhos diferentes)")
+    else:
+        print("tokens/s (gemini)   : n/d (usage_metadata sem thoughts/candidates)")
+
     print(f"\nProdução corta a chamada ao Gemini em {TIMEOUT_PROD_MS} ms "
           f"(GEMINI_IMPORT_TIMEOUT_MS).")
+
+    # --- Etapa 8: dump estável do JSON extraído (comparável por diff) ---
+    if args.dump_json is not None:
+        destino = Path(args.dump_json)
+        if not destino.is_absolute():
+            destino = _RAIZ / "scripts" / "spike_import" / "out" / destino
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_text(
+            # mode="json": FaturaExtraida hoje só tem str/int/enum (nunca Decimal/
+            # date nativos — decisão de schema, ver import_fatura.py), então
+            # json.dumps(model_dump()) já funcionaria; mode="json" blinda contra o
+            # dia em que isso deixar de ser verdade, sem custo.
+            json.dumps(fatura.model_dump(mode="json"), indent=2, sort_keys=True, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        _titulo("DUMP JSON")
+        print(f"gravado em          : {destino}")
+
     return 0
 
 

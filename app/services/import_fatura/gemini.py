@@ -35,6 +35,7 @@ from google.genai import errors as genai_errors
 from google.genai import types
 
 from app.core.config import settings
+from app.core.gemini_generation import STATUS_SEM_RETRY, THINKING_CONFIG, http_options
 from app.core.gemini_safety import SAFETY_SETTINGS
 from app.schemas.import_fatura import FaturaExtraida
 
@@ -137,7 +138,9 @@ def _get_client() -> genai.Client:
             )
         _client = genai.Client(
             api_key=settings.GEMINI_IMPORT_API_KEY,
-            http_options=types.HttpOptions(timeout=settings.GEMINI_IMPORT_TIMEOUT_MS),
+            # Fonte única do timeout (core/gemini_generation) — o extrato usa a
+            # MESMA função. Não construa HttpOptions aqui.
+            http_options=http_options(),
         )
     return _client
 
@@ -233,7 +236,9 @@ def extrair_fatura(texto_redigido: str) -> str:
 
     Retry no padrão do assistente: max_attempts = len(GEMINI_RETRY_WAITS) + 1
     (o usuário está esperando; retry longo é para job assíncrono). SÓ 5xx é
-    retentado — 429 não é, de propósito (ver _retry_delay_pedido).
+    retentado — 429 não é, de propósito (ver _retry_delay_pedido) — e nem TODO
+    5xx: os status de STATUS_SEM_RETRY (core/gemini_generation) saem do orçamento
+    porque o relógio já estourou.
 
     Toda falha vira 503, como antes; o que mudou (#38) é que cada CAUSA tem
     mensagem e log próprios.
@@ -253,30 +258,53 @@ def extrair_fatura(texto_redigido: str) -> str:
                     # F-06: mesma moderação do assistente (fonte única em
                     # app/core/gemini_safety) — o texto da fatura vai ao modelo.
                     safety_settings=SAFETY_SETTINGS,
+                    # Teto EXPLÍCITO no raciocínio (fonte única em
+                    # app/core/gemini_generation). Sem ele o thinking não tem
+                    # teto e atravessava o deadline sozinho — o motivo do 1024
+                    # (e por que NÃO é 0) está no docstring de lá.
+                    thinking_config=THINKING_CONFIG,
                 ),
             )
             _log_telemetria(resposta)
             return resposta.text or ""
         except genai_errors.ServerError as e:
-            # `status` é o dado mais caro deste batch: DEADLINE_EXCEEDED (o
+            # `status` foi o dado mais caro do #38: DEADLINE_EXCEEDED (o
             # servidor bateu no X-Server-Timeout que o SDK deriva do nosso
             # timeout) e UNAVAILABLE (Gemini fora) pedem correções OPOSTAS, e
-            # até agora os dois chegavam como "Gemini 5xx" e nada mais.
+            # até então os dois chegavam como "Gemini 5xx" e nada mais. Agora ele
+            # também DECIDE o retry, não só documenta a falha.
             decorrido = time.perf_counter() - inicio
+            status = getattr(e, "status", None)
+
+            if status in STATUS_SEM_RETRY:
+                # DEADLINE_EXCEEDED: o relógio já estourou (o servidor bateu no
+                # X-Server-Timeout derivado do NOSSO timeout). Retentar dobraria
+                # a espera do usuário e o custo por uma chance baixa. Só este
+                # status sai do retry — UNAVAILABLE segue no orçamento abaixo.
+                logger.error(
+                    "[import] Gemini 5xx SEM retry na tentativa %d/%d — code=%s "
+                    "status=%s decorrido=%.1fs msg=%s "
+                    "(limite do client: %dms)",
+                    attempt, max_attempts, getattr(e, "code", None), status,
+                    decorrido, _curto(getattr(e, "message", None)),
+                    settings.GEMINI_IMPORT_TIMEOUT_MS,
+                )
+                raise HTTPException(status_code=503, detail=_MSG_TIMEOUT)
+
             if attempt < max_attempts:
                 wait = settings.GEMINI_RETRY_WAITS[attempt - 1]
                 logger.warning(
                     "[import] Gemini 5xx, tentativa %d/%d — code=%s status=%s "
                     "decorrido=%.1fs — aguardando %ds",
                     attempt, max_attempts, getattr(e, "code", None),
-                    getattr(e, "status", None), decorrido, wait,
+                    status, decorrido, wait,
                 )
                 time.sleep(wait)
                 continue
             logger.error(
                 "[import] Gemini 5xx após %d tentativas — code=%s status=%s "
                 "decorrido=%.1fs msg=%s",
-                max_attempts, getattr(e, "code", None), getattr(e, "status", None),
+                max_attempts, getattr(e, "code", None), status,
                 decorrido, _curto(getattr(e, "message", None)),
             )
             raise HTTPException(status_code=503, detail=_MSG_INDISPONIVEL)

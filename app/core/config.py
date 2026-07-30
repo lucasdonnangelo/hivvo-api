@@ -35,7 +35,16 @@ class Settings(BaseSettings):
     # fallback, por design). Produção não sobe sem ela (validate_startup_config).
     GEMINI_IMPORT_API_KEY: str = ""
     GEMINI_IMPORT_MODEL: str = "gemini-2.5-flash"
-    GEMINI_IMPORT_TIMEOUT_MS: int = 60000  # fatura é bem maior que chat
+    # 150s DERIVADO, não chutado. Com o thinking limitado (THINKING_BUDGET de
+    # core/gemini_generation), o pior caso MEDIDO numa Itaú de 6 páginas / 95
+    # transações foi 35,6s; extrapolando a 255 tok/s, uma fatura de ~200
+    # transações dá ~65-70s. 150s = ~2x de folga sobre esse pior caso projetado.
+    # Os 60000 anteriores cortavam a Itaú SEMPRE (o thinking sem teto levava
+    # 63,9-88,6s, variando ±39% entre execuções idênticas).
+    # NÃO é só timeout de cliente: o SDK deriva o X-Server-Timeout daqui, então
+    # o prazo vale dos dois lados. Consumido pelos dois módulos de importação
+    # por core/gemini_generation.http_options() — nunca na mão.
+    GEMINI_IMPORT_TIMEOUT_MS: int = 150000  # fatura é bem maior que chat
     IMPORT_MAX_PDF_BYTES: int = 10 * 1024 * 1024
     IMPORT_MAX_PDF_PAGINAS: int = 20
 

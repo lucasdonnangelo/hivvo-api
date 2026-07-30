@@ -131,6 +131,19 @@ class TestMensagemPorCausa:
             "Tente novamente em instantes."
         )
 
+    def test_deadline_exceeded_devolve_mensagem_de_timeout(self, monkeypatch, sem_sleep):
+        """5xx com DEADLINE_EXCEEDED é um timeout — o servidor bateu no
+        X-Server-Timeout derivado do NOSSO limite. Reusa a mensagem do timeout de
+        rede em vez de mandar "tente em instantes": a causa é a mesma que o
+        usuário percebe, e o retry dela saiu (ver test_import_gemini_generation)."""
+        erro = _extrair(
+            monkeypatch,
+            _client_que_levanta(_FakeServerError(code=504, status="DEADLINE_EXCEEDED")),
+        )
+        assert erro.status_code == 503
+        assert erro.detail == gemini._MSG_TIMEOUT
+        assert erro.detail != gemini._MSG_INDISPONIVEL
+
     @pytest.mark.parametrize(
         "exc",
         [
@@ -163,6 +176,7 @@ class TestMensagemPorCausa:
             _erro_cliente(403, "PERMISSION_DENIED"),
             _erro_cliente(404, "NOT_FOUND"),
             _FakeServerError(),
+            _FakeServerError(code=504, status="DEADLINE_EXCEEDED"),
             httpx.ReadTimeout("x"),
             httpx.ConnectError("x"),
             RuntimeError("x"),
@@ -238,16 +252,21 @@ class TestLog:
 
     def test_server_error_loga_status_por_tentativa(self, monkeypatch, sem_sleep, caplog):
         """DEADLINE_EXCEEDED vs UNAVAILABLE pedem correções OPOSTAS — o status
-        tem que aparecer, e em CADA tentativa (a 1ª só ia para warning sem ele)."""
+        tem que aparecer, e em CADA tentativa (a 1ª só ia para warning sem ele).
+
+        UNAVAILABLE, não DEADLINE_EXCEEDED: o status agora DECIDE o retry, e o
+        DEADLINE sai dele na 1ª tentativa (uma linha só). Quem trava esse
+        comportamento é tests/services/test_import_gemini_generation.py; aqui o
+        que interessa é "o status aparece em toda tentativa que existir"."""
         with caplog.at_level(logging.DEBUG, logger=gemini.logger.name):
             _extrair(
                 monkeypatch,
-                _client_que_levanta(_FakeServerError(code=504, status="DEADLINE_EXCEEDED")),
+                _client_que_levanta(_FakeServerError(code=503, status="UNAVAILABLE")),
             )
-        assert caplog.text.count("status=DEADLINE_EXCEEDED") == (
+        assert caplog.text.count("status=UNAVAILABLE") == (
             len(gemini.settings.GEMINI_RETRY_WAITS) + 1
         )
-        assert "code=504" in caplog.text
+        assert "code=503" in caplog.text
         assert "decorrido=" in caplog.text
 
     def test_desconhecida_loga_repr_e_traceback(self, monkeypatch, sem_sleep, caplog):

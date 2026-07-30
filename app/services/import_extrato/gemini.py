@@ -21,7 +21,10 @@ adição de produção: capturar o `rendimento` do RESUMO. Não altere as regras
 revalidar contra extratos reais.
 
 PII/logs: o texto do extrato passa por aqui — nada dele pode ir para log. Em erro,
-loga-se apenas a CLASSE da exceção.
+loga-se apenas a CLASSE da exceção — e, nos 5xx, o `status` da API (enum fixo do
+protocolo: UNAVAILABLE, DEADLINE_EXCEEDED...), que é o que decide o retry. NUNCA
+a `message`, `str(e)` ou `details`: os três podem ecoar o payload. (Os 6 handlers
+por causa e a `message` truncada existem só na fatura por enquanto — #38.)
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from google.genai import types
 from pydantic import ValidationError
 
 from app.core.config import settings
+from app.core.gemini_generation import STATUS_SEM_RETRY, THINKING_CONFIG, http_options
 from app.core.gemini_safety import SAFETY_SETTINGS
 from app.schemas.import_extrato import CategorizacaoLote, ExtratoExtraido
 
@@ -136,7 +140,9 @@ def _get_client() -> genai.Client:
             )
         _client = genai.Client(
             api_key=settings.GEMINI_IMPORT_API_KEY,
-            http_options=types.HttpOptions(timeout=settings.GEMINI_IMPORT_TIMEOUT_MS),
+            # Fonte única do timeout (core/gemini_generation) — a fatura usa a
+            # MESMA função. Não construa HttpOptions aqui.
+            http_options=http_options(),
         )
     return _client
 
@@ -147,11 +153,14 @@ def _gerar(contents: str, response_schema: type) -> str:
     Encanamento ÚNICO das duas chamadas do extrato (extração e categorização em
     lote): client dedicado (GEMINI_IMPORT_API_KEY), temperature 0, structured
     output e — F-06 — safety_settings EXPLÍCITO, a fonte única compartilhada com
-    o assistente (app/core/gemini_safety). Uma chamada nova neste módulo não tem
-    como esquecer a moderação: ela passa por aqui.
+    o assistente (app/core/gemini_safety), mais o thinking_config da fonte única
+    de geração (app/core/gemini_generation). Uma chamada nova neste módulo não
+    tem como esquecer a moderação nem o teto de raciocínio: ela passa por aqui.
 
     Retry no padrão do assistente: max_attempts = len(GEMINI_RETRY_WAITS) + 1
-    (o usuário está esperando; retry longo é para job assíncrono).
+    (o usuário está esperando; retry longo é para job assíncrono). Nem todo 5xx
+    entra nesse orçamento: os status de STATUS_SEM_RETRY saem, porque o relógio
+    já estourou.
     """
     client = _get_client()
     max_attempts = len(settings.GEMINI_RETRY_WAITS) + 1
@@ -165,19 +174,46 @@ def _gerar(contents: str, response_schema: type) -> str:
                     response_mime_type="application/json",
                     response_schema=response_schema,
                     safety_settings=SAFETY_SETTINGS,
+                    # Teto EXPLÍCITO no raciocínio (fonte única em
+                    # app/core/gemini_generation, a MESMA da fatura). Sem ele o
+                    # thinking não tem teto e atravessa o deadline sozinho — o
+                    # motivo do 1024 (e por que NÃO é 0) está no docstring de lá.
+                    # Passa por _gerar, então vale para a extração E para a
+                    # categorização em lote.
+                    thinking_config=THINKING_CONFIG,
                 ),
             )
             return resposta.text or ""
-        except genai_errors.ServerError:
+        except genai_errors.ServerError as e:
+            status = getattr(e, "status", None)
+            if status in STATUS_SEM_RETRY:
+                # DEADLINE_EXCEEDED: o relógio já estourou (o servidor bateu no
+                # X-Server-Timeout derivado do NOSSO timeout). Retentar dobraria
+                # a espera do usuário e o custo por uma chance baixa. UNAVAILABLE
+                # (sobrecarga real) segue retentando no orçamento abaixo.
+                logger.error(
+                    "[import] Gemini 5xx SEM retry na tentativa %d/%d — status=%s "
+                    "(limite do client: %dms)",
+                    attempt, max_attempts, status,
+                    settings.GEMINI_IMPORT_TIMEOUT_MS,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="Serviço de importação temporariamente indisponível. Tente novamente em instantes.",
+                )
             if attempt < max_attempts:
                 wait = settings.GEMINI_RETRY_WAITS[attempt - 1]
                 logger.warning(
-                    "[import] Gemini 5xx, tentativa %d/%d — aguardando %ds",
-                    attempt, max_attempts, wait,
+                    "[import] Gemini 5xx, tentativa %d/%d — status=%s "
+                    "— aguardando %ds",
+                    attempt, max_attempts, status, wait,
                 )
                 time.sleep(wait)
                 continue
-            logger.error("[import] Gemini 5xx após %d tentativas", max_attempts)
+            logger.error(
+                "[import] Gemini 5xx após %d tentativas — status=%s",
+                max_attempts, status,
+            )
             raise HTTPException(
                 status_code=503,
                 detail="Serviço de importação temporariamente indisponível. Tente novamente em instantes.",

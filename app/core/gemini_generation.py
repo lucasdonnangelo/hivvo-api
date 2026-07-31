@@ -40,6 +40,17 @@ nosso timeout: o relógio JÁ estourou. Retentar dobra a espera do usuário e o
 custo por uma chance baixa — a request morre no timeout do cliente de qualquer
 jeito. UNAVAILABLE (sobrecarga real do provedor) continua sendo retentado: é o
 caso em que esperar 2s resolve.
+
+--- AFC_DESLIGADO ---
+
+O SDK liga o Automatic Function Calling por DEFAULT. Hoje é inócuo — a
+importação não passa `tools`, então não há função para o modelo chamar e o loop
+automático nunca roda. Desligar é explicitação, não conserto: é o TERCEIRO
+default de provedor que herdamos sem escolher, depois do safety_settings (F-06)
+e do thinking_config (que custou 63,9-88,6s por fatura até ser medido). O padrão
+já se repetiu vezes suficientes para a regra ser "o que o provedor decide por
+nós, decidimos nós" — e o dia em que alguém acrescentar `tools` a uma destas
+chamadas, o AFC não vira comportamento novo de surpresa.
 """
 
 from google.genai import types
@@ -52,6 +63,9 @@ THINKING_CONFIG = types.ThinkingConfig(thinking_budget=THINKING_BUDGET)
 
 # Status de ServerError (5xx) que NÃO são retentados — ver o docstring.
 STATUS_SEM_RETRY = frozenset({"DEADLINE_EXCEEDED"})
+
+# Automatic Function Calling explicitamente DESLIGADO — ver o docstring.
+AFC_DESLIGADO = types.AutomaticFunctionCallingConfig(disable=True)
 
 
 def http_options() -> types.HttpOptions:

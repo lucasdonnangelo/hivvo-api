@@ -31,6 +31,7 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import Iterable, Optional
 
+from fastapi import HTTPException
 from sqlmodel import Session, select
 
 from app.models.card import Cartao
@@ -234,11 +235,28 @@ def _sugerir_categorias(
 
     try:
         crus = gemini.categorizar_linhas(pedidos, nomes["despesa"], nomes["receita"])
-    except Exception as e:
-        # Só a CLASSE no log — o payload pode ecoar descrição do extrato.
+    except HTTPException as e:
+        # Degradação DELIBERADA (preview sem sugestão é melhor que preview
+        # nenhum), mas nunca cega. Loga-se `detail`, não a classe: TODO caminho
+        # de falha de `categorizar_linhas` levanta HTTPException — as 6 causas de
+        # API viram 503 e o schema rejeitado vira 502 —, então `__class__` era
+        # uma CONSTANTE, uma linha com cara de diagnóstico e zero bits. O
+        # `detail` é string NOSSA (app/core/gemini_erros), não da API: diz a
+        # causa sem risco de PII. A causa crua já saiu no log do gemini_erros.
         logger.warning(
-            "[import] categorização indisponível (%s) — preview segue sem sugestão",
-            e.__class__.__name__,
+            "[import] categorização indisponível (%s: %s) — preview segue sem sugestão",
+            e.status_code, e.detail,
+        )
+        return {i: None for i in indices}
+    except Exception:
+        # O que NENHUM handler acima viu — aqui o traceback é a única pista, e a
+        # ausência dele foi o que travou o diagnóstico do #38. Não loga a
+        # exceção formatada por nós; o exc_info não expande locals (o Sentry roda
+        # com include_local_variables=False).
+        logger.warning(
+            "[import] categorização indisponível por falha inesperada — "
+            "preview segue sem sugestão",
+            exc_info=True,
         )
         return {i: None for i in indices}
 

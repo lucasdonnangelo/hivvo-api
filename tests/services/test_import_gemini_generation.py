@@ -29,10 +29,12 @@ import pytest
 from fastapi import HTTPException
 from google.genai import errors as genai_errors
 
+import app.core.gemini_erros as gemini_erros
 import app.services.import_extrato.gemini as gemini_extrato
 import app.services.import_fatura.gemini as gemini_fatura
 from app.core.config import settings
 from app.core.gemini_generation import (
+    AFC_DESLIGADO,
     STATUS_SEM_RETRY,
     THINKING_BUDGET,
     THINKING_CONFIG,
@@ -158,6 +160,39 @@ class TestThinkingChegaAoSDK:
         assert THINKING_BUDGET > 0
 
 
+# --- AFC --------------------------------------------------------------------
+
+
+class TestAFCDesligadoExplicitamente:
+    """O TERCEIRO default de provedor herdado em silêncio, depois do
+    safety_settings (F-06) e do thinking_config (que custou 63,9-88,6s por fatura
+    até alguém medir). Hoje é INÓCUO — nenhuma das 3 chamadas passa `tools`,
+    então não há função para o modelo chamar. O teste não trava um bug: trava a
+    ESCOLHA, para que o dia em que alguém acrescentar `tools` a uma destas
+    chamadas o AFC não vire comportamento novo de surpresa."""
+
+    @pytest.mark.parametrize("chamada", TODAS_AS_CHAMADAS)
+    def test_afc_e_passado_desligado(self, monkeypatch, chamada):
+        captura: dict = {}
+        chamada(monkeypatch, captura)
+
+        afc = captura["config"].automatic_function_calling
+        assert afc is not None, (
+            "módulo não passou automatic_function_calling — roda no default do "
+            "provedor, que é LIGADO"
+        )
+        assert afc.disable is True
+
+    @pytest.mark.parametrize("chamada", TODAS_AS_CHAMADAS)
+    def test_usa_a_constante_compartilhada(self, monkeypatch, chamada):
+        """Mesmo critério do thinking: não é "um disable=True igual", é O mesmo
+        objeto — senão o 4º default herdado nasce com duas fontes de novo."""
+        captura: dict = {}
+        chamada(monkeypatch, captura)
+
+        assert captura["config"].automatic_function_calling == AFC_DESLIGADO
+
+
 # --- Timeout ---------------------------------------------------------------
 
 
@@ -243,9 +278,21 @@ class TestRetryPorStatus:
         assert exc.value.status_code == 503
 
     def test_a_politica_de_retry_e_a_mesma_nos_dois_modulos(self):
-        """Fonte única do item 4: os dois módulos consultam O MESMO conjunto."""
-        assert gemini_fatura.STATUS_SEM_RETRY is STATUS_SEM_RETRY
-        assert gemini_extrato.STATUS_SEM_RETRY is STATUS_SEM_RETRY
+        """Fonte única do item 4 — o QUE se afirma aqui mudou com o #31.
+
+        Antes: cada módulo importava STATUS_SEM_RETRY e rodava o próprio loop, e
+        a asserção era que os dois liam O MESMO conjunto (dois consumidores, uma
+        constante). Depois da consolidação, NENHUM dos dois consulta: quem lê é
+        o `gerar_com_retry` de app/core/gemini_erros, que os dois EXECUTAM — um
+        consumidor, uma constante. Re-exportar o nome nos módulos só para manter
+        a linha antiga seria um alias que existe para o teste, afirmando um
+        acoplamento que o código não tem mais.
+
+        Quem carrega a garantia agora é comportamental e é mais forte:
+        test_deadline_exceeded_nao_e_retentado[fatura] e [extrato] provam a
+        política POR MÓDULO, chamando o código de verdade. Esta linha ficou
+        sendo o que sempre foi de fato — a trava do CONTEÚDO do conjunto."""
+        assert gemini_erros.STATUS_SEM_RETRY is STATUS_SEM_RETRY
         assert "DEADLINE_EXCEEDED" in STATUS_SEM_RETRY
         assert "UNAVAILABLE" not in STATUS_SEM_RETRY
 

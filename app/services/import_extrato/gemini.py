@@ -9,38 +9,48 @@ isolado) — a MESMA da importação de fatura, NUNCA a GEMINI_API_KEY do assist
 (restrição do batch: sem chave nova). Structured output (response_schema) força o
 shape; o prompt carrega a semântica da classificação em baldes.
 
-DÍVIDA CONSCIENTE: o encanamento (client singleton + retry + mapeamento 503 +
-safety) é ESPELHADO de services/import_fatura/gemini.py em vez de compartilhado.
-A duplicação é deliberada — extrair um helper comum mexeria no gemini.py da fatura
-(cujo teste de safety faz monkeypatch em `_get_client` no módulo da fatura) e
-aumentaria o blast-radius. Cada import type possui seu módulo gemini, com seu
-próprio teste de safety com mutação. Ver PENDENCIAS_PRIORIZADAS.md (follow-up).
+DÍVIDA PAGA (#31, parte operacional): o encanamento de ERRO era espelhado de
+services/import_fatura/gemini.py — e em 29/07 deixou de ser espelho: o #38 deu à
+fatura telemetria e 6 handlers por classe, e aqui ficou um `except Exception` nu.
+Agora o tratamento de erro e a telemetria vêm de app/core/gemini_erros.py, que
+os DOIS módulos executam (não é cópia). Segue morando aqui só o que é do extrato:
+o prompt, o client e as duas mensagens que nomeiam o documento. O `_get_client`
+NÃO foi consolidado de propósito: é singleton por módulo e os testes de safety
+fazem monkeypatch nele em cada um.
 
 PROMPT_REGRAS é o prompt VALIDADO no spike (scripts/spike_extrato/llm.py) com UMA
 adição de produção: capturar o `rendimento` do RESUMO. Não altere as regras sem
 revalidar contra extratos reais.
 
-PII/logs: o texto do extrato passa por aqui — nada dele pode ir para log. Em erro,
-loga-se apenas a CLASSE da exceção — e, nos 5xx, o `status` da API (enum fixo do
-protocolo: UNAVAILABLE, DEADLINE_EXCEEDED...), que é o que decide o retry. NUNCA
-a `message`, `str(e)` ou `details`: os três podem ecoar o payload. (Os 6 handlers
-por causa e a `message` truncada existem só na fatura por enquanto — #38.)
+PII/logs: o texto do extrato passa por aqui — nada dele pode ir para log. Em erro
+loga-se também a `message` da API TRUNCADA em 200 chars (a exceção deliberada do
+#38, agora valendo para os dois módulos): sem ela um 400 é indistinguível de um
+429 em produção, que é o ponto cego que a consolidação existe para fechar. NUNCA
+`str(e)` nem `details`.
+
+ATENÇÃO ao que essa herança significa AQUI e não significa na fatura: a fatura é
+dado do TITULAR; o extrato carrega PII de TERCEIROS (contrapartes de Pix/TED que
+não consentiram — é o que `redacao.py` tenta cobrir). A `message` é segura porque
+descreve a FORMA da requisição, não o conteúdo ("API key not valid", "Request
+contains an invalid argument"); o RESIDUAL, se a API um dia ecoar payload, é
+pior aqui do que lá. O truncamento é o que o limita — e abaixo dele não há rede
+enquanto a #39 (Sentry sem scrub de breadcrumb/logentry) não sair.
 """
 
 from __future__ import annotations
 
 import logging
-import time
+import time  # noqa: F401  — os testes fazem monkeypatch em `gemini.time.sleep`
 from dataclasses import dataclass
 
 from fastapi import HTTPException
 from google import genai
-from google.genai import errors as genai_errors
 from google.genai import types
 from pydantic import ValidationError
 
 from app.core.config import settings
-from app.core.gemini_generation import STATUS_SEM_RETRY, THINKING_CONFIG, http_options
+from app.core.gemini_erros import MensagensErro, gerar_com_retry
+from app.core.gemini_generation import AFC_DESLIGADO, THINKING_CONFIG, http_options
 from app.core.gemini_safety import SAFETY_SETTINGS
 from app.schemas.import_extrato import CategorizacaoLote, ExtratoExtraido
 
@@ -125,6 +135,26 @@ Formato de cada item recebido: indice | tipo | valor | descrição
 --- ITENS ---
 """
 
+# As DUAS mensagens que nomeiam o documento — o que sobra de específico do
+# extrato depois do #31. As outras três (indisponível, quota, credencial) vêm de
+# gemini_erros iguais para os dois módulos; a `indisponivel` em particular é a
+# ÚNICA string que o extrato usava para tudo antes deste batch, e continua sendo
+# o que o 5xx devolve.
+#
+# Nota: `categorizar_linhas` também passa por aqui, então uma falha DELA usaria a
+# mensagem de leitura do extrato. Não vale parametrizar: o chamador
+# (enriquecimento._sugerir_categorias) captura a HTTPException e degrada para
+# preview sem sugestão — essa mensagem nunca chega ao usuário.
+_MSG_ENTRADA = (
+    "Não foi possível processar este extrato: a extração rejeitou o arquivo enviado."
+)
+_MSG_TIMEOUT = (
+    "A leitura do extrato passou do tempo limite. Tente novamente; se persistir, "
+    "o extrato pode ser grande demais."
+)
+
+_MENSAGENS = MensagensErro(entrada=_MSG_ENTRADA, timeout=_MSG_TIMEOUT)
+
 # Client singleton próprio do extrato (mesma chave/timeout da fatura, instância
 # SEPARADA de propósito — mesmo padrão T-21 do assistente).
 _client: genai.Client | None = None
@@ -157,79 +187,42 @@ def _gerar(contents: str, response_schema: type) -> str:
     de geração (app/core/gemini_generation). Uma chamada nova neste módulo não
     tem como esquecer a moderação nem o teto de raciocínio: ela passa por aqui.
 
-    Retry no padrão do assistente: max_attempts = len(GEMINI_RETRY_WAITS) + 1
-    (o usuário está esperando; retry longo é para job assíncrono). Nem todo 5xx
-    entra nesse orçamento: os status de STATUS_SEM_RETRY saem, porque o relógio
-    já estourou.
+    Retry, telemetria e mapeamento de erro são de `gerar_com_retry`
+    (app/core/gemini_erros), o MESMO código que a fatura executa — não uma cópia
+    dele. O logger vai injetado porque é o NOME dele que separa extrato de fatura
+    no log (o prefixo "[import]" é o mesmo nos dois).
+
+    `_get_client()` roda AQUI, fora do runner, de propósito: ele levanta
+    HTTPException própria quando falta a chave, e lá dentro o `except Exception`
+    final trocaria "GEMINI_IMPORT_API_KEY não configurada" pela mensagem
+    genérica. Também é o que mantém UMA chamada a `_get_client` por `_gerar`.
     """
     client = _get_client()
-    max_attempts = len(settings.GEMINI_RETRY_WAITS) + 1
-    for attempt in range(1, max_attempts + 1):
-        try:
-            resposta = client.models.generate_content(
-                model=settings.GEMINI_IMPORT_MODEL,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    response_mime_type="application/json",
-                    response_schema=response_schema,
-                    safety_settings=SAFETY_SETTINGS,
-                    # Teto EXPLÍCITO no raciocínio (fonte única em
-                    # app/core/gemini_generation, a MESMA da fatura). Sem ele o
-                    # thinking não tem teto e atravessa o deadline sozinho — o
-                    # motivo do 1024 (e por que NÃO é 0) está no docstring de lá.
-                    # Passa por _gerar, então vale para a extração E para a
-                    # categorização em lote.
-                    thinking_config=THINKING_CONFIG,
-                ),
-            )
-            return resposta.text or ""
-        except genai_errors.ServerError as e:
-            status = getattr(e, "status", None)
-            if status in STATUS_SEM_RETRY:
-                # DEADLINE_EXCEEDED: o relógio já estourou (o servidor bateu no
-                # X-Server-Timeout derivado do NOSSO timeout). Retentar dobraria
-                # a espera do usuário e o custo por uma chance baixa. UNAVAILABLE
-                # (sobrecarga real) segue retentando no orçamento abaixo.
-                logger.error(
-                    "[import] Gemini 5xx SEM retry na tentativa %d/%d — status=%s "
-                    "(limite do client: %dms)",
-                    attempt, max_attempts, status,
-                    settings.GEMINI_IMPORT_TIMEOUT_MS,
-                )
-                raise HTTPException(
-                    status_code=503,
-                    detail="Serviço de importação temporariamente indisponível. Tente novamente em instantes.",
-                )
-            if attempt < max_attempts:
-                wait = settings.GEMINI_RETRY_WAITS[attempt - 1]
-                logger.warning(
-                    "[import] Gemini 5xx, tentativa %d/%d — status=%s "
-                    "— aguardando %ds",
-                    attempt, max_attempts, status, wait,
-                )
-                time.sleep(wait)
-                continue
-            logger.error(
-                "[import] Gemini 5xx após %d tentativas — status=%s",
-                max_attempts, status,
-            )
-            raise HTTPException(
-                status_code=503,
-                detail="Serviço de importação temporariamente indisponível. Tente novamente em instantes.",
-            )
-        except Exception as e:
-            # Só a CLASSE no log: a mensagem da exceção pode ecoar payload, e o
-            # texto do extrato nunca vai para log.
-            logger.error("[import] falha na chamada ao Gemini: %s", e.__class__.__name__)
-            raise HTTPException(
-                status_code=503,
-                detail="Serviço de importação temporariamente indisponível. Tente novamente em instantes.",
-            )
-    raise HTTPException(  # inalcançável — toda iteração retorna ou levanta
-        status_code=503,
-        detail="Serviço de importação temporariamente indisponível. Tente novamente em instantes.",
-    )
+
+    def _chamada():
+        return client.models.generate_content(
+            model=settings.GEMINI_IMPORT_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+                response_schema=response_schema,
+                safety_settings=SAFETY_SETTINGS,
+                # Teto EXPLÍCITO no raciocínio (fonte única em
+                # app/core/gemini_generation, a MESMA da fatura). Sem ele o
+                # thinking não tem teto e atravessa o deadline sozinho — o
+                # motivo do 1024 (e por que NÃO é 0) está no docstring de lá.
+                # Passa por _gerar, então vale para a extração E para a
+                # categorização em lote.
+                thinking_config=THINKING_CONFIG,
+                # Terceiro default de provedor explicitado (depois de safety e
+                # thinking): não usamos tools, então isto é inócuo hoje — o
+                # ponto é não herdar em silêncio. Ver o docstring de lá.
+                automatic_function_calling=AFC_DESLIGADO,
+            ),
+        )
+
+    return gerar_com_retry(_chamada, logger=logger, mensagens=_MENSAGENS)
 
 
 def extrair_extrato(texto_redigido: str) -> str:

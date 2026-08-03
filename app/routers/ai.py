@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.core.database import get_session
 from app.core.gemini_safety import SAFETY_SETTINGS
 from app.core.rate_limit import _user_or_ip_key, limiter
+from app.core.scrub import curto
 from app.models.chat import ChatMessage
 from app.models.user import Usuario
 from app.services.categorias import casar_categoria, nomes_categorias_do_usuario
@@ -248,13 +249,27 @@ def _gemini_generate(contents: list[types.Content], system_instruction: str) -> 
                 )
                 time.sleep(wait)
                 continue
-            logger.exception("Gemini 503 após %d tentativas: %s", max_attempts, e)
+            # Classe + mensagem TRUNCADA (#39): este caminho é o /ai/chat, cujo
+            # prompt carrega o resumo financeiro do usuário, e um erro do genai
+            # embute o JSON de erro da API. `.exception` é nível ERROR, ou seja
+            # EVENTO próprio no Sentry — não só breadcrumb.
+            logger.exception(
+                "Gemini 503 após %d tentativas: %s: %s",
+                max_attempts, e.__class__.__name__, curto(e),
+            )
             raise HTTPException(
                 status_code=503,
                 detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",
             )
         except Exception as e:
-            logger.exception("Gemini request failed — traceback completo: %s", e)
+            # Idem: `except Exception` nu é justamente onde chega o não previsto,
+            # então a mensagem é o diagnóstico — mas com teto (#39). O traceback
+            # segue vindo pelo exc_info do `.exception`; os locals dele já são
+            # varridos por include_local_variables=False + _scrub_frame_vars.
+            logger.exception(
+                "Gemini request failed — traceback completo: %s: %s",
+                e.__class__.__name__, curto(e),
+            )
             raise HTTPException(
                 status_code=503,
                 detail="Serviço de IA temporariamente indisponível. Tente novamente em instantes.",

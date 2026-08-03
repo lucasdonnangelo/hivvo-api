@@ -19,10 +19,8 @@ from __future__ import annotations
 import re
 from typing import Sequence
 
+from app.core.scrub import CPF_CORRIDO, CPF_FORMATADO
 from app.schemas.import_fatura import FaturaExtraida
-
-CPF_FORMATADO = re.compile(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b")
-CPF_CORRIDO = re.compile(r"(?<!\d)\d{11}(?!\d)")
 
 # Finais são detectados por CONTEXTO (como as faturas os imprimem:
 # "final 6042", "•••• 6042", "**** 6042", "xxxx 6042") — nunca por

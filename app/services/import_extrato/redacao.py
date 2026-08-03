@@ -25,20 +25,10 @@ from __future__ import annotations
 import re
 from typing import Sequence
 
-CPF_FORMATADO = re.compile(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b")
-CPF_CORRIDO = re.compile(r"(?<!\d)\d{11}(?!\d)")
-
-# Agência/conta por CONTEXTO (o rótulo impresso) — nunca por "qualquer número",
-# que pegaria valores e datas. O separador entre rótulo e número admite só
-# espaço/ponto/dois-pontos, então "Pagamento de conta de luz 50,00" NÃO casa
-# (há letras entre "conta" e o número). Só o número é substituído; o rótulo
-# permanece (o Gemini ainda vê que a linha é uma transferência).
-AGENCIA = re.compile(
-    r"(ag[êe]ncia|\bag)(\.?\s*:?\s*)(\d{3,6}(?:-?\d)?)", re.IGNORECASE
-)
-CONTA = re.compile(
-    r"(conta(?:\s+corrente)?|\bc/?c\b)(\.?\s*:?\s*)(\d{3,}(?:-?\d)?)", re.IGNORECASE
-)
+# Os padrões moram em core/scrub.py desde o #39: eram DUPLICADOS aqui e na
+# redação da fatura, e os hooks do Sentry passaram a ser um terceiro consumidor.
+# O buraco do CPF mascarado (#35) fecha lá, uma vez, para os três.
+from app.core.scrub import AGENCIA, CONTA, CPF_CORRIDO, CPF_FORMATADO
 
 
 def redigir(texto: str, nomes: Sequence[str]) -> str:

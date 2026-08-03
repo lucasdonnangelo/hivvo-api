@@ -22,6 +22,7 @@ from app.core.auth import (
 )
 from app.core.config import settings
 from app.core.database import get_session
+from app.core.scrub import curto
 from app.models.card import Cartao
 from app.models.category import CategoriaCustomizada
 from app.models.chat import ChatMessage
@@ -469,7 +470,15 @@ def forgot_password(
             })
         except Exception as e:
             # F-18: nunca derruba o request com 500; erro só no log (sem token/PII).
-            logger.error("Falha ao enviar e-mail de recuperação de senha: %s", e)
+            # #39: o erro do Resend ECOA o endereço do destinatário, e ele vem no
+            # COMEÇO da mensagem — truncar não alcança isso, só o padrão EMAIL do
+            # scrub do Sentry alcança. Aqui limitamos o tamanho e damos a classe,
+            # que é o que separa "chave inválida" de "endereço recusado"; a
+            # redação do endereço é a camada de baixo, não esta.
+            logger.error(
+                "Falha ao enviar e-mail de recuperação de senha: %s: %s",
+                e.__class__.__name__, curto(e),
+            )
 
     return {"message": "Se o e-mail estiver cadastrado, você receberá um link em breve."}
 

@@ -259,10 +259,13 @@ class TestLog:
         assert "token count exceeds the maximum" in caplog.text
 
     def test_mensagem_da_api_e_truncada(self, monkeypatch, sem_sleep, caplog):
-        """O truncamento é a ÚNICA coisa que limita o residual de PII aqui: o
-        extrato carrega dado de TERCEIRO (contraparte de Pix/TED), a
-        LoggingIntegration do Sentry manda a string do log como evento e o
-        _before_send não varre logentry (#39). O teto é o que sai do servidor."""
+        """O teto é o que sai do servidor: o extrato carrega dado de TERCEIRO
+        (contraparte de Pix/TED) e a LoggingIntegration do Sentry manda a string
+        do log como evento.
+
+        Desde o #39 o `_before_send` varre `logentry`, mas isso NÃO substitui
+        este teto: o scrub casa formato conhecido (CPF, e-mail, agência/conta) e
+        um eco de payload da API é texto livre, que não tem forma para casar."""
         erro = _erro_cliente(400, "INVALID_ARGUMENT", message="x" * 5000)
         with caplog.at_level(logging.ERROR, logger=gemini.logger.name):
             _extrair(monkeypatch, _client_que_levanta(erro))
@@ -296,13 +299,39 @@ class TestLog:
         assert "code=503" in caplog.text
         assert "decorrido=" in caplog.text
 
-    def test_desconhecida_loga_repr_e_traceback(self, monkeypatch, sem_sleep, caplog):
+    def test_desconhecida_loga_classe_mensagem_e_traceback(
+        self, monkeypatch, sem_sleep, caplog
+    ):
         """Era o `except Exception` nu com só a CLASSE — o log que travou o
-        diagnóstico do #38 na fatura, e que sobrou aqui até o #31."""
+        diagnóstico do #38 na fatura, e que sobrou aqui até o #31.
+
+        O #39 trocou o `%r` por classe + mensagem TRUNCADA: repr() de exceção
+        despeja a tupla de args inteira, e este era o único sink do módulo fora
+        do teto do #38. A garantia diagnóstica é a mesma."""
         with caplog.at_level(logging.ERROR, logger=gemini.logger.name):
             _extrair(monkeypatch, _client_que_levanta(RuntimeError("causa nova")))
-        assert "RuntimeError('causa nova')" in caplog.text  # repr, não só a classe
+        assert "RuntimeError" in caplog.text       # a classe
+        assert "causa nova" in caplog.text         # e a mensagem, não só a classe
         assert "Traceback" in caplog.text
+
+    def test_desconhecida_tambem_respeita_o_teto(self, monkeypatch, sem_sleep, caplog):
+        """O teto do #38 valia só para os handlers MAPEADOS. Este caminho é o
+        `except Exception` — onde chega o não previsto, e por isso justamente
+        onde uma exceção que carregue corpo de resposta apareceria.
+
+        LIMITE DESTE TETO, que o teste mede de propósito: a asserção é sobre a
+        MENSAGEM formatada, não sobre `caplog.text`. `logger.exception` anexa o
+        traceback, e o traceback renderiza `RuntimeError: <mensagem inteira>` no
+        fim — truncar o format string NÃO alcança o `exc_info`. No Sentry a
+        mesma string reaparece em `exception.values[].value`. Quem cobre isso é
+        o scrub de `core/observability` (#39), não o truncamento; por isso o
+        scrub varre a exceção além do `logentry`."""
+        with caplog.at_level(logging.ERROR, logger=gemini.logger.name):
+            _extrair(monkeypatch, _client_que_levanta(RuntimeError("x" * 500)))
+
+        [msg] = [r.getMessage() for r in caplog.records if "falha inesperada" in r.getMessage()]
+        assert "…[truncado]" in msg
+        assert "x" * 201 not in msg
 
     def test_loga_sob_o_logger_do_extrato_e_nao_do_compartilhado(
         self, monkeypatch, sem_sleep, caplog

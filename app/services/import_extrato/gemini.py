@@ -33,8 +33,9 @@ dado do TITULAR; o extrato carrega PII de TERCEIROS (contrapartes de Pix/TED que
 não consentiram — é o que `redacao.py` tenta cobrir). A `message` é segura porque
 descreve a FORMA da requisição, não o conteúdo ("API key not valid", "Request
 contains an invalid argument"); o RESIDUAL, se a API um dia ecoar payload, é
-pior aqui do que lá. O truncamento é o que o limita — e abaixo dele não há rede
-enquanto a #39 (Sentry sem scrub de breadcrumb/logentry) não sair.
+pior aqui do que lá. O truncamento é o que o limita; abaixo dele o #39 pôs uma
+rede (scrub de logentry/breadcrumb em core/observability) que casa FORMATO
+conhecido e não alcança texto livre — não é substituta desta regra.
 """
 
 from __future__ import annotations

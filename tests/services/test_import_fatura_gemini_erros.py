@@ -269,10 +269,17 @@ class TestLog:
         assert "code=503" in caplog.text
         assert "decorrido=" in caplog.text
 
-    def test_desconhecida_loga_repr_e_traceback(self, monkeypatch, sem_sleep, caplog):
+    def test_desconhecida_loga_classe_mensagem_e_traceback(
+        self, monkeypatch, sem_sleep, caplog
+    ):
+        """A garantia do #38 (a CLASSE sozinha não basta para diagnosticar)
+        continua; o FORMATO mudou no #39. Era `%r`, que despeja a tupla de args
+        inteira sem teto — o único sink deste módulo fora do MAX_MSG_API. Agora
+        é classe + mensagem truncada, que diagnostica igual e tem limite."""
         with caplog.at_level(logging.ERROR, logger=gemini.logger.name):
             _extrair(monkeypatch, _client_que_levanta(RuntimeError("causa nova")))
-        assert "RuntimeError('causa nova')" in caplog.text  # repr, não só a classe
+        assert "RuntimeError" in caplog.text       # a classe
+        assert "causa nova" in caplog.text         # e a mensagem, não só a classe
         assert "Traceback" in caplog.text
 
 

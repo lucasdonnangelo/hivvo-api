@@ -38,11 +38,14 @@ consentiram — por isso a redação de services/import_extrato/redacao.py exist
 O `message` é seguro porque descreve a FORMA da requisição, não o conteúdo dela
 ("API key not valid", "Request contains an invalid argument", "The request timed
 out") — a API não ecoa o prompt. Mas o RESIDUAL, se um dia ela ecoar, é PIOR no
-extrato do que na fatura. O truncamento em MAX_MSG_API é o que o limita, e
-abaixo dele não há rede: a LoggingIntegration do sentry_sdk está ativa com os
-defaults (breadcrumb em INFO, evento em ERROR) e o `_before_send` de
-core/observability NÃO varre breadcrumb nem logentry (#39) — toda string logada
-aqui sai do servidor como está.
+extrato do que na fatura. O truncamento em MAX_MSG_API é o que o limita.
+
+Abaixo dele passou a haver UMA rede (#39, 03/08): a LoggingIntegration do
+sentry_sdk está ativa com os defaults (breadcrumb em INFO, evento em ERROR) e
+`core/observability` agora varre `logentry` e breadcrumb com `redigir_pii`. Ela
+NÃO substitui o truncamento nem esta regra: casa FORMATO conhecido (CPF, e-mail,
+agência/conta) e não tem como casar texto livre. Se a API ecoar um trecho do
+extrato, o que tiver forma sai redigido e o resto sai como está.
 """
 
 from __future__ import annotations
@@ -58,6 +61,7 @@ from google.genai import errors as genai_errors
 
 from app.core.config import settings
 from app.core.gemini_generation import STATUS_SEM_RETRY
+from app.core.scrub import MAX_TEXTO_LOG, curto
 
 # --- Mensagens ao usuário ---------------------------------------------------
 #
@@ -104,15 +108,19 @@ class MensagensErro:
 # Teto do que se loga da mensagem de erro da API. Ela vai para o Sentry como
 # evento (logger.error) — 200 chars bastam para o motivo e cortam qualquer eco
 # de payload que a API resolva incluir. Ver a nota de PII/logs no docstring.
-MAX_MSG_API = 200
+MAX_MSG_API = MAX_TEXTO_LOG
 
 
 def _curto(texto: object) -> str:
     """Corta a mensagem da API em MAX_MSG_API — ver a nota de PII/logs no
     docstring do módulo. Marca o corte para o leitor do log não confundir
-    truncamento nosso com mensagem curta da API."""
-    s = "" if texto is None else str(texto)
-    return s if len(s) <= MAX_MSG_API else s[:MAX_MSG_API] + "…[truncado]"
+    truncamento nosso com mensagem curta da API.
+
+    Delega para core/scrub.curto desde o #39: o mesmo teto passou a valer para
+    os sinks de texto de terceiro fora da importação (ai.py, auth.py). O nome e
+    a constante ficam porque são a superfície que os testes dos dois módulos de
+    importação usam."""
+    return curto(texto, MAX_MSG_API)
 
 
 def _retry_delay_pedido(e: genai_errors.ClientError, logger: logging.Logger) -> str | None:
@@ -313,13 +321,18 @@ def gerar_com_retry(
             )
             raise HTTPException(status_code=503, detail=mensagens.timeout)
         except Exception as e:
-            # Rede de segurança. Com repr + traceback: se algo cair AQUI, é
-            # porque não foi previsto — e aí o nome da classe sozinho não basta
-            # (foi exatamente esse log que travou o diagnóstico do #38).
+            # Rede de segurança. Classe + mensagem: se algo cair AQUI, é porque
+            # não foi previsto — e aí o nome da classe sozinho não basta (foi
+            # exatamente esse log que travou o diagnóstico do #38). O `%r` que
+            # estava aqui era o ÚNICO sink deste módulo fora do teto do #38:
+            # repr() de exceção despeja a tupla de args inteira, que numa
+            # exceção do SDK pode ser o corpo da resposta. O traceback (exc_info
+            # do .exception) continua vindo, e os locals dele já são varridos
+            # por include_local_variables=False + _scrub_frame_vars.
             decorrido = time.perf_counter() - inicio
             logger.exception(
-                "[import] falha inesperada na chamada ao Gemini após %.1fs: %r",
-                decorrido, e,
+                "[import] falha inesperada na chamada ao Gemini após %.1fs: %s: %s",
+                decorrido, e.__class__.__name__, _curto(e),
             )
             raise HTTPException(status_code=503, detail=mensagens.indisponivel)
     raise HTTPException(  # inalcançável — toda iteração retorna ou levanta

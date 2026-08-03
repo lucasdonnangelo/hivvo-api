@@ -46,6 +46,7 @@ from app.schemas.import_extrato import (
     ExtratoPreviewResponse,
     ReconciliacaoExtratoOut,
 )
+from app.core.scrub import curto
 from app.services.faturas import fatura_existe
 from app.services.import_extrato import enriquecimento, gemini, redacao
 from app.services.import_extrato.persistencia import (
@@ -63,6 +64,11 @@ from app.services.import_extrato.reconciliacao import TOLERANCIA, reconciliar
 from app.services.import_fatura import extracao_pdf
 
 logger = logging.getLogger(__name__)
+
+# Teto do nome de banco em log (#39). Menor que o MAX_TEXTO_LOG de mensagem de
+# API: nome de instituição real cabe folgado em 40, então o corte é sinal de que
+# veio outra coisa no campo — ver o comentário de resíduo no commit.
+MAX_BANCO_LOG = 40
 
 router = APIRouter(prefix="/import", tags=["import"])
 
@@ -340,10 +346,20 @@ def commit_extrato(
         session.rollback()
         raise
 
+    # `banco` é o ÚNICO conteúdo de documento que este módulo loga, e fica de
+    # propósito: é componente da chave de idempotência e o dado que a #33 (nomes
+    # estruturalmente distintos para o mesmo banco) precisa para ser diagnosticada.
+    #
+    # RESÍDUO, com precisão: `normalizar_banco` limita o CHARSET (casefold, sem
+    # acento, só alfanumérico), não o CONTEÚDO. Se o modelo confundir o campo e
+    # trouxer o titular no lugar da instituição, "JOAO DA SILVA CPF 12345678901"
+    # vira alfanumérico e continua sendo o nome de uma pessoa. O truncamento
+    # abaixo limita o TAMANHO do vazamento, não a NATUREZA dele. O scrub do
+    # Sentry pega o que tiver forma (o CPF); o nome não tem forma e passa.
     logger.info(
         "[import] commit extrato: banco=%s periodo=%s..%s receitas=%d debitos=%d "
         "pagamentos=%d sobrescritos=%d rendimento=%s ignoradas=%d recorrencia=%d bate=%s",
-        normalizar_banco(extrato.banco), periodo_de, periodo_ate,
+        curto(normalizar_banco(extrato.banco), MAX_BANCO_LOG), periodo_de, periodo_ate,
         res.receitas_criadas, res.debitos_criados, res.pagamentos_registrados,
         res.pagamentos_sobrescritos, res.rendimento_importado, res.linhas_ignoradas,
         res.receitas_puladas_recorrencia, rec.bate,

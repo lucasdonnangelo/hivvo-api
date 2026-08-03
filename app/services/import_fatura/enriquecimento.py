@@ -1,4 +1,9 @@
-"""Auto-categoria da fatura — a peça do preview que precisa do BANCO.
+"""Enriquecimento da fatura: auto-categoria (precisa do BANCO) + data suspeita (pura).
+
+A auto-categoria é a peça que precisa do banco; a validação de data não precisa
+de nada além do próprio documento e vive aqui só porque o CANAL de saída é o
+mesmo (`EnriquecimentoFaturaLinha`, join por `indice`) — criar um terceiro array
+paralelo para um bool seria pior.
 
 A fatura nascia com TODA linha em "Outros" (o extrato já tinha enriquecimento;
 a fatura não). Importar seis meses de histórico e ver o Resumo, o donut de
@@ -38,6 +43,7 @@ PII/logs: descrição e valor NUNCA vão para log — só contadores.
 
 from __future__ import annotations
 
+import datetime as dt
 from decimal import Decimal
 from typing import Optional
 
@@ -154,6 +160,43 @@ def indices_materializaveis(fatura: FaturaExtraida) -> list[int]:
     ]
 
 
+def datas_suspeitas(fatura: FaturaExtraida, indices: list[int]) -> dict[int, str]:
+    """{indice: motivo} das linhas com data IMPOSSÍVEL para ESTE documento (#46).
+
+    Função PURA (nenhum I/O) — a mesma extração do mesmo PDF devolveu a mesma
+    compra ora em 2026-06-29, ora em 2026-07-29, e a reconciliação passou nas
+    duas: ela soma VALORES, e o valor estava certo. Uma linha um mês fora entra
+    na FATURA ERRADA (a data da compra deriva a competência pelo fechamento do
+    cartão) e "A pagar" e a projeção herdam o erro sem nenhum sinal.
+
+    SÓ O LIMITE SUPERIOR: `data > emissao`. Compra quatro dias DEPOIS da emissão
+    não existe no documento que foi emitido antes dela.
+
+    `periodo.de` NÃO serve de limite inferior, e isso é o coração da regra: nesta
+    Itaú o período extraído foi 2025-11-28 → 2026-07-24 porque `periodo.de` é a
+    data de ORIGEM da parcela mais antiga (uma 8/11), não o início do ciclo. Um
+    limite inferior tirado dali seria derivado das próprias linhas que ele
+    validaria — circular — e flagaria parcelamento longo LEGÍTIMO.
+
+    SINALIZA, nunca corrige: não sabemos qual é a data certa, e inventá-la seria
+    pior que o erro. Nunca bloqueia: mesmo princípio da reconciliação — não bater
+    não é erro HTTP, o cliente decide.
+
+    DEGRADA EM SILÊNCIO SEGURO: sem `emissao` (opcional no contrato — o
+    `thinking=0` já devolveu `periodo` null uma vez) o check não roda, e isso NÃO
+    é erro. Devolve vazio e ninguém fica sabendo — ausência de âncora é ausência
+    de opinião, não suspeita.
+    """
+    if fatura.emissao is None:
+        return {}
+    emissao = dt.date.fromisoformat(fatura.emissao)
+    return {
+        i: "posterior_a_emissao"
+        for i in indices
+        if dt.date.fromisoformat(fatura.transacoes[i].data) > emissao
+    }
+
+
 def _sugerir(
     session: Session, usuario_id: int, fatura: FaturaExtraida, indices: list[int]
 ) -> dict[int, tuple[Optional[str], Optional[str]]]:
@@ -190,19 +233,24 @@ def _sugerir(
 def enriquecer_fatura(
     session: Session, usuario_id: int, fatura: FaturaExtraida
 ) -> list[EnriquecimentoFaturaLinha]:
-    """Array de auto-categoria do preview, um item por linha MATERIALIZÁVEL.
+    """Array de enriquecimento do preview, um item por linha MATERIALIZÁVEL.
 
     Endereçado por `indice` em fatura.transacoes — join explícito, nunca por
     posição: as linhas não-materializáveis (pagamento, ajuste_saldo) não têm item
     e os índices dos que têm continuam sendo os da lista original.
+
+    O recorte por materializável vale para os DOIS sinais: a data de um
+    `pagamento` não deriva competência nenhuma, então não há o que flagar nela.
     """
     indices = indices_materializaveis(fatura)
     sugestoes = _sugerir(session, usuario_id, fatura, indices)
+    suspeitas = datas_suspeitas(fatura, indices)
     return [
         EnriquecimentoFaturaLinha(
             indice=i,
             categoria_sugerida=sugestoes[i][0],
             origem_sugestao=sugestoes[i][1],
+            data_suspeita=suspeitas.get(i),
         )
         for i in indices
     ]

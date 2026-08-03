@@ -177,7 +177,7 @@ def preview_extrato(
     logger.info(
         "[import] preview extrato: bytes=%d paginas=%d chars=%d linhas=%d "
         "aplicavel=%s bate=%s categorizadas=%d pagamentos=%d unico=%d ambiguo=%d "
-        "sem_match=%d flag_recorrencia=%d",
+        "sem_match=%d flag_recorrencia=%d datas_suspeitas=%d",
         len(dados), paginas, len(texto), len(extrato.linhas), rec.aplicavel, rec.bate,
         sum(1 for e in enriquecido if e.categoria_sugerida is not None),
         len(propostas),
@@ -185,6 +185,9 @@ def preview_extrato(
         sum(1 for p in propostas if p.status == "ambiguo"),
         sum(1 for p in propostas if p.status == "sem_match"),
         sum(1 for e in enriquecido if e.provavel_recorrencia),
+        # Só a CONTAGEM: a data de uma linha é conteúdo do extrato e não vai para
+        # log, como a descrição e o valor.
+        sum(1 for e in enriquecido if e.data_suspeita is not None),
     )
     return ExtratoPreviewResponse(
         extrato=extrato,

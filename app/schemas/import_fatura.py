@@ -187,11 +187,23 @@ class EnriquecimentoFaturaLinha(BaseModel):
       "Outros", o neutro). É NOME, não id: `Transacao.categoria` é string.
     - `origem_sugestao`: qual camada carregou o peso. Instrumentação, não
       decoração — é como vamos medir depois onde investir.
+    - `data_suspeita`: a data da linha é impossível para ESTE documento (#46).
+      None = nada a dizer (o caso normal, e também o caso "não deu para checar").
+
+    Consequência do recorte por linha MATERIALIZÁVEL: uma `pagamento` ou
+    `ajuste_saldo` com data errada NÃO é flagada. É deliberado — elas não viram
+    `Transacao`, então a data delas nunca deriva competência e não pode
+    contaminar fatura nenhuma.
     """
 
     indice: int
     categoria_sugerida: str | None = None
     origem_sugestao: Literal["historico", "regra"] | None = None
+    # SINAL, não gate: compra DEPOIS da emissão da fatura não existe naquele
+    # documento (ver services/import_fatura/enriquecimento.datas_suspeitas). O
+    # servidor NUNCA corrige a data — não sabemos qual é a certa, e inventá-la
+    # seria pior que o erro. Default None → aditivo.
+    data_suspeita: Literal["posterior_a_emissao"] | None = None
 
 
 class FaturaPreviewResponse(BaseModel):

@@ -225,6 +225,10 @@ class EnriquecimentoLinha(BaseModel):
       a chamada de categorização falhou; "Outros" é palpite, None é ausência);
     - `fatura_proposta`: pagamento_fatura;
     - `provavel_recorrencia`/`recorrencia_casada`: receita.
+    - `data_suspeita`: TODOS os baldes — a data cai fora do período do documento
+      (#46). Aqui o intervalo INTEIRO vale como limite (diferente da fatura, que
+      só tem limite superior): o período do extrato é um intervalo REAL impresso
+      no documento, sem parcela antiga esticando a faixa para trás.
     """
 
     indice: int
@@ -232,6 +236,12 @@ class EnriquecimentoLinha(BaseModel):
     fatura_proposta: FaturaPropostaOut | None = None
     provavel_recorrencia: bool = False
     recorrencia_casada: RecorrenciaCasadaOut | None = None
+    # SINAL, não gate (ver services/import_extrato/enriquecimento.datas_suspeitas).
+    # Os dois lados são valores DISTINTOS de propósito: a cópia da revisão difere
+    # ("antes do período" ≠ "depois do período") e um bool obrigaria o front a
+    # re-derivar qual — reimplementar a regra do lado errado. Default None →
+    # aditivo.
+    data_suspeita: Literal["antes_do_periodo", "depois_do_periodo"] | None = None
 
 
 class ExtratoPreviewResponse(BaseModel):

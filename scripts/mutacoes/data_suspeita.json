@@ -1,0 +1,65 @@
+[
+  {
+    "titulo": "comparador da emissao invertido (> vira >=) — o limite exato passa a flagar",
+    "arquivo": "app/services/import_fatura/enriquecimento.py",
+    "de": "        if dt.date.fromisoformat(fatura.transacoes[i].data) > emissao",
+    "para": "        if dt.date.fromisoformat(fatura.transacoes[i].data) >= emissao",
+    "teste": "tests/services/test_import_data_suspeita.py::test_fatura_limite_exato_nao_flaga"
+  },
+  {
+    "titulo": "a regra da fatura nao roda (nenhuma linha e' flagada)",
+    "arquivo": "app/services/import_fatura/enriquecimento.py",
+    "de": "    if fatura.emissao is None:\n        return {}",
+    "para": "    if True:\n        return {}",
+    "teste": "tests/services/test_import_data_suspeita.py::test_fatura_posterior_a_emissao_flaga"
+  },
+  {
+    "titulo": "guarda de ancora nula removida na fatura (emissao null deixa de degradar)",
+    "arquivo": "app/services/import_fatura/enriquecimento.py",
+    "de": "    if fatura.emissao is None:\n        return {}\n",
+    "para": "",
+    "teste": "tests/services/test_import_data_suspeita.py::test_fatura_emissao_nula_nao_flaga_e_nao_levanta"
+  },
+  {
+    "titulo": "fatura ganha limite INFERIOR por periodo.de (flagaria parcelamento longo legitimo)",
+    "arquivo": "app/services/import_fatura/enriquecimento.py",
+    "de": "        if dt.date.fromisoformat(fatura.transacoes[i].data) > emissao",
+    "para": "        if dt.date.fromisoformat(fatura.transacoes[i].data) > emissao or (fatura.periodo is not None and dt.date.fromisoformat(fatura.transacoes[i].data) < dt.date.fromisoformat(fatura.periodo.de))",
+    "teste": "tests/services/test_import_data_suspeita.py::test_fatura_parcelamento_longo_legitimo_nao_flaga"
+  },
+  {
+    "titulo": "join por INDICE vira posicao no array de itens",
+    "arquivo": "app/services/import_fatura/enriquecimento.py",
+    "de": "            indice=i,\n            categoria_sugerida=sugestoes[i][0],\n            origem_sugestao=sugestoes[i][1],\n            data_suspeita=suspeitas.get(i),\n        )\n        for i in indices\n",
+    "para": "            indice=posicao,\n            categoria_sugerida=sugestoes[i][0],\n            origem_sugestao=sugestoes[i][1],\n            data_suspeita=suspeitas.get(i),\n        )\n        for posicao, i in enumerate(indices)\n",
+    "teste": "tests/routers/test_import_data_suspeita.py::test_fatura_preview_flaga_no_indice_certo"
+  },
+  {
+    "titulo": "extrato perde o limite INFERIOR (so' checa o lado de cima)",
+    "arquivo": "app/services/import_extrato/enriquecimento.py",
+    "de": "        if data < de:\n            suspeitas[i] = \"antes_do_periodo\"\n        elif data > ate:",
+    "para": "        if False:\n            suspeitas[i] = \"antes_do_periodo\"\n        elif data > ate:",
+    "teste": "tests/services/test_import_data_suspeita.py::test_extrato_flaga_os_DOIS_lados_do_intervalo"
+  },
+  {
+    "titulo": "extrato com comparadores frouxos (< vira <=, > vira >=) — os limites exatos flagam",
+    "arquivo": "app/services/import_extrato/enriquecimento.py",
+    "de": "        if data < de:\n            suspeitas[i] = \"antes_do_periodo\"\n        elif data > ate:",
+    "para": "        if data <= de:\n            suspeitas[i] = \"antes_do_periodo\"\n        elif data >= ate:",
+    "teste": "tests/services/test_import_data_suspeita.py::test_extrato_limites_exatos_nao_flagam"
+  },
+  {
+    "titulo": "guarda do periodo INVERTIDO removida (de > ate flagaria todas as linhas)",
+    "arquivo": "app/services/import_extrato/enriquecimento.py",
+    "de": "    if de > ate:\n        return {}\n",
+    "para": "",
+    "teste": "tests/services/test_import_data_suspeita.py::test_extrato_periodo_invertido_degrada_em_silencio"
+  },
+  {
+    "titulo": "guarda de periodo nulo removida no extrato",
+    "arquivo": "app/services/import_extrato/enriquecimento.py",
+    "de": "    if extrato.periodo is None:\n        return {}\n",
+    "para": "",
+    "teste": "tests/services/test_import_data_suspeita.py::test_extrato_periodo_nulo_nao_flaga_e_nao_levanta"
+  }
+]

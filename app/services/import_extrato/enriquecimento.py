@@ -11,6 +11,9 @@ Por linha, o que a revisão precisa para decidir — SEM decidir nada e SEM escr
 3. `receita` -> `provavel_recorrencia`: flag da armadilha do salário — a receita
    casa com uma recorrência vigente (≈valor + ≈dia)? Só FLAG; o default "não
    importar" é da revisão.
+4. TODOS os baldes -> `data_suspeita`: a data cai fora do período do documento
+   (#46). Puro, sem banco, sem modelo — a única peça daqui que não precisa de
+   I/O, e mora neste módulo porque o CANAL de saída é o mesmo.
 
 STATELESS: só SELECT, sempre filtrado por usuario_id. Zero escrita — nem add, nem
 flush, nem commit (garantido por teste com listener de before_flush).
@@ -143,6 +146,45 @@ def competencias_candidatas(
         if distancia <= janela_dias:
             candidatas.append((mes, ano, distancia))
     return candidatas
+
+
+def datas_suspeitas(extrato: ExtratoExtraido) -> dict[int, str]:
+    """{indice: motivo} das linhas com data FORA do período do documento (#46).
+
+    Aqui vale o intervalo INTEIRO — `data < periodo.de` ou `data > periodo.ate` —,
+    regra mais forte que a da fatura (que só tem limite superior). A diferença
+    não é rigor arbitrário: o período do extrato é um intervalo REAL impresso no
+    documento, sem parcela antiga esticando a faixa para trás, então o limite
+    inferior é confiável e não é circular.
+
+    Motiva: a extração já devolveu a MESMA compra do MESMO PDF com um mês de
+    diferença, e a reconciliação passou (ela soma valores; o valor estava certo).
+    Uma data fora do período vira lançamento no mês errado sem nenhum sinal.
+
+    SINALIZA, nunca corrige, nunca bloqueia.
+
+    DEGRADA EM SILÊNCIO SEGURO em DOIS casos, e nenhum deles é erro:
+    - `periodo` ausente (opcional no contrato: o commit exige, o preview tolera);
+    - período INVERTIDO (`de > ate`). O preview não o rejeita — só o commit o
+      faz. Sem esta guarda, uma âncora incoerente flagaria TODAS as linhas, o
+      falso positivo mais barulhento possível. Âncora que não se sustenta não
+      opina.
+    """
+    if extrato.periodo is None:
+        return {}
+    de = dt.date.fromisoformat(extrato.periodo.de)
+    ate = dt.date.fromisoformat(extrato.periodo.ate)
+    if de > ate:
+        return {}
+
+    suspeitas: dict[int, str] = {}
+    for i, linha in enumerate(extrato.linhas):
+        data = dt.date.fromisoformat(linha.data)
+        if data < de:
+            suspeitas[i] = "antes_do_periodo"
+        elif data > ate:
+            suspeitas[i] = "depois_do_periodo"
+    return suspeitas
 
 
 def casar_recorrencia(
@@ -423,6 +465,9 @@ def enriquecer(
     categorias = _sugerir_categorias(session, usuario_id, linhas, indices_categoria)
     faturas = _propor_faturas(session, usuario_id, linhas, indices_pagamento)
     recorrencias = _flagar_recorrencias(session, usuario_id, linhas, indices_receita)
+    # Sem banco e sem recorte de balde: a data de QUALQUER linha importada vira a
+    # data do lançamento, então todas são checadas.
+    suspeitas = datas_suspeitas(extrato)
 
     enriquecimento = []
     for i in range(len(linhas)):
@@ -434,6 +479,7 @@ def enriquecer(
                 fatura_proposta=faturas.get(i),
                 provavel_recorrencia=provavel,
                 recorrencia_casada=casada,
+                data_suspeita=suspeitas.get(i),
             )
         )
     return enriquecimento

@@ -193,9 +193,13 @@ def preview_fatura(
     por_origem = Counter(e.origem_sugestao or "nenhuma" for e in enriquecimento)
     logger.info(
         "[import] preview: cartao=%s bytes=%d paginas=%d chars=%d transacoes=%d "
-        "bate=%s categoria_historico=%d categoria_regra=%d categoria_nenhuma=%d",
+        "bate=%s categoria_historico=%d categoria_regra=%d categoria_nenhuma=%d "
+        "datas_suspeitas=%d",
         cartao.id, len(dados), paginas, len(texto), len(fatura.transacoes), rec.bate,
         por_origem["historico"], por_origem["regra"], por_origem["nenhuma"],
+        # Só a CONTAGEM: a data de uma linha é conteúdo da fatura e não vai para
+        # log, como a descrição e o valor.
+        sum(1 for e in enriquecimento if e.data_suspeita is not None),
     )
     return FaturaPreviewResponse(
         cartao_id=cartao.id,

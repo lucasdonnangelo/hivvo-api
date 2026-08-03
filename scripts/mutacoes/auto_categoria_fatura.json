@@ -30,8 +30,8 @@
   {
     "titulo": "enriquecimento montado por POSICAO (nao por indice explicito)",
     "arquivo": "app/services/import_fatura/enriquecimento.py",
-    "de": "            indice=i,\n            categoria_sugerida=sugestoes[i][0],\n            origem_sugestao=sugestoes[i][1],\n        )\n        for i in indices\n",
-    "para": "            indice=posicao,\n            categoria_sugerida=sugestoes[i][0],\n            origem_sugestao=sugestoes[i][1],\n        )\n        for posicao, i in enumerate(indices)\n",
+    "de": "            indice=i,\n            categoria_sugerida=sugestoes[i][0],\n            origem_sugestao=sugestoes[i][1],\n            data_suspeita=suspeitas.get(i),\n        )\n        for i in indices\n",
+    "para": "            indice=posicao,\n            categoria_sugerida=sugestoes[i][0],\n            origem_sugestao=sugestoes[i][1],\n            data_suspeita=suspeitas.get(i),\n        )\n        for posicao, i in enumerate(indices)\n",
     "teste": "tests/routers/test_import_fatura_auto_categoria.py::test_so_linha_materializavel_recebe_item"
   },
   {

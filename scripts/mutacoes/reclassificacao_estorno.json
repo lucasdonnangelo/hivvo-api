@@ -1,0 +1,37 @@
+[
+  {
+    "titulo": "a categoria NAO e' recomputada (volta a indexar pelo BALDE em vez do tipo efetivo)",
+    "arquivo": "app/services/import_extrato/persistencia.py",
+    "de": "nomes[_CATEGORIA_POR_TIPO[tipo_efetivo(linhas[i])]]",
+    "para": "nomes[_TIPO_POR_BALDE[linhas[i].balde]]",
+    "teste": "tests/routers/test_import_extrato_commit.py::test_reclassificar_grava_estorno_e_RECOMPUTA_a_categoria"
+  },
+  {
+    "titulo": "o override deixa de ser RESTRITO (Literal vira str: payload escolhe tipo arbitrario)",
+    "arquivo": "app/schemas/import_extrato.py",
+    "de": "    reclassificar_como: Literal[\"estorno\"] | None = None",
+    "para": "    reclassificar_como: str | None = None",
+    "teste": "tests/routers/test_import_extrato_commit.py::test_override_para_qualquer_outro_tipo_e_rejeitado"
+  },
+  {
+    "titulo": "tipo_efetivo IGNORA o override (a linha volta a virar receita)",
+    "arquivo": "app/services/import_extrato/persistencia.py",
+    "de": "    if base == \"receita\" and linha.reclassificar_como is not None:\n        return linha.reclassificar_como\n",
+    "para": "",
+    "teste": "tests/routers/test_import_extrato_commit.py::test_reembolso_ABATE_a_despesa_e_NAO_entra_na_receita"
+  },
+  {
+    "titulo": "o recibo chama de RECEITA o que gravou como estorno",
+    "arquivo": "app/services/import_extrato/persistencia.py",
+    "de": "        if tipo == \"receita\":\n            res.receitas_criadas += 1\n        elif tipo == \"estorno\":\n            res.estornos_criados += 1",
+    "para": "        if tipo in (\"receita\", \"estorno\"):\n            res.receitas_criadas += 1",
+    "teste": "tests/routers/test_import_extrato_commit.py::test_recibo_nao_chama_de_receita_o_que_gravou_como_estorno"
+  },
+  {
+    "titulo": "a reclassificacao ATROPELA o tri-estado (passa a decidir importar, nao so' o default)",
+    "arquivo": "app/services/import_extrato/persistencia.py",
+    "de": "        if linha.importar is not None:\n            decisoes[i] = linha.importar  # EXPLÍCITO VENCE, sempre — inclusive False\n        elif linha.balde is not Balde.receita or linha.reclassificar_como is not None:",
+    "para": "        if linha.reclassificar_como is not None:\n            decisoes[i] = True\n        elif linha.importar is not None:\n            decisoes[i] = linha.importar\n        elif linha.balde is not Balde.receita:",
+    "teste": "tests/routers/test_import_extrato_commit.py::test_importar_FALSE_vence_a_reclassificacao"
+  }
+]

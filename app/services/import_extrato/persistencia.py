@@ -4,7 +4,10 @@ Os três baldes do extrato NÃO viram a mesma coisa (PLANO_IMPORTACAO — "extra
 fatura se RECONCILIAM, não se somam"):
 
 - `receita`  → Transacao(tipo="receita", forma_pagamento="PIX") pela data da
-  linha — entrada por transferência na conta, não "Débito";
+  linha — entrada por transferência na conta, não "Débito". A revisão pode
+  RECLASSIFICÁ-LA para tipo="estorno" (#48): o LLM não tem como saber se um
+  "Pix recebido — FULANO" é salário, devolução de loja ou o amigo pagando de
+  volta, então quem sabe marca. O tipo final sai de `tipo_efetivo`, um lugar só;
 - `debito`   → Transacao(tipo="despesa", forma_pagamento="Débito") — o dinheiro
   JÁ SAIU na data: SEM cartao_id e SEM fatura_mes/ano. É o que faz a projeção
   tratá-la como consumo realizado (Fonte 3 de services/estatisticas: `a_pagar`
@@ -48,16 +51,44 @@ from app.services.import_fatura.persistencia import ORIGEM_IMPORT
 CATEGORIA_RENDIMENTO = "Rendimentos"
 DESCRICAO_RENDIMENTO = "Rendimento líquido"
 
-# Balde -> tipo de categoria, para revalidar a categoria contra a lista DO
-# USUÁRIO. pagamento_fatura não entra: não é consumo, não tem categoria (gêmeo
-# do _TIPO_POR_BALDE do enriquecimento, que faz o mesmo recorte no preview).
+# Balde -> tipo de Transacao BASE (antes da decisão da revisão).
+# pagamento_fatura não entra: não é lançamento (gêmeo do _TIPO_POR_BALDE do
+# enriquecimento, que faz o mesmo recorte no preview).
 _TIPO_POR_BALDE = {Balde.debito: "despesa", Balde.receita: "receita"}
+
+# tipo de Transacao -> universo de CATEGORIA do usuário. "estorno" usa o de
+# DESPESA porque a categoria de um estorno É uma categoria de despesa (é o gasto
+# que voltou) — o MESMO recorte do _TIPOS_DB_POR_CATEGORIA do import de fatura.
+_CATEGORIA_POR_TIPO = {"despesa": "despesa", "estorno": "despesa", "receita": "receita"}
+
+
+def tipo_efetivo(linha: LinhaCommit) -> str | None:
+    """O tipo de Transacao que a linha vira: o balde MAIS a decisão da revisão.
+
+    FONTE ÚNICA de propósito (#48). Antes, o tipo era decidido em DOIS lugares
+    que não se conheciam — o if/else de `materializar_extrato` e o
+    `_TIPO_POR_BALDE` de `validar_categorias` — e eles concordavam por
+    coincidência de escrita, não por construção. É exatamente essa junta que a
+    reclassificação abre: virar o tipo MUDA a lista de categorias válidas, e
+    carregar a categoria de receita para um estorno seria gravar no banco uma
+    categoria que o usuário não pode nem ver no seletor daquele tipo.
+
+    None = a linha não vira Transacao (pagamento_fatura vira PagamentoFatura).
+    """
+    base = _TIPO_POR_BALDE.get(linha.balde)
+    if base == "receita" and linha.reclassificar_como is not None:
+        return linha.reclassificar_como
+    return base
 
 
 @dataclass
 class ResultadoMaterializacaoExtrato:
     receitas_criadas: int = 0  # linhas do balde receita (o rendimento tem flag própria)
     debitos_criados: int = 0
+    # Subconjunto do balde receita RECLASSIFICADO na revisão (#48) — fora de
+    # receitas_criadas de propósito: o recibo não pode chamar de receita o que
+    # gravou como estorno.
+    estornos_criados: int = 0
     rendimento_importado: bool = False
     linhas_ignoradas: int = 0
     receitas_puladas_recorrencia: int = 0
@@ -95,19 +126,30 @@ def resolver_indecisos(
     default de segurança não pode depender de o front ter mandado a flag certa.
     Quem quer importar mesmo assim manda `importar: true` — o explícito vence.
 
+    RECLASSIFICADA (#48) sai da armadilha, mas SÓ COMO DEFAULT: uma linha que o
+    usuário marcou como dinheiro de volta não pode ser o salário recorrente, e
+    deixá-la no matcher a descartaria em silêncio quando o valor/dia batessem.
+    Isso muda o INDECISO, nunca o EXPLÍCITO — `importar: false` com
+    reclassificação continua sendo "não importa". As duas decisões são
+    diferentes: "não é indecisa" não é "importa".
+
     2 queries fixas (cabeçalhos + vigências), e só quando há receita indecisa.
     """
     decisoes: dict[int, bool] = {}
     indecisas_receita = [
         i
         for i, linha in enumerate(linhas)
-        if linha.importar is None and linha.balde is Balde.receita
+        if linha.importar is None
+        and linha.balde is Balde.receita
+        and linha.reclassificar_como is None
     ]
     for i, linha in enumerate(linhas):
         if linha.importar is not None:
-            decisoes[i] = linha.importar
-        elif linha.balde is not Balde.receita:
-            decisoes[i] = True  # débito/pagamento indeciso entra (não há armadilha)
+            decisoes[i] = linha.importar  # EXPLÍCITO VENCE, sempre — inclusive False
+        elif linha.balde is not Balde.receita or linha.reclassificar_como is not None:
+            # débito/pagamento indeciso entra (não há armadilha), e receita
+            # reclassificada também (não é renda recorrente — ver docstring)
+            decisoes[i] = True
 
     if not indecisas_receita:
         return decisoes, 0
@@ -140,12 +182,18 @@ def validar_categorias(
     apagada no meio do fluxo) vira "Outros" em vez de sujar o banco. É o MESMO
     guarda-corpo que o preview aplica na sugestão do modelo.
 
+    O universo vem do `tipo_efetivo`, NÃO do balde (#48): reclassificar receita
+    -> estorno troca a lista válida (receita -> despesa), e a categoria é
+    RECOMPUTADA contra a lista nova. Uma "Salário" que veio marcada como
+    dinheiro de volta não existe no universo de despesa e cai em "Outros" — o
+    servidor não carrega para um estorno a categoria escolhida como receita.
+
     2 queries fixas (uma por tipo), e só quando há linha categorizável.
     """
     indices = [
         i
         for i, linha in enumerate(linhas)
-        if decisoes.get(i, True) and linha.balde in _TIPO_POR_BALDE
+        if decisoes.get(i, True) and tipo_efetivo(linha) is not None
     ]
     if not indices:
         return {}
@@ -154,7 +202,9 @@ def validar_categorias(
         for tipo in ("despesa", "receita")
     }
     return {
-        i: casar_categoria(linhas[i].categoria, nomes[_TIPO_POR_BALDE[linhas[i].balde]])
+        i: casar_categoria(
+            linhas[i].categoria, nomes[_CATEGORIA_POR_TIPO[tipo_efetivo(linhas[i])]]
+        )
         for i in indices
     }
 
@@ -209,24 +259,27 @@ def materializar_extrato(
         if not decisoes.get(i, True):
             res.linhas_ignoradas += 1
             continue
-        if linha.balde is Balde.pagamento_fatura:
-            continue
+        tipo = tipo_efetivo(linha)
+        if tipo is None:
+            continue  # pagamento_fatura: não é lançamento
         valor = Decimal(linha.valor)
         if valor == 0:
             continue  # linha degenerada, sai calada
-        if linha.balde is Balde.receita:
-            _criar_transacao(
-                session, usuario_id, "receita",
-                dt.date.fromisoformat(linha.data), linha.descricao, valor,
-                categorias.get(i, "Outros"), forma_pagamento="PIX",
-            )
+        # forma_pagamento pelo MOVIMENTO, não pela classificação: o débito é
+        # saída pela conta; receita E estorno são a MESMA transferência recebida
+        # (#48 mudou o que a entrada significa na agregação, não como ela
+        # entrou), então os dois ficam em "PIX".
+        _criar_transacao(
+            session, usuario_id, tipo,
+            dt.date.fromisoformat(linha.data), linha.descricao, valor,
+            categorias.get(i, "Outros"),
+            forma_pagamento="Débito" if tipo == "despesa" else "PIX",
+        )
+        if tipo == "receita":
             res.receitas_criadas += 1
+        elif tipo == "estorno":
+            res.estornos_criados += 1
         else:
-            _criar_transacao(
-                session, usuario_id, "despesa",
-                dt.date.fromisoformat(linha.data), linha.descricao, valor,
-                categorias.get(i, "Outros"), forma_pagamento="Débito",
-            )
             res.debitos_criados += 1
 
     rendimento = Decimal(extrato.rendimento)
@@ -262,7 +315,10 @@ def _criar_transacao(
     SEM cartao_id e SEM fatura_mes/fatura_ano, sempre: extrato é conta, não
     cartão. É o que mantém a linha na Fonte 3 da projeção (à vista, realizada,
     nunca `a_pagar`) — derivar fatura aqui transformaria caixa que JÁ SAIU em
-    dívida de crédito, o oposto do balde.
+    dívida de crédito, o oposto do balde. No ESTORNO (#48) o `cartao_id=None`
+    carrega peso extra: sem cartão ele fica fora do `_soma_a_pagar`, e é isso
+    que impede um reembolso de CONTA de virar crédito abatendo o "A pagar" de
+    uma fatura qualquer — a régua anti-subconta do #9.
 
     `forma_pagamento` é decisão do CHAMADOR: débito é a saída pela conta
     ("Débito"); receita de linha é transferência recebida ("PIX" — o valor

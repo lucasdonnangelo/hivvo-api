@@ -235,6 +235,9 @@ def commit_extrato(
     REVALIDA tudo (não confia no que o front editou): categoria contra a lista
     do usuário, cartão contra a propriedade, competência contra a existência da
     fatura, e o default "não importar" da receita recorrente recomputado aqui.
+    A reclassificação receita->estorno (#48) segue a mesma régua: o tipo válido
+    é restrito pelo SCHEMA (422 em qualquer outro) e a categoria é RECOMPUTADA
+    no universo novo, nunca carregada do que o front mandou.
     """
     extrato = body.extrato
 
@@ -358,15 +361,18 @@ def commit_extrato(
     # Sentry pega o que tiver forma (o CPF); o nome não tem forma e passa.
     logger.info(
         "[import] commit extrato: banco=%s periodo=%s..%s receitas=%d debitos=%d "
-        "pagamentos=%d sobrescritos=%d rendimento=%s ignoradas=%d recorrencia=%d bate=%s",
+        "estornos=%d pagamentos=%d sobrescritos=%d rendimento=%s ignoradas=%d "
+        "recorrencia=%d bate=%s",
         curto(normalizar_banco(extrato.banco), MAX_BANCO_LOG), periodo_de, periodo_ate,
-        res.receitas_criadas, res.debitos_criados, res.pagamentos_registrados,
+        res.receitas_criadas, res.debitos_criados, res.estornos_criados,
+        res.pagamentos_registrados,
         res.pagamentos_sobrescritos, res.rendimento_importado, res.linhas_ignoradas,
         res.receitas_puladas_recorrencia, rec.bate,
     )
     return ExtratoCommitResponse(
         receitas_criadas=res.receitas_criadas,
         debitos_criados=res.debitos_criados,
+        estornos_criados=res.estornos_criados,
         pagamentos_registrados=res.pagamentos_registrados,
         pagamentos_sobrescritos=res.pagamentos_sobrescritos,
         rendimento_importado=res.rendimento_importado,

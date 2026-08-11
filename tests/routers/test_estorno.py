@@ -392,6 +392,32 @@ class TestTransacoesEstorno:
         assert (body["fatura_mes"], body["fatura_ano"]) == (8, 2026)
         assert body["tipo"] == "estorno"
 
+    def test_post_estorno_SEM_cartao_ponta_a_ponta(self, session, users, as_user):
+        """#48 (B) — o caso que a tela de criação manual passou a permitir.
+
+        Reembolso por Pix é estorno SEM cartão: `cartao_id` é nulável no modelo
+        e o CHECK `valor > 0` mantém o valor positivo. Sem cartão ele não deriva
+        competência (fica na Fonte 3, à vista) e ABATE o consumo do mês pela
+        data — que é o ponto: renda inflada era o bug.
+        """
+        _add_fatura_tx(session, users[0].id, None, valor="500.00")  # despesa do mês
+
+        resp = as_user(users[0]).post("/transactions", json={
+            "tipo": "estorno", "data": "2026-07-08", "descricao": "Reembolso do rachar",
+            "valor": "120.00", "categoria": "Alimentação",
+            "forma_pagamento": "PIX", "cartao_id": None,
+        })
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["tipo"] == "estorno"
+        assert body["cartao_id"] is None
+        assert (body["fatura_mes"], body["fatura_ano"]) == (None, None)
+
+        mensal = _monthly(as_user, users[0])
+        # 500 − 120: abate a despesa E não entra na receita (as duas metades)
+        assert _q(mensal["despesas"]) == Decimal("380.00")
+        assert _q(mensal["receitas"]) == Decimal("0.00")
+
     def test_post_estorno_parcelado_422(self, users, as_user):
         resp = as_user(users[0]).post("/transactions", json={
             "tipo": "estorno", "data": "2026-07-05", "descricao": "estorno",

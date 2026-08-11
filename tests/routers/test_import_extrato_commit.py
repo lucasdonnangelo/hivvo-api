@@ -24,6 +24,8 @@ from app.models.pagamento_fatura import PagamentoFatura
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.transaction import Transacao
 from app.routers import import_extrato
+from app.schemas.import_extrato import ExtratoCommit
+from app.services.import_extrato.reconciliacao import TOLERANCIA, reconciliar
 from tests.fixtures.extratos_validados import EXTRATO_COMMIT
 
 # Competência que os testes usam como fatura quitada pelo extrato.
@@ -66,12 +68,14 @@ def fatura_junho(session, users, cartoes):
 
 
 def _payload(cartao_id=None, *, extrato=EXTRATO_COMMIT, decisoes=None,
-             importar_rendimento=True, categorias=None):
+             importar_rendimento=True, categorias=None, reclassificar=None):
     """Extrato REVISADO + decisões, como a tela de revisão mandaria.
 
-    `decisoes`/`categorias` são {indice_da_linha: valor}; `cartao_id` confirma o
-    casamento do pagamento com (cartão, 06/2026). `importar` fica AUSENTE onde o
-    teste não decide — é o tri-estado que deixa o default seguro no servidor.
+    `decisoes`/`categorias`/`reclassificar` são {indice_da_linha: valor};
+    `cartao_id` confirma o casamento do pagamento com (cartão, 06/2026).
+    `importar` fica AUSENTE onde o teste não decide — é o tri-estado que deixa o
+    default seguro no servidor. `reclassificar` é o override de tipo do #48
+    (a linha 4, "Pix recebido de FULANO", é a que os testes marcam).
     """
     ex = copy.deepcopy(extrato)
     for i, linha in enumerate(ex["linhas"]):
@@ -83,6 +87,8 @@ def _payload(cartao_id=None, *, extrato=EXTRATO_COMMIT, decisoes=None,
             linha["importar"] = decisoes[i]
         if categorias and i in categorias:
             linha["categoria"] = categorias[i]
+        if reclassificar and i in reclassificar:
+            linha["reclassificar_como"] = reclassificar[i]
     return {"extrato": ex, "importar_rendimento": importar_rendimento}
 
 
@@ -475,6 +481,290 @@ def test_falha_no_meio_rollback_total(session, as_user, users, cartoes, fatura_j
     assert _importadas(session) == []
     assert session.exec(select(PagamentoFatura)).all() == []
     assert session.exec(select(ImportExtratoLote)).all() == []
+
+
+# --- #48: reclassificar receita -> estorno na revisão ------------------------
+#
+# O LLM não tem como saber que "Pix recebido de FULANO" é reembolso e não renda
+# ("Pix recebido" não diz se é salário, estorno de loja ou o amigo pagando de
+# volta). A linha continua NASCENDO receita; quem sabe marca na revisão. O balde
+# NÃO muda — só o tipo da Transacao que ela vira.
+#
+# REEMBOLSO é sempre o índice 4 do EXTRATO_COMMIT ("Pix recebido de FULANO",
+# 777,00, 18/06); o salário de 5000,00 (índice 0) fica receita ao lado, que é o
+# contraste que prova que a reclassificação não vaza para as outras linhas.
+
+DESC_REEMBOLSO = "Pix recebido de FULANO"
+VALOR_REEMBOLSO = Decimal("777.00")
+
+
+def _indice(extrato, descricao):
+    """Índice da linha pela DESCRIÇÃO — nunca posição literal.
+
+    _SEM_PAGAMENTO remove uma linha e acrescenta outra: um `4` fixo apontaria
+    para o ALUGUEL, e como override em linha de débito é ZERADO, o teste
+    passaria a não testar nada e ainda assim ficaria verde na metade dos casos.
+    Aconteceu ao escrever este arquivo.
+    """
+    return next(i for i, l in enumerate(extrato["linhas"]) if l["descricao"] == descricao)
+
+
+REEMBOLSO = _indice(EXTRATO_COMMIT, DESC_REEMBOLSO)
+
+# Sem a linha de pagamento (não é lançamento e exigiria uma 2ª fatura para o
+# usuário B) e com um aluguel, para as despesas do mês serem MAIORES que o
+# reembolso — assim o abatimento é visível sem estourar para negativo.
+_SEM_PAGAMENTO = copy.deepcopy(EXTRATO_COMMIT)
+_SEM_PAGAMENTO["linhas"] = [
+    l for l in _SEM_PAGAMENTO["linhas"] if l["balde"] != "pagamento_fatura"
+] + [
+    {
+        "data": "2026-06-02", "descricao": "ALUGUEL", "valor": "1000.00",
+        "balde": "debito", "cartao_citado": None,
+    }
+]
+REEMBOLSO_SP = _indice(_SEM_PAGAMENTO, DESC_REEMBOLSO)
+
+
+def _reembolso_gravado(session):
+    return session.exec(
+        select(Transacao).where(Transacao.descricao == DESC_REEMBOLSO)
+    ).one()
+
+
+def test_reclassificar_grava_estorno_e_RECOMPUTA_a_categoria(
+    session, as_user, users, cartoes, fatura_junho
+):
+    """O par indissociável: virar o tipo MUDA o universo de categoria.
+
+    "Salário" é categoria VÁLIDA de receita e INEXISTENTE em despesa. Carregá-la
+    para o estorno gravaria no banco uma categoria que o usuário não vê no
+    seletor daquele tipo — e as agregações abateriam numa categoria fantasma.
+    MUTAÇÃO-alvo: indexar o universo pelo BALDE em vez do tipo_efetivo faz a
+    categoria virar "Salário" e mata este assert.
+    """
+    resp = _commit(
+        as_user(users[0]), cartoes[0].id,
+        reclassificar={REEMBOLSO: "estorno"}, categorias={REEMBOLSO: "Salário"},
+    )
+    assert resp.status_code == 200
+
+    estorno = _reembolso_gravado(session)
+    assert estorno.tipo == "estorno"
+    assert estorno.categoria == "Outros"
+    assert Decimal(str(estorno.valor)) == VALOR_REEMBOLSO  # POSITIVO (CHECK valor > 0)
+    assert estorno.data == dt.date(2026, 6, 18)
+
+    # A linha VIZINHA não foi tocada: reclassificação é por linha, não por balde.
+    salario = session.exec(
+        select(Transacao).where(Transacao.descricao == "Salario ACME LTDA")
+    ).one()
+    assert salario.tipo == "receita"
+
+
+def test_reclassificado_preserva_categoria_valida_de_DESPESA(
+    session, as_user, users, cartoes, fatura_junho
+):
+    # O par do teste acima: sem ele, "recomputar" passaria com um "zera tudo".
+    # "Alimentação" existe no universo de DESPESA -> sobrevive ao casamento.
+    _commit(
+        as_user(users[0]), cartoes[0].id,
+        reclassificar={REEMBOLSO: "estorno"}, categorias={REEMBOLSO: "Alimentação"},
+    )
+    assert _reembolso_gravado(session).categoria == "Alimentação"
+
+
+@pytest.mark.parametrize("tipo", ["despesa", "receita", "pagamento", "estorno "])
+def test_override_para_qualquer_outro_tipo_e_rejeitado(
+    session, as_user, users, cartoes, fatura_junho, tipo
+):
+    """RESTRITO PELO TIPO, não por um `if`: Literal["estorno"] no schema.
+
+    Não existe caminho em que um payload adulterado escolha tipo arbitrário — o
+    422 vem do Pydantic, antes de qualquer código meu rodar. MUTAÇÃO-alvo:
+    afrouxar para `str | None` faz todos estes passarem.
+    """
+    resp = _commit(as_user(users[0]), cartoes[0].id, reclassificar={REEMBOLSO: tipo})
+    assert resp.status_code == 422
+    # nada foi gravado: a validação é do schema, antes do guard de idempotência
+    assert session.exec(select(ImportExtratoLote)).all() == []
+
+
+def test_sem_override_e_o_comportamento_de_hoje(session, as_user, users, cartoes, fatura_junho):
+    # A regressão que importa: o campo é ADITIVO. Cliente que não o manda vê
+    # exatamente o que via antes — receita, no universo de categoria de receita.
+    resp = _commit(as_user(users[0]), cartoes[0].id, categorias={REEMBOLSO: "Salário"})
+    recibo = resp.json()
+    assert recibo["receitas_criadas"] == 2
+    assert recibo["estornos_criados"] == 0
+
+    receita = _reembolso_gravado(session)
+    assert receita.tipo == "receita"
+    assert receita.categoria == "Salário"  # universo de RECEITA, preservado
+
+
+def test_override_em_linha_de_debito_e_zerado(session, as_user, users, cartoes, fatura_junho):
+    # Fora do balde receita o campo é ZERADO (idioma da casa para
+    # campo-fora-do-balde), não rejeitado: o débito continua despesa e a
+    # importação inteira não cai por causa de um payload adulterado.
+    resp = _commit(as_user(users[0]), cartoes[0].id, reclassificar={1: "estorno"})
+    assert resp.status_code == 200
+    assert resp.json()["estornos_criados"] == 0
+    assert resp.json()["debitos_criados"] == 2
+
+    debito = session.exec(
+        select(Transacao).where(Transacao.descricao == "Compra no debito PADARIA CENTRAL")
+    ).one()
+    assert debito.tipo == "despesa"
+
+
+def test_estorno_de_extrato_e_caixa_sem_cartao(session, as_user, users, cartoes, fatura_junho):
+    """cartao_id None + PIX.
+
+    O cartao_id nulo carrega peso: sem cartão o estorno fica fora do
+    `_soma_a_pagar`, e é isso que impede um reembolso de CONTA de virar crédito
+    abatendo o "A pagar" de uma fatura qualquer (régua anti-subconta do #9).
+    PIX porque o MOVIMENTO é o mesmo da receita — o que mudou foi o que a
+    entrada significa na agregação, não como ela entrou.
+    """
+    _commit(as_user(users[0]), cartoes[0].id, reclassificar={REEMBOLSO: "estorno"})
+    estorno = _reembolso_gravado(session)
+    assert estorno.cartao_id is None
+    assert estorno.fatura_mes is None and estorno.fatura_ano is None
+    assert estorno.forma_pagamento == "PIX"
+    assert estorno.origem == "importacao"
+    assert estorno.parcelado is False
+
+
+def test_recibo_nao_chama_de_receita_o_que_gravou_como_estorno(
+    as_user, users, cartoes, fatura_junho
+):
+    recibo = _commit(
+        as_user(users[0]), cartoes[0].id, reclassificar={REEMBOLSO: "estorno"}
+    ).json()
+    assert recibo["estornos_criados"] == 1
+    assert recibo["receitas_criadas"] == 1  # só o salário — o reembolso saiu daqui
+    assert recibo["debitos_criados"] == 2
+    assert recibo["linhas_ignoradas"] == 0
+
+
+# --- #48 × armadilha do salário: o explícito continua vencendo ---------------
+
+def test_reclassificada_indecisa_escapa_do_matcher_de_recorrencia(
+    session, as_user, users, cartoes, fatura_junho
+):
+    """Reembolso marcado NÃO pode ser descartado como "já é a recorrência".
+
+    A recorrência de 777,00 no dia 18 casa a linha 4 exatamente. SEM o override
+    ela é pulada pelo default seguro (correto: seria salário duplicado); COM o
+    override ela entra, porque o usuário afirmou que aquilo não é renda — e
+    deixá-la no matcher a descartaria em SILÊNCIO.
+    """
+    _recorrencia_salario(session, users[0].id, valor="777.00", dia=18)
+
+    sem = _commit(as_user(users[0]), cartoes[0].id).json()
+    assert sem["receitas_puladas_recorrencia"] == 1
+    assert session.exec(
+        select(Transacao).where(Transacao.descricao == DESC_REEMBOLSO)
+    ).all() == []
+
+    # outro usuário (o lote do primeiro já foi gravado — o guard é por usuário)
+    _recorrencia_salario(session, users[1].id, valor="777.00", dia=18)
+    com = _commit(
+        as_user(users[1]),
+        reclassificar={REEMBOLSO_SP: "estorno"},
+        extrato=_SEM_PAGAMENTO,
+    ).json()
+    assert com["estornos_criados"] == 1
+    assert com["receitas_puladas_recorrencia"] == 0
+
+
+def test_importar_FALSE_vence_a_reclassificacao(session, as_user, users, cartoes, fatura_junho):
+    """"Não é indecisa" NÃO é "importa" — o tri-estado não pode ser atropelado.
+
+    Sair da armadilha do salário muda o DEFAULT do indeciso, nunca o EXPLÍCITO.
+    Um payload com importar=false E reclassificar_como="estorno" não importa
+    nada: senão o conserto de "tela diz X, banco grava Y" introduziria outro.
+    """
+    resp = _commit(
+        as_user(users[0]), cartoes[0].id,
+        reclassificar={REEMBOLSO: "estorno"}, decisoes={REEMBOLSO: False},
+    )
+    recibo = resp.json()
+    assert recibo["estornos_criados"] == 0
+    assert recibo["linhas_ignoradas"] == 1
+    assert recibo["receitas_puladas_recorrencia"] == 0  # recusa do usuário, não default
+    assert session.exec(
+        select(Transacao).where(Transacao.descricao == "Pix recebido de FULANO")
+    ).all() == []
+
+
+# --- #48: o balance walk NÃO muda -------------------------------------------
+
+def test_reclassificar_nao_mexe_no_balance_walk(as_user, users, cartoes, fatura_junho):
+    """Estorno continua sendo dinheiro que ENTRA — o walk soma por BALDE.
+
+    Duas metades. A PURA (a invariante de verdade): o mesmo extrato com e sem
+    override produz um Reconciliacao IDÊNTICO campo a campo — `soma_receitas`
+    continua incluindo o reembolso, porque o extrato reconcilia CAIXA e o
+    dinheiro entrou na conta como qualquer receita. A do BOUNDARY: o recibo do
+    commit continua batendo. MUTAÇÃO-alvo: fazer o walk olhar o tipo efetivo em
+    vez do balde derruba a primeira.
+    """
+    sem = ExtratoCommit.model_validate(_payload(cartoes[0].id)["extrato"])
+    com = ExtratoCommit.model_validate(
+        _payload(cartoes[0].id, reclassificar={REEMBOLSO: "estorno"})["extrato"]
+    )
+    # a linha REALMENTE foi reclassificada (senão a igualdade abaixo é vazia)...
+    assert com.linhas[REEMBOLSO].reclassificar_como == "estorno"
+    # ...e o balde, que é o que o walk soma, NÃO mudou
+    assert com.linhas[REEMBOLSO].balde is sem.linhas[REEMBOLSO].balde
+    assert reconciliar(com, TOLERANCIA) == reconciliar(sem, TOLERANCIA)
+
+    # E o valor que chega ao recibo continua sendo o mesmo `True` do caminho feliz.
+    assert _commit(
+        as_user(users[0]), cartoes[0].id, reclassificar={REEMBOLSO: "estorno"}
+    ).json()["reconciliacao_bate"] is True
+
+
+# --- #48: A PROVA — os NÚMEROS da agregação ---------------------------------
+
+def test_reembolso_ABATE_a_despesa_e_NAO_entra_na_receita(as_user, users):
+    """O teste que prova o bug consertado — escrito contra os NÚMEROS.
+
+    Mesmo extrato, dois usuários: A sem override (o comportamento de hoje) e B
+    com. O dano do #48 é DUPLO e este teste mede as duas metades:
+      receitas_B == receitas_A − 777  (deixa de inflar a renda)
+      despesas_B == despesas_A − 777  (passa a abater o consumo)
+
+    E a terceira asserção é a que explica por que o bug era invisível: o SALDO
+    é IDÊNTICO nos dois (+777 dos dois jeitos). O primeiro número que alguém
+    confere passava, enquanto donut, taxa de poupança, maior despesa e o
+    contexto do assistente comiam o erro.
+    """
+    a = as_user(users[0])
+    assert a.post("/import/extrato/commit", json=_payload(extrato=_SEM_PAGAMENTO)).status_code == 200
+    stats_a = a.get("/statistics/monthly", params={"mes": 6, "ano": 2026}).json()
+
+    b = as_user(users[1])
+    assert b.post(
+        "/import/extrato/commit",
+        json=_payload(extrato=_SEM_PAGAMENTO, reclassificar={REEMBOLSO_SP: "estorno"}),
+    ).status_code == 200
+    stats_b = b.get("/statistics/monthly", params={"mes": 6, "ano": 2026}).json()
+
+    receitas_a, despesas_a = Decimal(str(stats_a["receitas"])), Decimal(str(stats_a["despesas"]))
+    receitas_b, despesas_b = Decimal(str(stats_b["receitas"])), Decimal(str(stats_b["despesas"]))
+
+    # 5000 + 777 + 4,56 (rendimento) = 5781,56 · 50 + 30 + 1000 = 1080,00
+    assert (receitas_a, despesas_a) == (Decimal("5781.56"), Decimal("1080.00"))
+    assert (receitas_b, despesas_b) == (Decimal("5004.56"), Decimal("303.00"))
+
+    assert receitas_b == receitas_a - VALOR_REEMBOLSO
+    assert despesas_b == despesas_a - VALOR_REEMBOLSO
+
+    # O saldo sai IGUAL dos dois jeitos — o erro era invisível exatamente aqui.
+    assert Decimal(str(stats_a["saldo"])) == Decimal(str(stats_b["saldo"])) == Decimal("4701.56")
 
 
 # --- Isolamento entre usuários (anti-enumeração) -----------------------------

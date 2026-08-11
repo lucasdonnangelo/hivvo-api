@@ -277,6 +277,14 @@ class LinhaCommit(LinhaExtrato):
     são OBRIGATÓRIOS quando a linha vai ser importada: o casamento é PROPOSTO no
     preview e CONFIRMADO na revisão — o commit nunca adivinha qual fatura foi
     quitada. Fora do balde, são zerados (dado limpo, como cartao_citado).
+
+    `reclassificar_como` é o override de tipo da revisão (#48): a linha nasce
+    `receita` (o LLM não tem como saber que um "Pix recebido — FULANO" é
+    reembolso e não salário) e o USUÁRIO marca as que são dinheiro de volta.
+    RESTRITO PELO TIPO, não por um `if`: `Literal["estorno"]` faz "despesa",
+    "receita" ou qualquer string virarem 422 no Pydantic — não existe caminho em
+    que um payload adulterado escolha um tipo arbitrário. Default None →
+    aditivo: cliente que não manda o campo continua com o comportamento de hoje.
     """
 
     importar: bool | None = None
@@ -284,9 +292,18 @@ class LinhaCommit(LinhaExtrato):
     cartao_id: int | None = None
     fatura_mes: int | None = None
     fatura_ano: int | None = None
+    # Só o balde receita reclassifica, e só para "estorno" (#48) — ver docstring.
+    reclassificar_como: Literal["estorno"] | None = None
 
     @model_validator(mode="after")
     def _decisao_de_pagamento_completa(self) -> "LinhaCommit":
+        # Override fora do balde receita é ZERADO, não rejeitado — o idioma da
+        # casa para campo-fora-do-balde (_cartao_so_em_pagamento faz o mesmo com
+        # cartao_citado). Levantar faria um payload adulterado derrubar a
+        # importação inteira; zerar dá o resultado certo (a linha de débito
+        # continua despesa) sem custo para o usuário.
+        if self.balde is not Balde.receita:
+            self.reclassificar_como = None
         if self.balde is not Balde.pagamento_fatura:
             self.cartao_id = None
             self.fatura_mes = None
@@ -328,9 +345,15 @@ class ExtratoCommitResponse(BaseModel):
     """Recibo do commit — tudo que foi gravado, para o front conferir."""
 
     # Linhas do balde `receita` que viraram Transacao. NÃO inclui o rendimento
-    # (que não é linha) — ele tem flag própria.
+    # (que não é linha) — ele tem flag própria, NEM as reclassificadas como
+    # estorno (#48), que têm contador próprio: contá-las aqui faria o recibo
+    # afirmar "receita" para o que foi gravado como estorno, que é a mesma
+    # mentira que a pendência conserta.
     receitas_criadas: int
     debitos_criados: int
+    # Linhas de receita que o usuário marcou como dinheiro de volta na revisão
+    # (#48) — Transacao(tipo="estorno"). Default 0 → aditivo.
+    estornos_criados: int = 0
     # PagamentoFatura gravados (pago=True) com o valor e a data REAIS do
     # extrato. Duas linhas para a MESMA (cartão, competência) somam num único
     # registro — contam 1 aqui.

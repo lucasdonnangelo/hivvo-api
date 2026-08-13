@@ -18,6 +18,16 @@ class Settings(BaseSettings):
     # Remetente do e-mail (Resend). Default = sandbox (dev/testes funcionam sem env).
     # PRODUÇÃO: setar EMAIL_FROM="Hivvo <noreply@hivvo.app>" (domínio verificado).
     EMAIL_FROM: str = "Hivvo <onboarding@resend.dev>"
+    # Destino do canal de feedback do app. Caixa REAL (Cloudflare Email), já
+    # declarada como canal de contato nos Termos e na Política de Privacidade —
+    # por isso o default é o valor de produção, e não um placeholder, e por isso
+    # não entra no validate_startup_config (o que de fato falta em produção é a
+    # RESEND_API_KEY, que já está lá).
+    # ⚠️ EM DEV o e-mail só CHEGA se o EMAIL_FROM for de domínio verificado: com
+    # o remetente sandbox, o Resend recusa destinatário que não seja o dono da
+    # conta. Para ver o envio local de verdade, aponte esta var para o endereço
+    # da sua conta Resend.
+    FEEDBACK_TO: str = "contato@hivvo.app"
 
     # T-07: parâmetros operacionais da IA promovidos para config (apenas movidos —
     # valores e comportamento idênticos ao que estava hardcoded em routers/ai.py)

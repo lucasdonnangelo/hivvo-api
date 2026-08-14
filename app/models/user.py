@@ -16,3 +16,9 @@ class Usuario(SQLModel, table=True):
 
     tentativas_login: int = 0
     bloqueado_ate: Optional[dt.datetime] = None
+
+    # #6 — aviso de vencimento por e-mail. LIGADO por padrão (opt-out, não
+    # opt-in): ninguém procura uma configuração que não sabe que existe, e
+    # opt-in aqui significaria que na prática ninguém recebe. O e-mail diz
+    # como desligar. Coluna em tabela EXISTENTE — sem questão de RLS.
+    notificar_vencimento: bool = True

@@ -1,0 +1,23 @@
+[
+  {
+    "titulo": "falha de envio NAO faz rollback (o guard sobrevive ao e-mail que nao saiu)",
+    "arquivo": "app/services/notificacoes/envio.py",
+    "de": "            session.rollback()\n            # Classe + `curto(e)`, nunca o texto inteiro",
+    "para": "            # Classe + `curto(e)`, nunca o texto inteiro",
+    "teste": "tests/services/test_notificacoes_envio.py::TestFalhaDeEnvio::test_falha_do_resend_faz_rollback"
+  },
+  {
+    "titulo": "avisa o TOTAL da fatura em vez do que FALTA pagar",
+    "arquivo": "app/services/notificacoes/consulta.py",
+    "de": "    if status == \"paga_parcial\" and pagamento is not None and pagamento.valor_pago is not None:\n        return total - pagamento.valor_pago\n    return total",
+    "para": "    return total",
+    "teste": "tests/services/test_notificacoes_consulta.py::TestStatusDaFatura::test_paga_parcial_entra_com_o_restante"
+  },
+  {
+    "titulo": "\"hoje\" resolvido em UTC em vez do fuso do produto",
+    "arquivo": "app/core/dates.py",
+    "de": "    return dt.datetime.now(TZ_PRODUTO).date()",
+    "para": "    return dt.datetime.now(dt.timezone.utc).date()",
+    "teste": "tests/services/test_notificacoes_fuso.py::TestHojeSegueSaoPaulo::test_madrugada_utc_ainda_e_o_dia_anterior_em_brasilia"
+  }
+]

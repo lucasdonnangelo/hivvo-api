@@ -10,5 +10,6 @@ from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.pagamento_fatura import PagamentoFatura
 from app.models.import_fatura_lote import ImportFaturaLote
 from app.models.import_extrato_lote import ImportExtratoLote
+from app.models.notificacao_envio import NotificacaoEnvio
 
-__all__ = ["Usuario", "Cartao", "Transacao", "CategoriaCustomizada", "Parcela", "PasswordResetToken", "RefreshToken", "ChatMessage", "Recorrencia", "RecorrenciaVigencia", "PagamentoFatura", "ImportFaturaLote", "ImportExtratoLote"]
+__all__ = ["Usuario", "Cartao", "Transacao", "CategoriaCustomizada", "Parcela", "PasswordResetToken", "RefreshToken", "ChatMessage", "Recorrencia", "RecorrenciaVigencia", "PagamentoFatura", "ImportFaturaLote", "ImportExtratoLote", "NotificacaoEnvio"]

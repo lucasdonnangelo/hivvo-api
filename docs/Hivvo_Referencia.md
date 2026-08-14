@@ -231,12 +231,15 @@ hivvo-web/
 hivvo-api/
 ├── main.py · .env · requirements.txt
 ├── alembic/versions/
+├── scripts/            avisar_vencimento.py (ciclo do aviso de vencimento, com
+│                       --dry-run), mutacao.py (verificação por mutação), sync-docs.py
 └── app/
     ├── models/          SQLModel models
     ├── repositories/    ⚠️ VAZIO hoje (só __init__.py — sem camada de acesso a dados separada)
     ├── services/        parcelas, faturas, estatisticas, categorias, recorrencias,
     │                    import_fatura/ e import_extrato/ (extração PDF, redação PII,
-    │                    Gemini, reconciliação, enriquecimento, materialização)
+    │                    Gemini, reconciliação, enriquecimento, materialização),
+    │                    notificacoes/ (consulta · email · envio — aviso de vencimento)
     │                    — ~3.570 linhas
     ├── routers/         auth, transactions, categories, cards, invoices,
     │                    installments, statistics, ai, recorrencias, import_fatura,

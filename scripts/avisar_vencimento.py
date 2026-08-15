@@ -33,24 +33,32 @@ Saída: uma linha por destinatário, e um resumo. Exit 0 se nenhum envio falhou,
        o mecanismo que existe para avisar de falha falha sem avisar.
 
 ═══════════════════════════════════════════════════════════════════════════════
-⚠️  ORDEM DE DEPLOY — DUAS REGRAS QUE JÁ VALERAM, E POR MOTIVOS DIFERENTES
+⚠️  ORDEM DE DEPLOY — UMA REGRA SÓ
 ═══════════════════════════════════════════════════════════════════════════════
 
-1. BATCH 1 — sobe primeiro quem DECLARA.
-   O aviso é envio recorrente com padrão LIGADO; Termos e Privacidade
-   (hivvo-web) precisavam declará-lo antes de ele existir para alguém real.
-   Depois do primeiro envio não há como declarar retroativamente.
+   SOBE PRIMEIRO O LADO QUE NÃO QUEBRA SOZINHO.
+   QUEM CONSOME O CONTRATO NOVO SOBE POR ÚLTIMO.
 
-2. BATCH 2 — sobe primeiro quem OFERECE o controle.
-   A copy do e-mail agora aponta "Configurações › Notificações". Se a API subir
-   antes do hivvo-web, o e-mail manda a pessoa a uma tela que ainda não tem o
-   toggle — promessa vazia, o mesmo erro do Batch 1 por outro caminho.
+   No #48 quem consumia era o front (mandava campo que o backend velho
+   descartava). No #6 é o front de novo (lê `notificar_vencimento`, que o
+   backend velho não devolve — o toggle ficaria desabilitado e mostrando
+   DESLIGADO para um aviso que está LIGADO). Nos dois casos: **api → web**.
 
-   Nos dois casos a ordem é **hivvo-web → hivvo-api**, e é o INVERSO da regra
-   do #48 (lá sobe primeiro quem ACEITA: o backend passa a aceitar o campo
-   antes de a tela mandá-lo).
+   ⚠️ Este bloco já esteve errado aqui. Ele dizia "Batch 1: sobe primeiro quem
+   DECLARA" e "Batch 2: sobe primeiro quem OFERECE o controle", como se a regra
+   alternasse. Não alternava: as duas eram racionalização do caso particular, e
+   a segunda chegou a recomendar a ordem ERRADA (web antes de api) num batch em
+   que o web era exatamente o consumidor. A restrição de Termos/Privacidade do
+   Batch 1 é real, mas é OUTRA coisa — restrição de CONTEÚDO, não de contrato:
 
-   `--dry-run` pode rodar quando quiser, inclusive antes de tudo.
+     · não enviar de verdade antes de a política declarar o envio (o texto
+       precisa estar publicado; depois do primeiro e-mail não há como declarar
+       retroativamente);
+     · `--dry-run` pode rodar quando quiser, inclusive antes de tudo — não
+       envia e não grava.
+
+   Uma restrição diz QUANDO PODE ENVIAR. A outra diz QUEM SOBE PRIMEIRO. Tratar
+   as duas como a mesma regra foi o erro.
 
 ═══════════════════════════════════════════════════════════════════════════════
 

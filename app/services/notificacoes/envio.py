@@ -53,10 +53,11 @@ TIPO_VENCIMENTO = "vencimento_fatura"
 # existia — apontar para uma tela ausente teria sido prometer uma decisão que o
 # usuário não podia tomar.
 #
-# ⚠️ ESTA FRASE E A TELA SOBEM JUNTAS, NESTA ORDEM: web primeiro (quem OFERECE o
-# controle), api depois (quem o ANUNCIA). Invertido, o e-mail manda a pessoa a
-# uma Configurações que ainda não tem o toggle — e a promessa vazia é
-# exatamente o que a ordem do Batch 1 evitou, por outro motivo.
+# ⚠️ ORDEM DE DEPLOY: **api → web** (quem CONSOME o contrato novo sobe por
+# último — ver o docstring de scripts/avisar_vencimento.py). O web é o
+# consumidor aqui: ele lê `notificar_vencimento` do /auth/me. Esta frase citar
+# uma tela que ainda não existe é inofensivo na janela entre os dois deploys,
+# porque nenhum e-mail sai sem o cron configurado no painel.
 #
 # O `reply_to` continua na caixa real de contato: não é anunciado, mas é a rede
 # para quem responder assim mesmo.

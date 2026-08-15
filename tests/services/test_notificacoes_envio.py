@@ -223,14 +223,26 @@ class TestUmEmailPorUsuario:
         assert enviado.call_count == 0
         assert _registros(session) == 0
 
-    def test_opt_out_esta_no_corpo(self, session, enviado):
-        """O e-mail diz como parar de receber — sem prometer entrega."""
+    def test_opt_out_aponta_a_tela_e_nao_a_resposta(self, session, enviado):
+        """Batch 2: a copy passa a mandar para Configurações.
+
+        No Batch 1 ela dizia "responda este e-mail" porque a tela não existia —
+        era verdade naquele dia. Agora que o toggle existe, continuar pedindo
+        resposta ESCONDERIA o controle real e manteria o trabalho manual.
+
+        O teste prova as DUAS metades: que a frase nova está, e que a antiga
+        NÃO ficou para trás. Só a primeira passaria com as duas no corpo, que é
+        o estado ambíguo em que uma migração de copy costuma parar.
+        """
         usuario = _usuario(session)
         _fatura(session, usuario)
 
         executar(session, HOJE)
 
         payload = enviado.call_args[0][0]
-        assert "Responda este e-mail" in payload["html"]
-        # A resposta cai numa caixa REAL, senão o opt-out oferecido é falso.
+        assert "Configurações" in payload["html"]
+        assert "Notificações" in payload["html"]
+        assert "Responda este e-mail" not in payload["html"]
+        # `reply_to` FICA, mesmo sem ser anunciado: quem responder assim mesmo
+        # cai numa caixa real, em vez de num noreply que engole a mensagem.
         assert payload["reply_to"] == ["contato@hivvo.app"]

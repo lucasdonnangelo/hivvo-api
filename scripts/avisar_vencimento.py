@@ -13,38 +13,44 @@ Saída: uma linha por destinatário, e um resumo. Exit 0 se nenhum envio falhou,
 1 se algum falhou — cron verde com trabalho falhado é o pior tipo de portão.
 
 ═══════════════════════════════════════════════════════════════════════════════
-⚠️  DUAS RESTRIÇÕES OPERACIONAIS QUE NÃO MORAM NO CÓDIGO
+🔴  ESTE SCRIPT RODA COMO CRON NO RAILWAY → **docs/DEPLOY_CRON.md**
 ═══════════════════════════════════════════════════════════════════════════════
 
-1. O OPT-OUT OFERECIDO É HONRADO À MÃO. ATÉ O BATCH 2, É TRABALHO SEU.
+   Aquele doc tem a checklist do painel: env vars POR SERVIÇO, o Config file
+   path, o Cron Schedule, e as três conferências do primeiro deploy — que só dá
+   para fazer uma vez.
 
-   O e-mail diz "responda este e-mail pedindo para parar, e desligamos", e a
-   resposta cai em contato@hivvo.app (settings.FEEDBACK_TO). Quem recebe esse
-   pedido é o LUCAS, não um handler: desligar é um UPDATE MANUAL no Supabase.
+   O ponteiro está AQUI, e não só no handoff, porque quem for depurar "o cron
+   não mandou nada" abre este arquivo, não um documento de 400 linhas. A defesa
+   mora onde ela pode ser desfeita.
 
-       update usuarios set notificar_vencimento = false where email = '...';
+   O resumo do que pode dar errado silenciosamente:
+     · sem `Config file path = /railway.cron.json`, o serviço herda o
+       `railway.json` da raiz (roda `alembic upgrade head` de novo) E o
+       `Procfile` (start = uvicorn, que NUNCA TERMINA → o Railway PULA toda
+       execução seguinte, e o painel fica verde);
+     · sem `SENTRY_DSN` no serviço de cron, `init_sentry()` é no-op calado —
+       o mecanismo que existe para avisar de falha falha sem avisar.
 
-   Isso é aceitável com 3 usuários — mas SÓ ENQUANTO FOR DE FATO HONRADO.
-   Oferecer "responda para parar" e não agir é pior que não oferecer: some o
-   controle e sobra a promessa. Se os pedidos passarem a acumular, isso é o
-   sinal de que o Batch 2 (tela de preferência) virou urgente, não opcional.
+═══════════════════════════════════════════════════════════════════════════════
+⚠️  ORDEM DE DEPLOY — DUAS REGRAS QUE JÁ VALERAM, E POR MOTIVOS DIFERENTES
+═══════════════════════════════════════════════════════════════════════════════
 
-   A ação mora FORA do código. É por isso que está escrita aqui, e não só num
-   documento de planejamento que ninguém abre na hora de rodar o comando.
+1. BATCH 1 — sobe primeiro quem DECLARA.
+   O aviso é envio recorrente com padrão LIGADO; Termos e Privacidade
+   (hivvo-web) precisavam declará-lo antes de ele existir para alguém real.
+   Depois do primeiro envio não há como declarar retroativamente.
 
-2. NÃO ENVIE DE VERDADE ANTES DO TEXTO ESTAR NO AR.
+2. BATCH 2 — sobe primeiro quem OFERECE o controle.
+   A copy do e-mail agora aponta "Configurações › Notificações". Se a API subir
+   antes do hivvo-web, o e-mail manda a pessoa a uma tela que ainda não tem o
+   toggle — promessa vazia, o mesmo erro do Batch 1 por outro caminho.
 
-   Este é um envio recorrente novo, com padrão LIGADO. Termos e Política de
-   Privacidade (hivvo-web) precisam DECLARAR o aviso periódico antes que ele
-   exista para um usuário real. A restrição é precisa:
+   Nos dois casos a ordem é **hivvo-web → hivvo-api**, e é o INVERSO da regra
+   do #48 (lá sobe primeiro quem ACEITA: o backend passa a aceitar o campo
+   antes de a tela mandá-lo).
 
-       --dry-run      → pode rodar quando quiser. Não envia e não grava nada.
-       envio real     → só depois do DEPLOY do hivvo-web com o texto novo.
-
-   A ordem aqui é o INVERSO da regra do #48. Lá sobe primeiro quem ACEITA (o
-   backend passa a aceitar o campo antes de a tela mandá-lo). Aqui sobe
-   primeiro quem DECLARA: a política tem que estar publicada antes do primeiro
-   e-mail, porque depois do envio não há como declarar retroativamente.
+   `--dry-run` pode rodar quando quiser, inclusive antes de tudo.
 
 ═══════════════════════════════════════════════════════════════════════════════
 
@@ -82,10 +88,29 @@ from sqlmodel import Session, select  # noqa: E402
 
 from app.core.database import engine  # noqa: E402
 from app.core.dates import hoje as hoje_produto  # noqa: E402
+from app.core.observability import init_sentry  # noqa: E402
 from app.models.user import Usuario  # noqa: E402
 from app.services.notificacoes.consulta import DIAS_DE_ANTECEDENCIA  # noqa: E402
 from app.services.notificacoes.email import formatar_brl  # noqa: E402
 from app.services.notificacoes.envio import executar, montar_payload  # noqa: E402
+
+
+logger = logging.getLogger("hivvo.aviso_vencimento")
+
+
+def _flush_sentry() -> None:
+    """Espera o Sentry despachar antes de o processo morrer.
+
+    No-op quando o Sentry está inativo (sem DSN) ou o SDK não está instalado —
+    import LAZY pelo mesmo motivo do `init_sentry`. O timeout existe para o job
+    não ficar pendurado se o Sentry estiver fora: o aviso já foi enviado, e
+    travar aqui faria a PRÓXIMA execução ser pulada pelo Railway.
+    """
+    try:
+        import sentry_sdk
+    except ImportError:
+        return
+    sentry_sdk.flush(timeout=5)
 
 
 def _resolver_usuario(session: Session, referencia: str) -> Usuario:
@@ -138,6 +163,18 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
+    # Sentry ANTES de qualquer trabalho. O `exit 1` deixa o deploy vermelho no
+    # painel, mas ninguém abre painel todo dia — e um cron que falha calado é o
+    # pior portão possível, porque parece igual a um cron que não tinha o que
+    # fazer. Com o Sentry ligado, a `LoggingIntegration` (default, ver
+    # core/observability.py) transforma o `logger.error` de cada falha de envio
+    # em EVENTO, sem código novo aqui.
+    #
+    # Sem SENTRY_DSN isto é no-op silencioso — e é justamente por isso que a
+    # variável está na checklist do docs/DEPLOY_CRON.md: o mecanismo que existe
+    # para avisar de falha falharia sem avisar.
+    init_sentry()
+
     # `hoje()` do produto, não date.today(): o servidor roda em UTC, e entre
     # 21h e meia-noite em Brasília a data do servidor já é o dia seguinte — o
     # job mandaria o aviso do dia errado, em silêncio.
@@ -148,8 +185,8 @@ def main() -> int:
     print(f"[{modo}] hoje={hoje.isoformat()}  avisando vencimentos de {alvo.isoformat()}")
 
     # Session/engine explícitos e `dispose()` no fim: um job precisa TERMINAR e
-    # fechar as conexões. No Railway (Batch 2), processo que não encerra faz as
-    # execuções seguintes serem PULADAS — o job pararia sem erro nenhum.
+    # fechar as conexões. No Railway, processo que não encerra faz as execuções
+    # seguintes serem PULADAS — o job pararia sem erro nenhum.
     try:
         with Session(engine) as session:
             apenas = None
@@ -191,9 +228,30 @@ def main() -> int:
                 f" | já avisados hoje={resultado.ja_enviados}"
                 f" | falhas={resultado.falhas}"
             )
+    except Exception:
+        # Falha CATASTRÓFICA (banco fora, config ausente, import quebrado): o
+        # ciclo nem chegou a rodar. O `logger.error` do envio cobre a falha de
+        # UM e-mail; isto cobre a execução inteira não ter acontecido — que é o
+        # modo de falha que mais se parece com "não havia o que fazer".
+        logger.exception("Aviso de vencimento abortou")
+        _flush_sentry()
+        engine.dispose()
+        return 1
     finally:
         engine.dispose()
 
+    if resultado.falhas:
+        # Já foram logadas uma a uma (viram eventos pela LoggingIntegration);
+        # esta linha é o resumo que o log do cron mostra primeiro.
+        logger.error(
+            "Aviso de vencimento terminou com %s falha(s) de envio", resultado.falhas
+        )
+    # ANTES do exit, sempre. O Sentry envia em BACKGROUND: num processo curto,
+    # sair aqui mata a thread de envio antes de o evento partir, e a falha
+    # desaparece exatamente no caminho construído para não deixá-la sumir.
+    # Vale também no caminho de sucesso — a execução pode ter gerado eventos
+    # de falha parcial e ainda retornar antes do flush.
+    _flush_sentry()
     return 1 if resultado.falhas else 0
 
 

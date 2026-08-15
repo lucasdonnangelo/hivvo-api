@@ -47,6 +47,10 @@ class UserResponse(BaseModel):
     nome_completo: str
     criado_em: dt.datetime
     ativo: bool
+    # #6 — a tela de Configurações precisa do estado ATUAL para desenhar o
+    # toggle. Sem isto, a única forma de a UI saber seria assumir o default,
+    # e um toggle que mostra o valor errado é pior que nenhum toggle.
+    notificar_vencimento: bool
 
     model_config = {"from_attributes": True}
 
@@ -57,6 +61,9 @@ class UpdateMeRequest(BaseModel):
     # futuro (o campo é interno, auto-gerado do e-mail — PLANO_PERFIL_CONFIG).
     nome_completo: Optional[str] = Field(default=None, min_length=2)
     username: Optional[str] = Field(default=None, min_length=2)
+    # #6 — o toggle de Configurações. Booleano puro: ligar/desligar, sem
+    # "quantos dias" e sem "por cartão" (decisão de produto).
+    notificar_vencimento: Optional[bool] = None
 
     @field_validator("nome_completo", "username", mode="before")
     @classmethod
@@ -70,8 +77,21 @@ class UpdateMeRequest(BaseModel):
         # Evita PUT no-op ({}) e barra o null explícito ({"nome_completo": null}),
         # que tem o campo "set" com valor None: aplicá-lo violaria o NOT NULL da
         # coluna e viraria 500. Aqui vira 422.
-        if self.nome_completo is None and self.username is None:
-            raise ValueError("Informe ao menos um campo: nome_completo ou username.")
+        #
+        # ⚠️ CAMPO NOVO TEM QUE ENTRAR NESTA LISTA. Sem `notificar_vencimento`
+        # aqui, o payload que a tela mais manda — `{"notificar_vencimento":
+        # false}`, sozinho — tomaria 422 dizendo "informe ao menos um campo",
+        # com o campo informado. O erro não aparece em teste de schema que só
+        # exercita nome/username; aparece no primeiro clique no toggle.
+        if (
+            self.nome_completo is None
+            and self.username is None
+            and self.notificar_vencimento is None
+        ):
+            raise ValueError(
+                "Informe ao menos um campo: nome_completo, username ou "
+                "notificar_vencimento."
+            )
         return self
 
 

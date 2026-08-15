@@ -48,17 +48,21 @@ resend.api_key = settings.RESEND_API_KEY
 
 TIPO_VENCIMENTO = "vencimento_fatura"
 
-# O opt-out do Batch 1 é responder o e-mail — a tela de preferência é Batch 2,
-# e apontar para um controle que ainda não existe seria oferecer uma decisão
-# que o usuário não pode tomar. O `reply_to` abaixo manda a resposta para a
-# caixa REAL de contato (a mesma já declarada nos Termos), então a frase é
-# verdade no dia em que é enviada.
+# Batch 2: o opt-out passa a apontar a TELA, porque agora ela existe. No Batch 1
+# a frase era "responda este e-mail", que era verdade enquanto o controle não
+# existia — apontar para uma tela ausente teria sido prometer uma decisão que o
+# usuário não podia tomar.
 #
-# ⚠️ Honrar o pedido é UPDATE MANUAL até o Batch 2 — ver o docstring de
-# scripts/avisar_vencimento.py, onde essa dívida está registrada por extenso.
+# ⚠️ ESTA FRASE E A TELA SOBEM JUNTAS, NESTA ORDEM: web primeiro (quem OFERECE o
+# controle), api depois (quem o ANUNCIA). Invertido, o e-mail manda a pessoa a
+# uma Configurações que ainda não tem o toggle — e a promessa vazia é
+# exatamente o que a ordem do Batch 1 evitou, por outro motivo.
+#
+# O `reply_to` continua na caixa real de contato: não é anunciado, mas é a rede
+# para quem responder assim mesmo.
 _OPT_OUT = (
-    "Não quer mais receber estes avisos? Responda este e-mail pedindo para "
-    "parar, e desligamos."
+    "Não quer mais receber estes avisos? Desligue em Configurações › "
+    "Notificações, no Hivvo."
 )
 
 

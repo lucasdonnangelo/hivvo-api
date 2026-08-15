@@ -49,6 +49,11 @@ Vivem só aqui e não têm contraparte no `hivvo-web`:
 
 - `AUDITORIA_SEGURANCA.md` — auditoria de segurança do backend
 - `AUDITORIA_TECNICA.md` — auditoria técnica do backend
+- `DEPLOY_CRON.md` — checklist do painel do Railway para o serviço de cron do aviso de
+  vencimento (#6). **Fica só aqui de propósito:** é configuração do serviço do backend, e
+  mandá-la para o repo do frontend seria dar a alguém uma checklist que não é dele. Os docs
+  compartilhados que o citam usam o caminho por extenso (`hivvo-api/docs/DEPLOY_CRON.md`),
+  e não um link relativo que quebraria na cópia do `hivvo-web`.
 - `PLANO_EXECUCAO_API.md` — plano de execução do backend (batches)
 - `SESSAO_ATUAL_API.md` — diário de sessão do backend
 

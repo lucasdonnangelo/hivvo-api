@@ -35,11 +35,22 @@ def assunto(aviso: AvisoUsuario) -> str:
 
 
 def _linha_fatura(fatura: FaturaAvisada) -> str:
+    # O "já pago" é o que impede um número CERTO de ser lido como errado:
+    # "Itaú — R$ 250,00" para quem lembra de uma fatura de R$ 900,00 parece
+    # engano do app. Segunda linha, menor e apagada, porque é explicação do
+    # valor e não um segundo valor a comparar.
+    explicacao = (
+        f"<div style='font-size:12px;color:#777;font-weight:400;margin-top:2px'>"
+        f"já pago: R$ {formatar_brl(fatura.ja_pago)}</div>"
+        if fatura.ja_pago is not None
+        else ""
+    )
     return (
         "<tr>"
-        f"<td style='padding:8px 12px 8px 0'>{html.escape(fatura.cartao_nome)}</td>"
-        f"<td style='padding:8px 0;text-align:right;white-space:nowrap'>"
-        f"<strong>R$ {formatar_brl(fatura.restante)}</strong></td>"
+        f"<td style='padding:8px 12px 8px 0;vertical-align:top'>"
+        f"{html.escape(fatura.cartao_nome)}</td>"
+        f"<td style='padding:8px 0;text-align:right;white-space:nowrap;vertical-align:top'>"
+        f"<strong>R$ {formatar_brl(fatura.restante)}</strong>{explicacao}</td>"
         "</tr>"
     )
 

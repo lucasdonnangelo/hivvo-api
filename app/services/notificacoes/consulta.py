@@ -39,6 +39,7 @@ import calendar
 import datetime as dt
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Optional
 
 from sqlmodel import Session, select
 
@@ -84,6 +85,12 @@ class FaturaAvisada:
     vencimento: dt.date
     restante: Decimal
     status: str
+    # Quanto JÁ foi pago — só quando o status é `paga_parcial`; None nos demais.
+    # Existe porque `restante` sozinho é um número certo que LÊ como errado:
+    # quem lembra de uma fatura de R$ 900,00 e recebe "R$ 250,00" não conclui
+    # "faltam 250", conclui que o app se enganou. O valor não muda; muda o
+    # e-mail poder dizer POR QUE ele é esse.
+    ja_pago: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)
@@ -204,6 +211,13 @@ def faturas_a_vencer(session: Session, hoje: dt.date) -> list[AvisoUsuario]:
                     vencimento=alvo,
                     restante=restante,
                     status=status,
+                    # Mesma condição do `_restante`: fora de `paga_parcial` não
+                    # há "já pago" a mostrar (em `paga` o e-mail nem sai).
+                    ja_pago=(
+                        pagamento.valor_pago
+                        if status == "paga_parcial" and pagamento is not None
+                        else None
+                    ),
                 )
             )
 

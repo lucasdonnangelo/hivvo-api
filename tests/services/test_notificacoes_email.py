@@ -19,13 +19,16 @@ VENCIMENTO = dt.date(2026, 8, 17)
 OPT_OUT = "Responda este e-mail pedindo para parar."
 
 
-def _fatura(nome: str, restante: str, status: str = "a_vencer") -> FaturaAvisada:
+def _fatura(
+    nome: str, restante: str, status: str = "a_vencer", ja_pago: str | None = None
+) -> FaturaAvisada:
     return FaturaAvisada(
         cartao_id=1,
         cartao_nome=nome,
         vencimento=VENCIMENTO,
         restante=Decimal(restante),
         status=status,
+        ja_pago=Decimal(ja_pago) if ja_pago is not None else None,
     )
 
 
@@ -100,6 +103,30 @@ class TestUmVersusTres:
         assert "Valores em aberto" in html
         # 12480.90 + 250.00 + 7.50
         assert "R$ 12.738,40" in html
+
+
+class TestPagaParcial:
+    def test_mostra_o_que_ja_foi_pago(self):
+        """O "já pago" é o que impede um número certo de ler como errado.
+
+        Fatura de 900 com 650 pagos avisa 250. Sozinho, "Itaú — R$ 250,00" para
+        quem lembra dos R$ 900,00 não lê como "faltam 250": lê como engano do
+        app. O valor não muda; o e-mail passa a poder dizer POR QUE ele é esse.
+        """
+        html = corpo_html(
+            _aviso(_fatura("Itaú", "250.00", status="paga_parcial", ja_pago="650.00")),
+            OPT_OUT,
+        )
+
+        assert "R$ 250,00" in html
+        assert "já pago: R$ 650,00" in html
+
+    def test_fatura_normal_nao_ganha_a_explicacao(self):
+        """Sem pagamento parcial não há o que explicar — e a linha extra viraria
+        ruído em todo aviso comum."""
+        html = corpo_html(_aviso(_fatura("Nubank", "1240.55")), OPT_OUT)
+
+        assert "já pago" not in html
 
 
 class TestConfiancaDaPeca:

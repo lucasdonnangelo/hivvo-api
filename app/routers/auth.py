@@ -29,6 +29,7 @@ from app.models.chat import ChatMessage
 from app.models.import_extrato_lote import ImportExtratoLote
 from app.models.import_fatura_lote import ImportFaturaLote
 from app.models.installment import Parcela
+from app.models.notificacao_envio import NotificacaoEnvio
 from app.models.pagamento_fatura import PagamentoFatura
 from app.models.password_reset_token import PasswordResetToken
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
@@ -275,6 +276,15 @@ def _purgar_dados_do_usuario(uid: int, session: Session) -> dict[str, int]:
     o caminho de `cartoes`, e no reset o `usuario_id` sobrevive por definição:
     não dá para apoiar no banco.
 
+    REGRA, porque já falhou duas vezes (lotes de importação, notificacao_envio):
+    TODA tabela nova que sirva de GUARD DE IDEMPOTÊNCIA entra aqui no dia em que
+    nasce. O ON DELETE CASCADE cobre o delete_me e NÃO cobre o reset — que
+    preserva o usuario_id POR DEFINIÇÃO —, então o guard sobrevive e passa a
+    bloquear em silêncio a operação que ele guarda (nenhum erro, só a coisa não
+    acontecendo). E a chave nova tem de entrar TAMBÉM em ResetDataResponse: o
+    Pydantic descarta chave extra sem reclamar e o recibo reportaria menos do
+    que a purga apagou.
+
     NÃO commita — quem chama controla a transação (tudo-ou-nada num único
     commit). NÃO apaga: usuarios, categorias, refresh_tokens,
     password_reset_tokens.
@@ -293,13 +303,16 @@ def _purgar_dados_do_usuario(uid: int, session: Session) -> dict[str, int]:
     _apagar(delete(Parcela).where(Parcela.usuario_id == uid), "parcelas")
     _apagar(delete(Transacao).where(Transacao.usuario_id == uid), "transacoes")
     _apagar(delete(PagamentoFatura).where(PagamentoFatura.usuario_id == uid), "pagamentos_fatura")
-    # Lotes de importação: guards de idempotência, não lançamentos — mas quem
-    # zera os dados precisa poder REIMPORTAR o mesmo PDF, senão o 409 do guard
-    # trava o usuário para sempre. Explícitos porque nenhum cascade os cobre no
-    # reset: o de EXTRATO só depende de `usuarios` (que o reset preserva por
-    # definição) e o de fatura só sairia de carona no delete de `cartoes`.
+    # Guards de idempotência (lotes de importação e aviso já enviado no dia):
+    # não são lançamentos, mas cada um deles de pé TRAVA EM SILÊNCIO a operação
+    # que guarda — o 409 do lote impede REIMPORTAR o mesmo PDF para sempre, e a
+    # linha de notificação faz o aviso daquele dia ser pulado sem erro nenhum.
+    # Explícitos porque nenhum cascade os cobre no reset: o de EXTRATO e o de
+    # notificação só dependem de `usuarios` (que o reset preserva por definição)
+    # e o de fatura só sairia de carona no delete de `cartoes`.
     _apagar(delete(ImportFaturaLote).where(ImportFaturaLote.usuario_id == uid), "import_fatura_lote")
     _apagar(delete(ImportExtratoLote).where(ImportExtratoLote.usuario_id == uid), "import_extrato_lote")
+    _apagar(delete(NotificacaoEnvio).where(NotificacaoEnvio.usuario_id == uid), "notificacao_envio")
     _apagar(delete(Cartao).where(Cartao.usuario_id == uid), "cartoes")
     # recorrencia_vigencias não tem usuario_id (liga por recorrencia_id) — daí a
     # subquery, e daí ela sair ANTES de recorrencias: depois, a subquery não

@@ -119,10 +119,14 @@ class ResetDataResponse(BaseModel):
     parcelas: int
     transacoes: int
     pagamentos_fatura: int
-    # Guards de idempotência da importação: saem junto para o usuário poder
-    # REIMPORTAR os mesmos PDFs depois de zerar (senão o 409 do guard travaria).
+    # Guards de idempotência: saem junto porque de pé travam em silêncio o que
+    # guardam — o 409 do lote impediria REIMPORTAR os mesmos PDFs depois de
+    # zerar, e a linha de notificação faria o aviso do dia ser pulado. Toda
+    # tabela dessas que entra na purga precisa de uma chave AQUI: o Pydantic
+    # descarta chave extra sem erro e o recibo mentiria para menos.
     import_fatura_lote: int
     import_extrato_lote: int
+    notificacao_envio: int
     cartoes: int
     recorrencia_vigencias: int
     recorrencias: int

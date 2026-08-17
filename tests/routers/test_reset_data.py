@@ -20,6 +20,7 @@ from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
+import app.models  # noqa: F401 — registra TODOS os models em SQLModel.metadata
 from app.core.auth import get_current_user, hash_password
 from app.core.database import get_session
 from app.models.card import Cartao
@@ -28,11 +29,13 @@ from app.models.chat import ChatMessage
 from app.models.import_extrato_lote import ImportExtratoLote
 from app.models.import_fatura_lote import ImportFaturaLote
 from app.models.installment import Parcela
+from app.models.notificacao_envio import NotificacaoEnvio
 from app.models.pagamento_fatura import PagamentoFatura
 from app.models.recorrencia import Recorrencia, RecorrenciaVigencia
 from app.models.refresh_token import RefreshToken
 from app.models.transaction import Transacao
 from app.models.user import Usuario
+from app.routers.auth import _purgar_dados_do_usuario
 from main import app
 
 SENHA = "senha-correta-1"
@@ -128,6 +131,18 @@ def _popular(session) -> Usuario:
         )
     )
 
+    # Guard do aviso de vencimento (#6): mesmo caso do lote de EXTRATO — só
+    # aponta para `usuarios`, então nenhum cascade o cobre no reset. De pé, ele
+    # faz o aviso do dia ser pulado EM SILÊNCIO (não é erro, é o e-mail que não
+    # sai).
+    session.add(
+        NotificacaoEnvio(
+            usuario_id=user.id,
+            data_referencia=dt.date(2026, 7, 1),
+            tipo="vencimento_fatura",
+        )
+    )
+
     session.add(ChatMessage(usuario_id=user.id, sessao_id=uuid.uuid4(), role="user", text="oi"))
 
     # PRESERVADOS pelo reset.
@@ -197,7 +212,10 @@ def _contar(session, uid: int) -> dict:
     """Linhas remanescentes por tabela. recorrencia_vigencias conta a tabela
     inteira: filtrar pelas recorrências do usuário daria 0 assim que elas
     saíssem, escondendo justamente a vigência órfã."""
-    por_usuario = [Parcela, Transacao, PagamentoFatura, Cartao, Recorrencia, ChatMessage]
+    por_usuario = [
+        Parcela, Transacao, PagamentoFatura, Cartao, Recorrencia, ChatMessage,
+        NotificacaoEnvio,
+    ]
     counts = {
         m.__tablename__: len(session.exec(select(m).where(m.usuario_id == uid)).all())
         for m in por_usuario
@@ -258,10 +276,50 @@ class TestResetApagaEPreserva:
             "import_fatura_lote": 1,
             "import_extrato_lote": 1,
             "cartoes": 1,
+            "notificacao_envio": 1,
             "recorrencia_vigencias": 1,
             "recorrencias": 1,
             "chat_messages": 1,
         }
+
+    def test_apaga_a_notificacao_do_usuario_e_so_a_dele(self, authed_client, session):
+        """O guard do aviso de vencimento sai — e o WHERE não pega o vizinho.
+
+        Sem o delete, o registro de "já avisado hoje" sobrevive ao reset (nenhum
+        cascade o cobre: ele só aponta para `usuarios`, que o reset preserva) e
+        o aviso daquele dia é pulado em silêncio. Sem o `usuario_id ==` no
+        WHERE, o reset de um usuário calaria o aviso de todos os outros — daí o
+        vizinho com a MESMA (data_referencia, tipo), que é o par que um WHERE
+        frouxo varreria junto.
+        """
+        client, user = authed_client
+
+        vizinho = Usuario(
+            email="vizinho@hivvo.test",
+            username="vizinho",
+            senha_hash=hash_password(SENHA),
+            nome_completo="Não Mexa",
+        )
+        session.add(vizinho)
+        session.flush()
+        session.add(
+            NotificacaoEnvio(
+                usuario_id=vizinho.id,
+                data_referencia=dt.date(2026, 7, 1),
+                tipo="vencimento_fatura",
+            )
+        )
+        session.commit()
+
+        resp = client.post("/auth/reset-data", json={"password": SENHA})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["notificacao_envio"] == 1
+
+        session.expire_all()
+        assert session.exec(select(NotificacaoEnvio).where(
+            NotificacaoEnvio.usuario_id == user.id)).all() == []
+        assert len(session.exec(select(NotificacaoEnvio).where(
+            NotificacaoEnvio.usuario_id == vizinho.id)).all()) == 1
 
     def test_reset_e_idempotente(self, authed_client):
         client, _ = authed_client
@@ -308,6 +366,52 @@ class TestOrdemDeExclusao:
         with pytest.raises(IntegrityError):
             session_fk.commit()
         session_fk.rollback()
+
+
+# --------------------------------------------------------------------------- #
+# A regra da purga, checada pelo build em vez de lembrada                      #
+# --------------------------------------------------------------------------- #
+
+
+# O que o docstring de _purgar_dados_do_usuario já nomeia como preservado de
+# propósito. `usuarios` é inerte aqui (identifica-se por `id`, não por
+# usuario_id) e fica só para o conjunto bater 1:1 com o docstring.
+ISENTAS_DELIBERADAS = {
+    "usuarios",               # a conta em si: o reset existe para preservá-la
+    "categorias",             # taxonomia do usuário, não lançamento
+    "refresh_tokens",         # ele continua logado depois do reset
+    "password_reset_tokens",  # idem, sessão intacta
+}
+
+
+class TestNenhumaTabelaFicaSemDecisao:
+    def test_toda_tabela_com_usuario_id_esta_purgada_ou_isenta(self, session):
+        """Fecha a regra que já falhou duas vezes (lotes, notificacao_envio).
+
+        Até aqui a defesa era o docstring — exortação, que depende de alguém
+        LEMBRAR. Isto para o build: quem criar a próxima tabela com usuario_id é
+        obrigado a decidir, e a decisão fica escrita (na purga ou em
+        ISENTAS_DELIBERADAS). Nenhum default silencioso.
+
+        `purgadas` vem das chaves que a própria função devolve — o que ela
+        EXECUTOU, não uma segunda lista para desincronizar. uid inexistente de
+        propósito: só as chaves importam, não as contagens.
+
+        Limite honesto: metadata só enxerga models importados, e quem entra em
+        app/models/__init__.py está coberto. Um model fora dele também ficaria
+        fora do create_all — quebraria bem antes e mais alto.
+        """
+        purgadas = set(_purgar_dados_do_usuario(999_999, session))
+        com_usuario_id = {
+            t.name for t in SQLModel.metadata.tables.values() if "usuario_id" in t.c
+        }
+
+        sem_decisao = com_usuario_id - purgadas - ISENTAS_DELIBERADAS
+        assert sem_decisao == set(), (
+            f"Tabela(s) com usuario_id sem decisão: {sorted(sem_decisao)}. "
+            "Ou entra em _purgar_dados_do_usuario (+ chave em ResetDataResponse), "
+            "ou entra em ISENTAS_DELIBERADAS com o motivo."
+        )
 
 
 # --------------------------------------------------------------------------- #

@@ -6,6 +6,15 @@ import os
 # rate limiting religa o limiter localmente.
 os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 
+# A guarda de chave em app/routers/ai.py devolve 503 na PRIMEIRA linha dos
+# endpoints /ai/* — antes do _gemini_generate que estes testes mockam, o que
+# torna o mock inerte. Sem um valor aqui, os testes de IA dependeriam do .env
+# da máquina: verdes em quem tem chave, vermelhos em qualquer checkout limpo.
+# Valor FALSO de propósito e sem risco de rede: nesses testes o _gemini_generate
+# está sempre mockado, e o teste da chave AUSENTE (test_ai_resiliencia) zera o
+# atributo de settings por monkeypatch, não pelo ambiente — ele não é afetado.
+os.environ.setdefault("GEMINI_API_KEY", "test-key-nao-usada-em-rede")
+
 import pytest  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402

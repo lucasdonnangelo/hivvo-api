@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------------------
+# Normalização de fim de linha — hivvo-api
+#
+# Por que existe: o core.autocrlf=true desta máquina está no gitconfig de
+# SISTEMA (C:/Program Files/Git/etc/gitconfig), ou seja, é configuração do
+# ambiente, não do projeto. Quem clonar sem essa configuração (CI em Ubuntu,
+# build da Railway, outro dev) resolveria os fins de linha de outro jeito, e o
+# repositório não teria opinião nenhuma sobre isso. Este arquivo move a decisão
+# para DENTRO do repo: o blob é sempre LF, independentemente de quem commita.
+#
+# `text=auto` = normaliza para LF NO REPOSITÓRIO; o que aparece no disco
+# continua sendo o padrão da plataforma (CRLF aqui no Windows, LF no Linux).
+# Onde o CRLF no disco quebra alguma coisa de verdade, há um `eol=lf` explícito
+# mais abaixo.
+# ---------------------------------------------------------------------------
+
+* text=auto
+
+# --- Arquivos que precisam de LF TAMBÉM no disco ---------------------------
+# O Procfile é lido linha a linha por quem executa o processo, e um \r entraria
+# no fim do comando. ATENÇÃO ao alcance disso: o blob SEMPRE foi LF (o
+# autocrlf=true já normalizava ao commitar), então a Railway sempre recebeu LF.
+# O CR existia só na cópia de trabalho do Windows. O `eol=lf` aqui alinha o
+# disco local com o repositório; nunca houve risco no deploy.
+Procfile      text eol=lf
+*.sh          text eol=lf
+
+# --- Binários ---------------------------------------------------------------
+# `binary` = -text -diff: o Git não converte fim de linha nem tenta diffar.
+#
+# *.pdf é a exceção que NÃO é opcional aqui. As duas fixtures em
+# tests/fixtures/ são PDFs mínimos, escritos só em ASCII, sem stream comprimido
+# e com ZERO bytes NUL — então a heurística do Git as classifica como TEXTO e
+# injeta CR no checkout. Medido: extrato_texto_minimo.pdf está com 1016 bytes no
+# disco contra 976 no blob, e fatura_texto_minimo.pdf com 1066 contra 1024. Um
+# PDF guarda offsets de bytes absolutos na tabela xref; deslocar tudo depois da
+# primeira quebra de linha invalida esses offsets.
+*.pdf         binary
+
+# Ainda não há arquivos destes tipos versionados aqui; ficam declarados para
+# que o primeiro que entrar já entre certo, em vez de depender da heurística.
+*.png         binary
+*.jpg         binary
+*.jpeg        binary
+*.gif         binary
+*.ico         binary
+*.zip         binary
+*.gz          binary
+*.xlsx        binary
+*.docx        binary
+*.db          binary
+*.sqlite3     binary
+*.woff        binary
+*.woff2       binary
+*.ttf         binary

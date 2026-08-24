@@ -38,8 +38,9 @@ from pathlib import Path
 RAIZ = Path(__file__).resolve().parent.parent
 
 # Fixada de propósito: versões diferentes do uv podem formatar a saída de outro
-# jeito, e o --check compara BYTE A BYTE. Ao subir esta versão, regenere os dois
-# .txt no mesmo commit e alinhe o pin do ci.yml.
+# jeito, e o --check compara o TEXTO INTEIRO — qualquer diferença de formatação
+# vira desvio. Ao subir esta versão, regenere os dois .txt no mesmo commit e
+# alinhe o pin do ci.yml.
 UV_VERSAO = "0.12.5"
 
 # --universal: um único lock serve Windows (dev) e Linux (CI/Railway). A
@@ -145,6 +146,14 @@ def conferir() -> int:
     EXCLUDE_NEWER já torna a resolução determinística, então não é preciso —
     nem desejável — deixar o uv usar os pins atuais como preferência. É por não
     usá-los que uma edição à mão no arquivo gerado aparece aqui como diferença.
+
+    O QUE ESTA COMPARAÇÃO NÃO PEGA: fim de linha. O `read_text()` abaixo abre em
+    modo texto com newline=None, ou seja, universal-newlines — CRLF e CR viram
+    LF na leitura, dos DOIS lados, antes do `==`. Um requirements.txt commitado
+    com CRLF confere com um recompilado em LF e o --check passa. Isso é
+    proposital (o mesmo lock é lido no Windows e no Linux, e o fim de linha não
+    é parte do que o lock promete), mas não confunda com verificação de bytes:
+    quem garante o conteúdo byte a byte é o .gitattributes, não este portão.
     """
     desviados: list[str] = []
 

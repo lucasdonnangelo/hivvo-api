@@ -14,15 +14,15 @@ Supabase. Sempre sobrescreva por env vars (pydantic-settings: env var ganha do
 ```bash
 SCRATCH_WIN="C:/caminho/windows/para/scratchpad"   # path WINDOWS na URL do sqlite (POSIX /c/... falha)
 export DATABASE_URL="sqlite:///$SCRATCH_WIN/e2e.db" \
-       SECRET_KEY="e2e-secret-key-0123456789abcdef0123456789abcdef" \
+       SECRET_KEY="chave-de-teste-local-sem-valor-real" \
        RATE_LIMIT_ENABLED=false ENVIRONMENT=e2e
 
 # 1. criar tabelas (não há create_all no boot; produção usa alembic)
-PYTHONPATH="C:/Users/lucas/OneDrive/Desktop/hivvo-api" ./venv/Scripts/python.exe \
+PYTHONPATH="$(pwd)" ./.venv/Scripts/python.exe \
   -c "import app.models; from sqlmodel import SQLModel; from app.core.database import engine; SQLModel.metadata.create_all(engine)"
 
 # 2. subir (background) e esperar /docs responder 200
-./venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8765
+./.venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8765
 ```
 
 ## Dirigir a API

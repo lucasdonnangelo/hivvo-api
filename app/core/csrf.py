@@ -15,7 +15,7 @@ escopado por site, não por origin). Nesse arranjo, um POST/PUT/DELETE cross-sit
 deploy deixar de ser same-site), o browser passa a mandar os cookies cross-site e
 este "passa sem Origin" VIRA um buraco de CSRF — nesse caso, endurecer aqui para
 REJEITAR também o `Origin` ausente (ou adotar CSRF token double-submit). Ver o
-item correspondente no CHECKLIST DE DEPLOY de docs/SESSAO_ATUAL_API.md.
+item correspondente no CHECKLIST DE DEPLOY (documentação operacional privada).
 """
 
 from fastapi import HTTPException, Request, status

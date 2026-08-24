@@ -29,9 +29,7 @@ perdida no próximo sync.
 | Doc | Assunto |
 |---|---|
 | `DECISAO_A_PAGAR_SALDO.md` | Decisão de produto: "a pagar" vs saldo |
-| `ESTADO_HIVVO_HANDOFF.md` | Estado geral do projeto / handoff entre sessões |
 | `Hivvo_Referencia.md` | Referência do produto: visão, brand, telas, arquitetura dos dois repos |
-| `PENDENCIAS_PRIORIZADAS.md` | Backlog priorizado (os dois repos) |
 | `PLANO_3D_PAGAMENTO_FATURA.md` | Plano: pagamento de fatura |
 | `PLANO_DASHBOARD_DOIS_BLOCOS.md` | Plano: dashboard em dois blocos |
 | `PLANO_IMPORTACAO.md` | Plano: importação de dados |
@@ -45,20 +43,24 @@ compartilhado, adicione-o lá **e** nesta tabela.
 
 ## Docs ESPECÍFICOS deste repo (não sincronizados)
 
-Vivem só aqui e não têm contraparte no `hivvo-web`:
+Não há nenhum. Todos os documentos que existiam só aqui eram **operacionais** e
+saíram deste repositório em 24/08/2026 — ver a seção seguinte.
 
-- `AUDITORIA_SEGURANCA.md` — auditoria de segurança do backend
-- `AUDITORIA_TECNICA.md` — auditoria técnica do backend
-- `DEPLOY_CRON.md` — checklist do painel do Railway para o serviço de cron do aviso de
-  vencimento (#6). **Fica só aqui de propósito:** é configuração do serviço do backend, e
-  mandá-la para o repo do frontend seria dar a alguém uma checklist que não é dele. Os docs
-  compartilhados que o citam usam o caminho por extenso (`hivvo-api/docs/DEPLOY_CRON.md`),
-  e não um link relativo que quebraria na cópia do `hivvo-web`.
-- `PLANO_EXECUCAO_API.md` — plano de execução do backend (batches)
-- `SESSAO_ATUAL_API.md` — diário de sessão do backend
+## Documentação operacional (fora deste repositório)
 
-O `hivvo-web` tem os seus (`AUDITORIA_FRONTEND.md`, `PLANO_EXECUCAO_WEB.md`,
-`SESSAO_ATUAL_WEB.md`) — não os traga para cá.
+O projeto mantém, num **repositório privado separado**, a documentação que
+descreve a operação do sistema: auditorias internas de segurança e de
+arquitetura, o backlog priorizado, os diários de sessão, os planos de execução e
+a configuração de deploy.
+
+**Ela é privada porque descreve um sistema em produção.** Não é rascunho nem
+material incompleto: é o tipo de documento cujo valor para quem opera é o mesmo
+que o valor para quem quisesse atacar. Estes repositórios de código são
+públicos; aquele não é.
+
+O que fica aqui é o que descreve o **produto e as decisões de desenho** — a
+referência, as decisões de produto e os planos de funcionalidade listados acima.
+Nada do que saiu é necessário para entender, construir ou rodar este código.
 
 Este `README.md` também é específico de repo: o `hivvo-web/docs/README.md` é um
 aviso curto apontando para cá, e por isso nenhum dos dois entra no sync.

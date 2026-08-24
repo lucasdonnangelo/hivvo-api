@@ -14,3 +14,23 @@ htmlcov/
 *.log
 *.err
 cookies.xml
+
+# --- Docs operacionais: vivem no repo privado de documentação -----------------
+# Movidos em 24/08/2026 e purgados de TODA a história com git filter-repo, não
+# só do topo. Descrevem um sistema em produção — medições do banco, auditoria de
+# segurança, checklist do painel de deploy — e este repositório vai a público.
+#
+# Isto é REDE, não trava: não impede `git add -f` nem desrastreia nada. Existe
+# para que um reaparecimento acidental (sync mal configurado, cópia de outra
+# máquina, restauração de bundle) não vire commit sem alguém decidir.
+#
+# 🔴 Estas linhas e a constante SHARED em scripts/sync-docs.py são o MESMO
+# passo. Se um destes voltar à SHARED, o sync recria o arquivo e o Git o esconde
+# do `git status` — conferir com `git status --ignored`.
+docs/PENDENCIAS_PRIORIZADAS.md
+docs/ESTADO_HIVVO_HANDOFF.md
+docs/AUDITORIA_SEGURANCA.md
+docs/AUDITORIA_TECNICA.md
+docs/SESSAO_ATUAL_API.md
+docs/PLANO_EXECUCAO_API.md
+docs/DEPLOY_CRON.md

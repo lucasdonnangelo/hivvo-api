@@ -9,7 +9,7 @@ Atualizado em 29 de julho de 2026 | Lucas Donnangelo
 > tipo de transação, a **validação fechamento×vencimento** do cartão e o **`preDeployCommand`** que
 > aplica migrations no deploy (§8). A estrutura de pastas dos dois repos foi reconferida contra o disco.
 
-> **Nota de versão (10/06/2026):** documento sincronizado com o estado real do código após as auditorias de segurança e técnica (`docs/AUDITORIA_SEGURANCA.md`, `docs/AUDITORIA_TECNICA.md`). Correções relevantes: a arquitetura em camadas (Repository Pattern) **descrita anteriormente como pronta não existe no código** — está planejada para o pós-deploy. Ver §5 e §8.
+> **Nota de versão (10/06/2026):** documento sincronizado com o estado real do código após as auditorias internas de segurança e de arquitetura. Correções relevantes: a arquitetura em camadas (Repository Pattern) **descrita anteriormente como pronta não existe no código** — está planejada para o pós-deploy. Ver §5 e §8.
 
 ---
 
@@ -398,7 +398,7 @@ O Hivvo nasceu da migração do FinanceAI (protótipo Python/Streamlit). A UI St
 | `auth.py` | ✅ Adaptado — bcrypt + JWT (httpOnly cookie) + refresh token |
 | `pages/` + `components/` (Streamlit) | ❌ Descartado — substituído pelo React |
 
-As fases de construção (Backend → Frontend base → Telas restantes) estão **concluídas**. O detalhe histórico está em `docs/SESSAO_ATUAL.md`.
+As fases de construção (Backend → Frontend base → Telas restantes) estão **concluídas**. O detalhe histórico está nos diários de sessão (documentação privada).
 
 ---
 
@@ -407,8 +407,9 @@ As fases de construção (Backend → Frontend base → Telas restantes) estão 
 ### Prompt de abertura de sessão (atualizado)
 
 ```
-Leia docs/Hivvo_Referencia.md, docs/SESSAO_ATUAL.md, docs/AUDITORIA_SEGURANCA.md,
-docs/AUDITORIA_TECNICA.md e docs/PLANO_EXECUCAO_API.md antes de começar.
+Leia docs/Hivvo_Referencia.md e os planos em docs/ antes de começar.
+Se tiver acesso ao repositório privado de documentação operacional, leia
+também o diário de sessão, o backlog priorizado e o plano de execução.
 Confirme que entendeu a arquitetura real, as decisões de stack e o plano de
 correção em andamento. Não proponha alternativas de tecnologia — já decididas.
 Uma tarefa/batch por vez, com aprovação antes do commit.
@@ -423,22 +424,35 @@ Uma tarefa/batch por vez, com aprovação antes do commit.
 5. Cada endpoint FastAPI tem arquivo em `src/services/`
 6. Valor monetário: `Decimal` no Python, `toFixed(2)` no JS
 7. JWT nunca em localStorage — apenas httpOnly cookie ou memória
-8. Uma tarefa/batch por vez; rodar testes antes de concluir; atualizar `SESSAO_ATUAL.md` ao fim
+8. Uma tarefa/batch por vez; rodar testes antes de concluir; atualizar o diário de sessão ao fim
 
 ---
 
 ## 8. Estado de Qualidade, Segurança e Roadmap
 
-### Auditorias (10/06/2026)
+### Auditorias e backlog
 
-O backend passou por duas auditorias somente-leitura:
+O projeto mantém **auditorias internas de segurança e de arquitetura** e um
+**backlog priorizado**, revisados ao longo do desenvolvimento e usados para
+ordenar o trabalho.
 
-- **`docs/AUDITORIA_SEGURANCA.md`** — 25 achados, **10 bloqueadores de lançamento**. Ponto forte: controle de acesso por usuário (IDOR/BOLA) sólido nos caminhos de leitura. Riscos: gestão de segredos, sessão/cookie cross-domain + CSRF, ausência de rate limiting, tokens em texto claro, RLS ausente, sem exclusão de conta (LGPD).
-- **`docs/AUDITORIA_TECNICA.md`** — ~44 achados. Pontos fortes: ciclo de fatura correto e uniforme, `Decimal` em 100% do dinheiro, API stateless, migrações limpas. Riscos: **zero testes**, arquitetura em camadas inexistente (§5), conexão direta ao Supabase (sem pooler), sem paginação/índices compostos, caminho síncrono frágil para o Gemini, e bugs de domínio (poluição de fatura entre usuários, 500s em updates malformados, quebra do chat com resposta longa).
+Esses documentos são **privados**, e vivem num repositório separado. O motivo é
+que descrevem um sistema **em produção** — postura de segurança, decisões de
+infraestrutura e o estado operacional do serviço. Não são material incompleto
+que se publicaria quando ficasse pronto: são documentos cuja utilidade para quem
+opera o sistema é a mesma para quem quisesse atacá-lo.
+
+O que este repositório publica é o resultado dessas revisões, que está **no
+código**: a arquitetura descrita neste documento, os testes, as migrações e as
+decisões de stack registradas aqui.
 
 ### Plano de correção
 
-`docs/PLANO_EXECUCAO_API.md` — **16 batches** ordenados (11 pré-deploy + deploy + 5 pós-deploy). Espinha pré-deploy: consolidar a lógica de domínio → cobrir com testes → corrigir os bugs de domínio → hardening de config/sessão → banco (índices, pooler, cascades) → resiliência IA + rate limiting → operacional → topologia + LGPD.
+O plano de execução, em batches ordenados, também vive na documentação privada.
+A espinha do trabalho pré-deploy está refletida na estrutura atual do código:
+lógica de domínio consolidada em `services/`, cobertura de testes, hardening de
+configuração e sessão, ajustes de banco (índices, pooler, cascades), resiliência
+da integração com IA e rate limiting.
 
 ### Decisão pendente (gate de deploy)
 

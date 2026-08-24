@@ -8,7 +8,7 @@ ficção com cara de verde — e aqui isso já ia acontecer: as categorias PADR�
 voltam com `id: null` e `criado_em: null`, e um mock inventado teria posto ids.
 
 Sobe o app real sobre o SQLite in-memory da suíte (o mesmo do conftest — NUNCA o
-banco do .env, ver REGRAS PERMANENTES em docs/PENDENCIAS_PRIORIZADAS.md), semeia
+banco do .env, ver as REGRAS PERMANENTES do backlog — doc privada), semeia
 dois cartões e duas transações, e grava o JSON de cada endpoint com a queryKey
 correspondente no rótulo.
 

@@ -13,7 +13,8 @@ Saída: uma linha por destinatário, e um resumo. Exit 0 se nenhum envio falhou,
 1 se algum falhou — cron verde com trabalho falhado é o pior tipo de portão.
 
 ═══════════════════════════════════════════════════════════════════════════════
-🔴  ESTE SCRIPT RODA COMO CRON NO RAILWAY → **docs/DEPLOY_CRON.md**
+🔴  ESTE SCRIPT RODA COMO CRON NO RAILWAY — ver a CHECKLIST DE DEPLOY
+    do cron, na documentação operacional privada do projeto.
 ═══════════════════════════════════════════════════════════════════════════════
 
    Aquele doc tem a checklist do painel: env vars POR SERVIÇO, o Config file
@@ -179,7 +180,7 @@ def main() -> int:
     # em EVENTO, sem código novo aqui.
     #
     # Sem SENTRY_DSN isto é no-op silencioso — e é justamente por isso que a
-    # variável está na checklist do docs/DEPLOY_CRON.md: o mecanismo que existe
+    # variável está na checklist de deploy (doc privada): o mecanismo que existe
     # para avisar de falha falharia sem avisar.
     init_sentry()
 

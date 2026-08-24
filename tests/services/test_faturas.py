@@ -1,6 +1,6 @@
 """Testes unitários puros de app/services/faturas.py — sem banco.
 
-Convenções do domínio (Hivvo_Referencia §5, AUDITORIA_TECNICA T-32):
+Convenções do domínio (Hivvo_Referencia §5; auditoria interna de arquitetura, T-32):
 - Compra com dia > dia_fechamento entra no ciclo seguinte; compra NO dia
   exato do fechamento entra na fatura atual.
 - mes_offset_vencimento desloca fechamento → vencimento.

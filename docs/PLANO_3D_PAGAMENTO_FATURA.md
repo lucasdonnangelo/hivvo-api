@@ -47,7 +47,8 @@ hoje = "mês sem dados" por acidente). Inversamente, o backend manda `total_parc
 > `InvoiceStatusBadge` (atrasada destacada), ação "Marcar/Desmarcar pagamento" (um clique, reversível)
 > no `InvoiceDetail` — cobre os modos "Por cartão" e "Por mês" por reuso. Invalidação inclui
 > `['statistics']` (o `a_pagar` do Dashboard muda ao confirmar). **NÃO feito:** aviso de fatura
-> atrasada no Dashboard (item 4 — decisão adiada). Detalhes em `docs/SESSAO_ATUAL_WEB.md`.
+> atrasada no Dashboard (item 4 — decisão adiada). Detalhes no diário de sessão do frontend
+> (documentação privada).
 
 ### O problema
 - "Marcar fatura paga" hoje = marcar N `Parcela.pago` (uma a uma, sem bulk) **e as avulsas, que não

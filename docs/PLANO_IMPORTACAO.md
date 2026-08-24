@@ -336,7 +336,7 @@ Na mesma leva vieram **#9** (cobertura de pagamento, `valor_pago` + `paga_parcia
 **estorno** (`tipo="estorno"`, valor positivo que ABATE nas agregações e na composição da fatura) — não
 são acessórios da importação: são o que faz o dado importado assentar certo no resto do produto.
 
-**Próximo passo — fora desta feature:** retenção, **#6 notificações**. Ver `PENDENCIAS_PRIORIZADAS.md`
+**Próximo passo — fora desta feature:** retenção, **notificações** — rastreado no backlog priorizado (documentação privada)
 §SUGESTÃO DE SEQUÊNCIA.
 
 **Refinamentos do extrato (P3, registrados como pendências — não bloqueiam nada):** **#35** redação de

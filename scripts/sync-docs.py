@@ -36,9 +36,7 @@ SOURCE_DIR = PROJECT_ROOT / "docs"
 # ela é a definição do que é compartilhado.
 SHARED = [
     "DECISAO_A_PAGAR_SALDO.md",
-    "ESTADO_HIVVO_HANDOFF.md",
     "Hivvo_Referencia.md",
-    "PENDENCIAS_PRIORIZADAS.md",
     "PLANO_3D_PAGAMENTO_FATURA.md",
     "PLANO_DASHBOARD_DOIS_BLOCOS.md",
     "PLANO_IMPORTACAO.md",
@@ -46,6 +44,18 @@ SHARED = [
     "PLANO_PROJECAO.md",
     "PLANO_RESUMO.md",
 ]
+
+# Saíram desta lista em 24/08/2026: ESTADO_HIVVO_HANDOFF.md e
+# PENDENCIAS_PRIORIZADAS.md. Não viraram específicos de repo — saíram dos DOIS
+# repos de código e passaram a viver só no repo privado de documentação, junto
+# com as auditorias, os diários de sessão e os planos de execução. São docs
+# operacionais: descrevem um sistema em produção, e por isso não acompanham o
+# código quando ele vai a público.
+#
+# O .gitignore dos dois repos lista os mesmos caminhos. As duas coisas são o
+# MESMO passo, e a ordem importa: se esta lista voltar a citar um doc que o
+# .gitignore bloqueia, o sync recria o arquivo no destino e o Git o esconde do
+# `git status` — divergência que não aparece em lugar nenhum.
 
 
 def resolve_dest(cli_dest: str | None) -> Path:

@@ -10,7 +10,7 @@ BLOCK_ONLY_HIGH, não o default do provedor (que a API pode mudar sozinha):
 mantém a barreira de moderação sem recusar consulta financeira legítima — só
 bloqueia conteúdo de severidade HIGH (ex.: "gastei R$ 4.000 em armas de fogo"
 numa loja de caça e pesca passa). Validado em runtime e aprovado
-(ver docs/AUDITORIA_SEGURANCA.md, F-06).
+(ver a auditoria interna de segurança, item F-06 — documentação privada).
 """
 
 from google.genai import types

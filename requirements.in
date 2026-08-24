@@ -1,0 +1,23 @@
+# Dependências DIRETAS de produção — intenções, não versões resolvidas.
+#
+# Este é o arquivo que se edita à mão. O requirements.txt ao lado é GERADO a
+# partir daqui e traz o conjunto travado em == (inclusive as transitivas); o
+# comando de regeneração está no cabeçalho dele.
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+sqlmodel>=0.0.22
+psycopg2-binary>=2.9.10
+pydantic-settings>=2.6.0
+alembic>=1.14.0
+python-dotenv>=1.0.1
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.0.0
+httpx>=0.28.0
+google-genai>=1.0.0
+resend>=2.0.0
+pdfplumber>=0.11  # importação de fatura: extração da camada de texto do PDF (sem OCR)
+python-multipart>=0.0.9  # upload multipart (FastAPI File/Form) — exigido pelo /import/fatura/preview
+slowapi>=0.1.9  # F-04: rate limiting (store em memória; migrar p/ Redis ao escalar)
+sentry-sdk[fastapi]>=2.0.0  # T-25: monitoramento de erros (inativo sem SENTRY_DSN)
+tzdata>=2024.1  # base de fusos IANA — Windows e imagens slim não têm a do sistema (dependência de PRODUÇÃO do T-27/ZoneInfo)

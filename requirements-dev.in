@@ -1,0 +1,13 @@
+# Dependências DIRETAS de desenvolvimento/teste — não vão para a imagem de
+# produção. Intenções, não versões resolvidas.
+#
+# Este é o arquivo que se edita à mão. O requirements-dev.txt ao lado é GERADO
+# a partir daqui; o comando de regeneração está no cabeçalho dele.
+#
+# Instalar (já cobre runtime + teste): pip install -r requirements-dev.txt
+
+-r requirements.in
+
+pytest>=8.0.0
+pytest-mock>=3.14.0
+pytest-cov>=6.0.0

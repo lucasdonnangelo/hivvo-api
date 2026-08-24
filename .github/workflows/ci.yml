@@ -48,11 +48,35 @@ jobs:
           # alinhe este valor com ela.
           python-version: '3.13'
           cache: pip
+          # Agora que requirements-dev.txt é um lock em ==, o hash deste arquivo
+          # IDENTIFICA o conjunto instalado. Enquanto ele especificava >=, o
+          # hash não mudava quando a resolução mudava, e o cache podia servir um
+          # conjunto enquanto a resolução pedia outro.
           cache-dependency-path: requirements-dev.txt
 
+      - name: Conferir o lock (desvio entre os .in e os .txt)
+        # ANTES do install, de propósito: se o lock não corresponde aos .in, o
+        # que o step seguinte instalaria não é o conjunto que alguém aprovou, e
+        # o resultado da suíte não diria respeito a nada revisável.
+        #
+        # O script recompila requirements.in / requirements-dev.in e compara
+        # byte a byte com os arquivos commitados. Pega tanto o arquivo gerado
+        # editado à mão quanto o .in mudado sem recompilar. Sem este step o
+        # lock seria só documentação — nada obrigaria os dois a concordarem.
+        #
+        # O uv é pinado: versões diferentes podem formatar a saída de outro
+        # jeito e a comparação é exata. Ao subir aqui, suba também o UV_VERSAO
+        # de scripts/travar_deps.py e regenere os dois .txt no mesmo commit.
+        run: |
+          pip install uv==0.12.5
+          python scripts/travar_deps.py --check
+
       - name: Instalar dependências
-        # requirements-dev.txt já faz "-r requirements.txt": um comando cobre
-        # runtime e teste.
+        # requirements-dev.txt é AUTOCONTIDO: o lock traz as de produção e as de
+        # teste, todas em ==, então um comando cobre runtime e teste. (Antes de
+        # travar, o mesmo efeito vinha de uma linha "-r requirements.txt" no topo
+        # do arquivo; o uv achata essa referência ao compilar, e um lock que
+        # lista tudo explicitamente é o que se quer de um lock.)
         run: pip install -r requirements-dev.txt
 
       - name: Rodar testes

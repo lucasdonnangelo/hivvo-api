@@ -1,0 +1,23 @@
+[
+  {
+    "titulo": "rota de negocio montada FORA de /api/v1 (tira o prefix do feedback)",
+    "arquivo": "main.py",
+    "de": "app.include_router(feedback.router, prefix=\"/api/v1\", dependencies=_csrf)",
+    "para": "app.include_router(feedback.router, dependencies=_csrf)",
+    "teste": "tests/routers/test_api_v1_prefix.py::test_toda_rota_de_negocio_esta_sob_api_v1"
+  },
+  {
+    "titulo": "/health duplicado sob /api/v1 via INCLUDE_ROUTER (a forma que app.routes nao enxerga)",
+    "arquivo": "main.py",
+    "de": "app.include_router(feedback.router, prefix=\"/api/v1\", dependencies=_csrf)",
+    "para": "app.include_router(feedback.router, prefix=\"/api/v1\", dependencies=_csrf)\n\nfrom fastapi import APIRouter as _APIRouterMut\n\n_router_health_mut = _APIRouterMut()\n\n\n@_router_health_mut.get(\"/health\", tags=[\"health\"])\ndef _health_v1_mut():\n    return {\"status\": \"ok\"}\n\n\napp.include_router(_router_health_mut, prefix=\"/api/v1\")",
+    "teste": "tests/routers/test_api_v1_prefix.py::test_health_permanece_na_raiz"
+  },
+  {
+    "titulo": "/health duplicado sob /api/v1 via @app.get direto (rota de primeiro nivel)",
+    "arquivo": "main.py",
+    "de": "@app.get(\"/health\", tags=[\"health\"])",
+    "para": "@app.get(\"/api/v1/health\", tags=[\"health\"])\n@app.get(\"/health\", tags=[\"health\"])",
+    "teste": "tests/routers/test_api_v1_prefix.py::test_health_permanece_na_raiz"
+  }
+]

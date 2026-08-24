@@ -36,6 +36,7 @@ SOURCE_DIR = PROJECT_ROOT / "docs"
 # ela é a definição do que é compartilhado.
 SHARED = [
     "DECISAO_A_PAGAR_SALDO.md",
+    "ENGINEERING.md",
     "Hivvo_Referencia.md",
     "PLANO_3D_PAGAMENTO_FATURA.md",
     "PLANO_DASHBOARD_DOIS_BLOCOS.md",

@@ -29,6 +29,7 @@ perdida no próximo sync.
 | Doc | Assunto |
 |---|---|
 | `DECISAO_A_PAGAR_SALDO.md` | Decisão de produto: "a pagar" vs saldo |
+| `ENGINEERING.md` | Práticas de engenharia: mutação, lock com portão, premissa derrubada |
 | `Hivvo_Referencia.md` | Referência do produto: visão, brand, telas, arquitetura dos dois repos |
 | `PLANO_3D_PAGAMENTO_FATURA.md` | Plano: pagamento de fatura |
 | `PLANO_DASHBOARD_DOIS_BLOCOS.md` | Plano: dashboard em dois blocos |

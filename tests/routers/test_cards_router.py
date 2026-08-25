@@ -10,18 +10,26 @@ from decimal import Decimal
 
 from app.models.card import Cartao
 from app.models.installment import Parcela
+from app.models.pagamento_fatura import PagamentoFatura
 from app.models.transaction import Transacao
 
 HOJE_FIXO = dt.date(2026, 6, 10)
 # Cartão: fechamento 25, vencimento 5, offset 1 → em 10/06 a fatura aberta é (7, 2026)
 FATURA_ABERTA = (7, 2026)
+# Competências usadas pelos testes de limite comprometido. PASSADO e FUTURO em
+# volta da aberta não são decoração: um cálculo que volte a olhar UMA
+# competência precisa DIVERGIR do esperado, e para isso a fixture tem que ter
+# competência dos dois lados da aberta, com valores distintos.
+PASSADA_FECHADA = (6, 2026)  # fecha em 25/05/2026 → pagável em 10/06 (PUT aceita)
+FUTURA = (8, 2026)
 
 
-def make_card(session, usuario_id: int) -> Cartao:
+def make_card(session, usuario_id: int, limite: str | None = None) -> Cartao:
     card = Cartao(
         usuario_id=usuario_id,
         nome="Nubank",
         tipo="Crédito",
+        limite=Decimal(limite) if limite is not None else None,
         dia_fechamento=25,
         dia_vencimento=5,
         mes_offset_vencimento=1,
@@ -338,6 +346,393 @@ class TestTemLancamentosNoGetCards:
         cards = {c["id"]: c for c in as_user(user_a).get("/cards").json()}
         assert cards[com.id]["tem_lancamentos"] is True
         assert cards[sem.id]["tem_lancamentos"] is False
+
+
+# --- Helpers de competência arbitrária (limite comprometido) -----------------
+# Os helpers de cima gravam SEMPRE em FATURA_ABERTA, que é exatamente o que um
+# teste de "soma todas as competências" não pode usar.
+
+
+def add_avulsa_em(
+    session,
+    usuario_id: int,
+    cartao_id: int,
+    valor: str,
+    competencia: tuple[int, int],
+    tipo: str = "despesa",
+) -> Transacao:
+    mes, ano = competencia
+    t = Transacao(
+        usuario_id=usuario_id,
+        tipo=tipo,
+        data=dt.date(2026, 6, 1),
+        descricao=f"Avulsa {tipo} {valor}",
+        valor=Decimal(valor),
+        categoria="Compras",
+        forma_pagamento="Crédito",
+        cartao_id=cartao_id,
+        parcelado=False,
+        fatura_mes=mes,
+        fatura_ano=ano,
+    )
+    session.add(t)
+    session.commit()
+    session.refresh(t)
+    return t
+
+
+def add_parcelada_em(
+    session,
+    usuario_id: int,
+    cartao_id: int,
+    parcelas: list[tuple[str, tuple[int, int]]],
+    descricao: str = "Parcelada",
+) -> list[Parcela]:
+    """Compra parcelada REAL: transação-pai + uma parcela por competência.
+
+    `parcelas` = [(valor, (mes, ano)), ...] na ordem dos números de parcela — o
+    mesmo formato materializado por services/parcelas e pelo import de fatura
+    (todas as parcelas existem no banco desde a criação, inclusive as FUTURAS).
+    """
+    n = len(parcelas)
+    total = sum(Decimal(v) for v, _ in parcelas)
+    base = Transacao(
+        usuario_id=usuario_id,
+        tipo="despesa",
+        data=dt.date(2026, 6, 1),
+        descricao=descricao,
+        valor=total,
+        categoria="Compras",
+        forma_pagamento="Crédito",
+        cartao_id=cartao_id,
+        parcelado=True,
+        total_parcelas=n,
+    )
+    session.add(base)
+    session.commit()
+    session.refresh(base)
+
+    criadas = []
+    for i, (valor, (mes, ano)) in enumerate(parcelas, start=1):
+        p = Parcela(
+            usuario_id=usuario_id,
+            transacao_id=base.id,
+            numero_parcela=i,
+            total_parcelas=n,
+            valor_parcela=Decimal(valor),
+            data_vencimento=dt.date(ano, mes, 5),
+            descricao=f"{descricao} ({i}/{n})",
+            categoria="Compras",
+            cartao_id=cartao_id,
+            fatura_mes=mes,
+            fatura_ano=ano,
+        )
+        session.add(p)
+        criadas.append(p)
+    session.commit()
+    for p in criadas:
+        session.refresh(p)
+    return criadas
+
+
+def competencias_a_partir(
+    competencia: tuple[int, int], n: int
+) -> list[tuple[int, int]]:
+    """`n` competências consecutivas a partir de (mes, ano), virando o ano.
+
+    Uma parcelada longa (10x, 12x, 24x) atravessa dezembro — que é justamente o
+    caso em que "somar todas as competências" tem que continuar valendo.
+    """
+    mes, ano = competencia
+    base = ano * 12 + (mes - 1)
+    return [((base + k) % 12 + 1, (base + k) // 12) for k in range(n)]
+
+
+def get_card(client, card_id: int) -> dict:
+    return {c["id"]: c for c in client.get("/cards").json()}[card_id]
+
+
+class TestLimiteComprometido:
+    """`limite_usado` = o que resta em aberto em TODAS as competências, abatido
+    pelos pagamentos confirmados, com clamp de cobertura POR FATURA.
+
+    O defeito que estes testes fixam: a barra do cartão chamava de "usado" o
+    `fatura_aberta_total`, que é UMA competência. O limite se "recuperava"
+    sozinho na virada do mês e uma compra em 24x quase não aparecia.
+    """
+
+    def test_limite_usado_soma_TODAS_as_competencias_nao_so_a_aberta(
+        self, session, users, as_user, mocker
+    ):
+        # Cinco competências com valores DISTINTOS dos dois lados da aberta.
+        # Nenhum subconjunto soma o total, então nenhum recorte de competência
+        # (só a aberta, só a primeira, só a última) acerta 3133 por acidente.
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = make_card(session, user_a.id, limite="10000.00")
+
+        add_avulsa_em(session, user_a.id, card.id, "111.00", (5, 2026))  # passada
+        add_avulsa_em(session, user_a.id, card.id, "222.00", (6, 2026))  # passada
+        add_avulsa_em(session, user_a.id, card.id, "400.00", FATURA_ABERTA)
+        add_avulsa_em(session, user_a.id, card.id, "800.00", (8, 2026))  # futura
+        add_avulsa_em(session, user_a.id, card.id, "1600.00", (9, 2026))  # futura
+
+        body = get_card(as_user(user_a), card.id)
+
+        assert Decimal(str(body["limite_usado"])) == Decimal("3133.00")
+        # A fatura aberta continua sendo a fatura aberta — mesmo nome, mesmo
+        # valor. O que mudou é que ela deixou de responder "quanto do limite".
+        assert Decimal(str(body["fatura_aberta_total"])) == Decimal("400.00")
+
+    def test_defeito_medido_duas_parceladas_na_parcela_3(
+        self, session, users, as_user, mocker
+    ):
+        # A medição que abriu o batch: limite 10.000, uma parcelada de 1.000 em
+        # 10x e outra de 1.200 em 12x, ambas na parcela 3. A tela mostrava
+        # R$ 200,00 usado / R$ 9.800,00 disponível — R$ 200 é a fatura do mês.
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = make_card(session, user_a.id, limite="10000.00")
+
+        # parcela 3 cai na aberta (7/2026) → 1 e 2 no passado, 4..n no futuro
+        # (e a 12x atravessa dezembro, chegando a 04/2027)
+        competencias = competencias_a_partir((5, 2026), 12)
+        add_parcelada_em(
+            session,
+            user_a.id,
+            card.id,
+            [("100.00", c) for c in competencias[:10]],
+            descricao="A 10x",
+        )
+        add_parcelada_em(
+            session,
+            user_a.id,
+            card.id,
+            [("100.00", c) for c in competencias[:12]],
+            descricao="B 12x",
+        )
+
+        body = get_card(as_user(user_a), card.id)
+
+        assert Decimal(str(body["fatura_aberta_total"])) == Decimal("200.00")
+        assert Decimal(str(body["limite_usado"])) == Decimal("2200.00")
+
+    def test_fatura_paga_LIBERA_limite_no_valor_pago(
+        self, session, users, as_user, mocker
+    ):
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        mocker.patch("app.routers.invoices.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = make_card(session, user_a.id, limite="10000.00")
+
+        add_avulsa_em(session, user_a.id, card.id, "500.00", PASSADA_FECHADA)
+        add_avulsa_em(session, user_a.id, card.id, "1000.00", FUTURA)
+        client = as_user(user_a)
+
+        assert Decimal(str(get_card(client, card.id)["limite_usado"])) == Decimal(
+            "1500.00"
+        )
+
+        mes, ano = PASSADA_FECHADA
+        resp = client.put(
+            f"/invoices/{card.id}/{ano}/{mes}/pagamento", json={"pago": True}
+        )
+        assert resp.status_code == 200
+
+        # Pagou a de 500 → sobra a futura de 1000. Sem a subtração, seguiria 1500.
+        assert Decimal(str(get_card(client, card.id)["limite_usado"])) == Decimal(
+            "1000.00"
+        )
+
+    def test_valor_pago_acima_do_total_nao_libera_limite_de_OUTRA_competencia(
+        self, session, users, as_user, mocker
+    ):
+        """O clamp POR FATURA (min(valor_pago, total)).
+
+        `valor_pago` é SNAPSHOT do total no instante da confirmação, não
+        derivado. Cancelar uma parcela DEPOIS de marcar paga deixa valor_pago
+        ACIMA do total atual daquela fatura. Subtrair Σ(valor_pago) global
+        deixaria a sobra vazar para OUTRA competência e liberar limite que
+        ninguém pagou. A ORDEM é o teste: pagar primeiro, cancelar depois.
+        """
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        mocker.patch("app.routers.invoices.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = make_card(session, user_a.id, limite="10000.00")
+        client = as_user(user_a)
+
+        # Fatura passada = 300 + 200 = 500, cada parcela na sua transação.
+        add_parcelada_em(
+            session, user_a.id, card.id, [("300.00", PASSADA_FECHADA)], "Fica"
+        )
+        (some,) = add_parcelada_em(
+            session, user_a.id, card.id, [("200.00", PASSADA_FECHADA)], "Some"
+        )
+        add_avulsa_em(session, user_a.id, card.id, "1000.00", FUTURA)
+
+        mes, ano = PASSADA_FECHADA
+        pago = client.put(
+            f"/invoices/{card.id}/{ano}/{mes}/pagamento", json={"pago": True}
+        )
+        assert pago.status_code == 200
+        assert Decimal(str(pago.json()["valor_pago"])) == Decimal("500.00")
+
+        # AGORA cancela: o total da fatura cai para 300, o valor_pago fica 500.
+        assert (
+            client.put(f"/installments/{some.id}", json={"cancelado": True}).status_code
+            == 200
+        )
+
+        # Com clamp: min(500, 300) = 300 → a fatura contribui 0, sobra a futura.
+        # Sem clamp: 300 − 500 = −200 vazaria e o total cairia para 800.
+        assert Decimal(str(get_card(client, card.id)["limite_usado"])) == Decimal(
+            "1000.00"
+        )
+
+    def test_pagamento_NAO_confirmado_com_valor_pago_sujo_nao_libera_limite(
+        self, session, users, as_user, mocker
+    ):
+        """`pago=False` é "não confirmado" — equivale à ausência de registro.
+
+        O registro é montado à mão de propósito: o PUT limpa `valor_pago` ao
+        reverter, então este estado (pago=False COM valor_pago) só chega por
+        dado legado. O CHECK do banco permite (`NOT pago OR valor_pago IS NOT
+        NULL` só exige o valor QUANDO pago). Sem o filtro `pago == True` na
+        consulta, esse resto liberaria limite que ninguém confirmou ter pago.
+        """
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = make_card(session, user_a.id, limite="10000.00")
+        add_avulsa_em(session, user_a.id, card.id, "500.00", PASSADA_FECHADA)
+
+        mes, ano = PASSADA_FECHADA
+        session.add(
+            PagamentoFatura(
+                usuario_id=user_a.id,
+                cartao_id=card.id,
+                fatura_mes=mes,
+                fatura_ano=ano,
+                pago=False,
+                valor_pago=Decimal("500.00"),
+            )
+        )
+        session.commit()
+
+        body = get_card(as_user(user_a), card.id)
+        assert Decimal(str(body["limite_usado"])) == Decimal("500.00")
+
+    def test_estorno_ABATE_o_limite_usado(self, session, users, as_user, mocker):
+        """Par inseparável _cond_avulsas_fatura + valor_avulsa_liquido.
+
+        Antes deste batch a soma do GET /cards era `tipo == "despesa"` com
+        `Transacao.valor` cru: o MESMO estorno abatia em
+        GET /cards/{id}/invoices e no "A pagar", e não abatia na barra de
+        limite — dois números para a mesma fatura, em duas telas.
+        """
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = make_card(session, user_a.id, limite="10000.00")
+
+        add_avulsa_em(session, user_a.id, card.id, "500.00", FATURA_ABERTA)
+        add_avulsa_em(
+            session, user_a.id, card.id, "200.00", FATURA_ABERTA, tipo="estorno"
+        )
+        add_avulsa_em(session, user_a.id, card.id, "1000.00", FUTURA)
+
+        body = get_card(as_user(user_a), card.id)
+
+        assert Decimal(str(body["fatura_aberta_total"])) == Decimal("300.00")
+        assert Decimal(str(body["limite_usado"])) == Decimal("1300.00")
+
+    def test_parcela_cancelada_devolve_limite_em_TODAS_as_competencias(
+        self, session, users, as_user, mocker
+    ):
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = make_card(session, user_a.id, limite="10000.00")
+        client = as_user(user_a)
+
+        parcelas = add_parcelada_em(
+            session,
+            user_a.id,
+            card.id,
+            [
+                ("250.00", PASSADA_FECHADA),
+                ("250.00", FATURA_ABERTA),
+                ("250.00", FUTURA),
+                ("250.00", (9, 2026)),
+            ],
+        )
+        assert Decimal(str(get_card(client, card.id)["limite_usado"])) == Decimal(
+            "1000.00"
+        )
+
+        # Cancelar a parcela FUTURA devolve limite sem tocar na fatura aberta.
+        assert (
+            client.put(
+                f"/installments/{parcelas[3].id}", json={"cancelado": True}
+            ).status_code
+            == 200
+        )
+
+        body = get_card(client, card.id)
+        assert Decimal(str(body["limite_usado"])) == Decimal("750.00")
+        assert Decimal(str(body["fatura_aberta_total"])) == Decimal("250.00")
+
+    def test_avulsa_sem_competencia_nao_compoe_limite_mas_conta_como_lancamento(
+        self, session, users, as_user, mocker
+    ):
+        """Cartão sem dia_vencimento: a avulsa é gravada com fatura_mes nulo.
+
+        Não compõe fatura (logo fica fora de `limite_usado`), mas É compra — e
+        `tem_lancamentos` precisa dizer True, senão o front habilita os campos
+        de data que o PUT recusa com 422.
+        """
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = Cartao(
+            usuario_id=user_a.id,
+            nome="Sem datas",
+            tipo="Crédito",
+            limite=Decimal("5000.00"),
+        )
+        session.add(card)
+        session.commit()
+        session.refresh(card)
+
+        t = Transacao(
+            usuario_id=user_a.id,
+            tipo="despesa",
+            data=dt.date(2026, 6, 1),
+            descricao="Sem competência",
+            valor=Decimal("300.00"),
+            categoria="Compras",
+            forma_pagamento="Crédito",
+            cartao_id=card.id,
+            parcelado=False,
+        )
+        session.add(t)
+        session.commit()
+
+        body = get_card(as_user(user_a), card.id)
+        assert Decimal(str(body["limite_usado"])) == Decimal("0.00")
+        assert body["tem_lancamentos"] is True
+
+    def test_limite_usado_exclui_dados_de_outro_usuario(
+        self, session, users, as_user, mocker
+    ):
+        # T-36 no eixo novo: a soma multi-competência não pode reintroduzir o
+        # vazamento entre usuários que a soma da fatura aberta já fecha.
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, user_b = users
+        card = make_card(session, user_a.id, limite="10000.00")
+
+        add_avulsa_em(session, user_a.id, card.id, "400.00", FUTURA)
+        add_avulsa_em(session, user_b.id, card.id, "999.00", FUTURA)
+        add_parcelada_em(session, user_b.id, card.id, [("999.00", PASSADA_FECHADA)])
+
+        body = get_card(as_user(user_a), card.id)
+        assert Decimal(str(body["limite_usado"])) == Decimal("400.00")
 
 
 def add_estorno(session, usuario_id: int, cartao_id: int, valor: str) -> Transacao:

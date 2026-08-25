@@ -127,10 +127,25 @@ class CartaoResponse(BaseModel):
 
 
 class CartaoComFaturaResponse(CartaoResponse):
+    # Total da fatura ABERTA (a competência corrente do cartão) — UMA
+    # competência. NÃO é limite consumido: quem responde isso é `limite_usado`.
+    # Confundir os dois é o defeito que a barra do CardVisual tinha.
     fatura_aberta_total: Optional[Decimal] = None
     fatura_aberta_mes: Optional[int] = None
     fatura_aberta_ano: Optional[int] = None
     fatura_aberta_vencimento: Optional[dt.date] = None
+    # Limite COMPROMETIDO: o que resta em aberto em TODAS as competências
+    # (passadas, corrente e futuras), abatido pelo que o usuário confirmou ter
+    # pago, com clamp de cobertura POR FATURA (services/faturas.
+    # limite_usado_por_cartao). Pode passar do `limite` do cartão — não é erro
+    # de conta, é o sinal de que há fatura sem pagamento confirmado; a UI trata
+    # o estouro com cópia própria em vez de imprimir "R$ 0,00 disponível".
+    #
+    # `limite_disponivel` NÃO é devolvido de propósito: `limite` é Optional
+    # (cartão premium/black sem limite pré-definido) e a degradação desse caso
+    # mora no componente. O backend diz o que está comprometido; a tela decide
+    # o que fazer quando não há limite contra o que comparar.
+    limite_usado: Decimal = Decimal("0.00")
     # True quando o cartão tem compra lançada (parcela não cancelada ou avulsa
     # de cartão) em qualquer competência → o frontend desabilita os campos de
     # data (dia_fechamento/dia_vencimento) no form de edição, pois o backend os

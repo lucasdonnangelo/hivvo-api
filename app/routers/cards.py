@@ -1,14 +1,12 @@
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session, select, func
+from sqlmodel import Session, select
 
 from app.core.auth import get_current_user
 from app.core.database import get_session
 from app.core.dates import hoje
 from app.models.card import Cartao
-from app.models.installment import Parcela
-from app.models.transaction import Transacao
 from app.models.user import Usuario
 from app.schemas.card import (
     MSG_VENCIMENTO_ANTES_DO_FECHAMENTO,
@@ -19,10 +17,11 @@ from app.schemas.card import (
     fechamento_vencimento_coerentes,
 )
 from app.services.faturas import (
-    _TIPOS_AVULSA_FATURA,
     _current_open_fatura,
     cartao_tem_lancamentos,
-    valor_avulsa_liquido,
+    cartoes_com_lancamentos,
+    limite_usado_por_cartao,
+    totais_fatura_por_cartao_competencia,
 )
 
 router = APIRouter(prefix="/cards", tags=["cards"])
@@ -45,81 +44,41 @@ def list_cards(
     abertas = {card.id: _current_open_fatura(card, today) for card in cards}
     card_ids = [card.id for card in cards]
 
-    # T-17: 2 queries GROUP BY cartao_id cobrindo TODOS os cartões de uma vez (em
-    # vez de 2 por cartão — N+1). Cada total por cartão é depois lido da tupla da
-    # fatura aberta daquele cartão — mesmo filtro do código anterior, valor idêntico.
-    parcelas_map = {
-        (cid, mes, ano): total
-        for cid, mes, ano, total in session.exec(
-            select(
-                Parcela.cartao_id,
-                Parcela.fatura_mes,
-                Parcela.fatura_ano,
-                func.sum(Parcela.valor_parcela),
-            )
-            .where(
-                Parcela.usuario_id == current_user.id,
-                Parcela.cartao_id.in_(card_ids),
-                Parcela.cancelado == False,
-            )
-            .group_by(Parcela.cartao_id, Parcela.fatura_mes, Parcela.fatura_ano)
-        ).all()
-    }
+    # T-17: agregação de TODOS os cartões de uma vez (em vez de 2 queries por
+    # cartão — N+1). O map cobre TODAS as competências, e agora as duas leituras
+    # que ele alimenta usam recortes DIFERENTES dele:
+    #   - fatura_aberta_total → só a competência aberta daquele cartão;
+    #   - limite_usado        → o histórico inteiro, abatido pelos pagamentos.
+    # Passa pela fonte única da composição (_cond_parcelas/avulsas_fatura), o que
+    # traz o estorno junto: `valor_avulsa_liquido` ABATE. Antes daqui a soma era
+    # `tipo == "despesa"` com `Transacao.valor` cru, então o mesmo estorno abatia
+    # em GET /cards/{id}/invoices e no "A pagar" e NÃO abatia na barra de limite —
+    # dois números para a mesma fatura, em duas telas.
+    totais = totais_fatura_por_cartao_competencia(session, current_user.id, card_ids)
 
-    avulsas_map = {
-        (cid, mes, ano): total
-        for cid, mes, ano, total in session.exec(
-            select(
-                Transacao.cartao_id,
-                Transacao.fatura_mes,
-                Transacao.fatura_ano,
-                # Par INSEPARÁVEL de _cond_avulsas_fatura: quem soma avulsas soma
-                # o valor LÍQUIDO, nunca Transacao.valor cru. Antes daqui a soma
-                # era `tipo == "despesa"` com o valor cru, então o MESMO estorno
-                # abatia em GET /cards/{id}/invoices e no "A pagar" e NÃO abatia
-                # aqui — dois números para a mesma fatura, em duas telas.
-                func.sum(valor_avulsa_liquido),
-            )
-            .where(
-                Transacao.usuario_id == current_user.id,
-                Transacao.cartao_id.in_(card_ids),
-                Transacao.parcelado == False,
-                Transacao.tipo.in_(_TIPOS_AVULSA_FATURA),
-            )
-            .group_by(Transacao.cartao_id, Transacao.fatura_mes, Transacao.fatura_ano)
-        ).all()
-    }
+    # 1 query: os pagamentos confirmados, para a cobertura por fatura.
+    usados = limite_usado_por_cartao(session, current_user.id, card_ids, totais)
 
-    # `tem_lancamentos` sai de graça dos mesmos maps (parcela não cancelada +
-    # avulsa despesa/estorno) — MESMA composição de cartao_tem_lancamentos, sem
-    # query extra. Presença do cartao_id em qualquer competência.
-    #
-    # A afirmação "por construção" que estava aqui era FALSA enquanto a soma
-    # filtrava `tipo == "despesa"`: cartão com APENAS estorno reportava False
-    # contra o True do canônico. Passar a soma pela composição fecha isso.
-    cartoes_com_lancamento = {cid for (cid, _, _) in parcelas_map} | {
-        cid for (cid, _, _) in avulsas_map
-    }
+    # `tem_lancamentos` NÃO sai das chaves de `totais`: a composição da fatura
+    # exige competência, e avulsa de cartão sem dia_vencimento é gravada com
+    # fatura_mes nulo — sairia "sem compras" aqui e 422 no PUT. Pergunta
+    # diferente, consulta própria (ver cartoes_com_lancamentos).
+    cartoes_com_lancamento = cartoes_com_lancamentos(session, current_user.id, card_ids)
 
     result = []
     for card in cards:
         fatura_mes, fatura_ano, venc = abertas[card.id]
 
-        total = Decimal("0.00")
-        parcelas_total = parcelas_map.get((card.id, fatura_mes, fatura_ano))
-        avulsas_total = avulsas_map.get((card.id, fatura_mes, fatura_ano))
-        if parcelas_total:
-            total += parcelas_total
-        if avulsas_total:
-            total += avulsas_total
-
         result.append(
             CartaoComFaturaResponse(
                 **card.model_dump(),
-                fatura_aberta_total=total,
+                fatura_aberta_total=totais.get(
+                    (card.id, fatura_mes, fatura_ano), Decimal("0.00")
+                ),
                 fatura_aberta_mes=fatura_mes,
                 fatura_aberta_ano=fatura_ano,
                 fatura_aberta_vencimento=venc,
+                limite_usado=usados[card.id],
                 tem_lancamentos=card.id in cartoes_com_lancamento,
             )
         )

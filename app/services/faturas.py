@@ -175,7 +175,10 @@ def vencimento_avulsa(
 
 
 def _cond_parcelas_fatura(
-    usuario_id: int, mes: Optional[int], ano: int, cartao_id: Optional[int] = None
+    usuario_id: int,
+    mes: Optional[int],
+    ano: Optional[int],
+    cartao_id: Optional[int] = None,
 ) -> list:
     """Condições de "parcela que compõe uma fatura de cartão" na competência.
 
@@ -185,13 +188,22 @@ def _cond_parcelas_fatura(
     duplicação afirmada em teste e passa a ser por construção. cartao_id=None
     = qualquer cartão (cartao_id != None); parcela SEM cartão nunca pertence
     a fatura. mes=None = ano inteiro (fatura_mes != None) — a variante anual
-    da descoberta (#9) agrupa por mês fora daqui.
+    da descoberta (#9) agrupa por mês fora daqui. ano=None = TODAS as
+    competências (fatura_ano != None) — a lente do limite comprometido
+    (limite_usado_por_cartao) agrupa por competência fora daqui.
+
+    Em qualquer combinação, "sem competência" NÃO compõe fatura: parcela com
+    fatura_mes/fatura_ano nulo fica de fora mesmo com mes=None/ano=None. É a
+    mesma regra do cartao_id (parcela sem cartão não pertence a fatura), e é o
+    que faz `tem_lancamentos` precisar de consulta própria
+    (cartoes_com_lancamentos) em vez de sair das chaves da composição.
     """
     return [
         Parcela.usuario_id == usuario_id,
         Parcela.fatura_mes == mes if mes is not None
         else Parcela.fatura_mes != None,  # noqa: E711
-        Parcela.fatura_ano == ano,
+        Parcela.fatura_ano == ano if ano is not None
+        else Parcela.fatura_ano != None,  # noqa: E711
         Parcela.cancelado == False,  # noqa: E712
         Parcela.cartao_id == cartao_id if cartao_id is not None
         else Parcela.cartao_id != None,  # noqa: E711
@@ -211,17 +223,21 @@ valor_avulsa_liquido = case(
 
 
 def _cond_avulsas_fatura(
-    usuario_id: int, mes: Optional[int], ano: int, cartao_id: Optional[int] = None
+    usuario_id: int,
+    mes: Optional[int],
+    ano: Optional[int],
+    cartao_id: Optional[int] = None,
 ) -> list:
     """Condições de "avulsa de cartão que compõe uma fatura" na competência
     (parcelado=False, tipo despesa OU estorno) — par do _cond_parcelas_fatura
-    (mesmas semânticas de mes=None e cartao_id=None). Somas usam
+    (mesmas semânticas de mes=None, ano=None e cartao_id=None). Somas usam
     valor_avulsa_liquido (estorno abate)."""
     return [
         Transacao.usuario_id == usuario_id,
         Transacao.fatura_mes == mes if mes is not None
         else Transacao.fatura_mes != None,  # noqa: E711
-        Transacao.fatura_ano == ano,
+        Transacao.fatura_ano == ano if ano is not None
+        else Transacao.fatura_ano != None,  # noqa: E711
         Transacao.parcelado == False,  # noqa: E712
         Transacao.tipo.in_(_TIPOS_AVULSA_FATURA),  # type: ignore[attr-defined]
         Transacao.cartao_id == cartao_id if cartao_id is not None
@@ -384,6 +400,49 @@ def cartao_tem_lancamentos(session: Session, usuario_id: int, cartao_id: int) ->
     )
 
 
+def cartoes_com_lancamentos(
+    session: Session, usuario_id: int, cartao_ids: list[int]
+) -> set[int]:
+    """Subconjunto de `cartao_ids` que tem ao menos uma compra lançada.
+
+    Variante multi-cartão de :func:`cartao_tem_lancamentos` — MESMA composição
+    (parcela não cancelada OU avulsa de cartão despesa/estorno, em QUALQUER
+    competência), 2 DISTINCT no banco em vez de 2 EXISTS por cartão (N+1).
+
+    NÃO sai das chaves de :func:`totais_fatura_por_cartao_competencia`, e a
+    diferença é o motivo de existir: a composição da FATURA exige competência
+    (fatura_mes/ano != None), e uma avulsa de cartão SEM dia_vencimento é
+    gravada com fatura_mes nulo (routers/transactions: a competência só é
+    derivada quando o cartão tem dia_vencimento). Derivar `tem_lancamentos` da
+    composição diria "sem compras" para esse cartão enquanto o PUT continuaria
+    barrando a edição de datas com 422 — o front habilitaria um campo que o
+    servidor recusa. A pergunta aqui é "tem compra?", não "compõe fatura?".
+    """
+    if not cartao_ids:
+        return set()
+
+    parcelas = session.exec(
+        select(Parcela.cartao_id)
+        .where(
+            Parcela.usuario_id == usuario_id,
+            Parcela.cartao_id.in_(cartao_ids),  # type: ignore[attr-defined]
+            Parcela.cancelado == False,  # noqa: E712
+        )
+        .distinct()
+    ).all()
+    avulsas = session.exec(
+        select(Transacao.cartao_id)
+        .where(
+            Transacao.usuario_id == usuario_id,
+            Transacao.cartao_id.in_(cartao_ids),  # type: ignore[attr-defined]
+            Transacao.parcelado == False,  # noqa: E712
+            Transacao.tipo.in_(_TIPOS_AVULSA_FATURA),  # type: ignore[attr-defined]
+        )
+        .distinct()
+    ).all()
+    return set(parcelas) | set(avulsas)
+
+
 def totais_fatura_por_cartao(
     session: Session, usuario_id: int, mes: int, ano: int
 ) -> dict[int, Decimal]:
@@ -470,6 +529,139 @@ def totais_fatura_por_cartao_ano(
             )
 
     return totais
+
+
+def totais_fatura_por_cartao_competencia(
+    session: Session, usuario_id: int, cartao_ids: list[int]
+) -> dict[tuple[int, int, int], Decimal]:
+    """{(cartao_id, fatura_mes, fatura_ano): total} de TODAS as competências.
+
+    Variante sem recorte de tempo de :func:`totais_fatura_por_cartao_ano` —
+    mesmas condições (_cond_* com mes=None E ano=None), GROUP BY (cartao_id,
+    fatura_mes, fatura_ano), 2 queries fixas para o histórico INTEIRO de N
+    cartões. Inclui competência FUTURA: as parcelas de uma compra em 24x são
+    materializadas todas na criação (services/parcelas, import_fatura), então
+    "todas as competências" é leitura do banco, nunca projeção.
+
+    Só cartões COM lançamento aparecem (sem zeros), como nas outras lentes.
+    """
+    if not cartao_ids:
+        return {}
+
+    totais: dict[tuple[int, int, int], Decimal] = {}
+
+    parcelas_rows = session.exec(
+        select(
+            Parcela.cartao_id,
+            Parcela.fatura_mes,
+            Parcela.fatura_ano,
+            func.sum(Parcela.valor_parcela),
+        )
+        .where(
+            *_cond_parcelas_fatura(usuario_id, None, None),
+            Parcela.cartao_id.in_(cartao_ids),  # type: ignore[attr-defined]
+        )
+        .group_by(Parcela.cartao_id, Parcela.fatura_mes, Parcela.fatura_ano)
+    ).all()
+
+    avulsas_rows = session.exec(
+        select(
+            Transacao.cartao_id,
+            Transacao.fatura_mes,
+            Transacao.fatura_ano,
+            func.sum(valor_avulsa_liquido),  # estorno ABATE (par inseparável)
+        )
+        .where(
+            *_cond_avulsas_fatura(usuario_id, None, None),
+            Transacao.cartao_id.in_(cartao_ids),  # type: ignore[attr-defined]
+        )
+        .group_by(Transacao.cartao_id, Transacao.fatura_mes, Transacao.fatura_ano)
+    ).all()
+
+    for rows in (parcelas_rows, avulsas_rows):
+        for cartao_id, mes, ano, total in rows:
+            chave = (cartao_id, mes, ano)
+            totais[chave] = totais.get(chave, Decimal("0.00")) + (
+                total or Decimal("0.00")
+            )
+
+    return totais
+
+
+def limite_usado_por_cartao(
+    session: Session,
+    usuario_id: int,
+    cartao_ids: list[int],
+    totais: dict[tuple[int, int, int], Decimal],
+) -> dict[int, Decimal]:
+    """{cartao_id: comprometido} — quanto do limite do cartão está preso.
+
+    NÃO é a fatura aberta. É a soma do que resta em aberto em TODAS as
+    competências (passadas, corrente e futuras), abatida pelo que o usuário
+    confirmou ter pago:
+
+        comprometido = Σ_competência ( total_c − cobertura_c )
+        cobertura_c  = min(valor_pago_c, total_c)  se pago=True
+                     = 0                           caso contrário
+
+    O clamp é POR FATURA, e é o ponto todo. `valor_pago` é SNAPSHOT do total no
+    instante da confirmação (models/pagamento_fatura), não derivado: cancelar
+    uma parcela ou lançar um estorno DEPOIS de marcar paga deixa valor_pago
+    ACIMA do total atual. Somar Σ(valor_pago) global deixaria essa sobra
+    escapar da competência e liberar limite em OUTRA — crédito fantasma. Com
+    `min`, a fatura devolve no máximo o que ela mesma pesa.
+
+    É o mesmo kernel de cobertura que já decide o status (`status_fatura`:
+    valor_pago >= total → paga, menor → paga_parcial) e a descoberta
+    (estatisticas._soma_descobertas, cujo `if valor_pago < total` É este
+    clamp). Reescrito por metades: fatura não confirmada contribui `total_c`
+    inteiro; fatura pago=True contribui exatamente a sua descoberta.
+
+    Sinal: competência com estorno maior que a despesa tem total_c NEGATIVO e
+    DEVE devolver limite — por isso a cobertura de fatura não confirmada é 0
+    fixo, e não min(0, total_c), que anularia a devolução. O resultado por
+    cartão não é clampado em zero pela mesma razão.
+
+    `totais` vem de :func:`totais_fatura_por_cartao_competencia` (o chamador já
+    o tem para a fatura aberta) — aqui é 1 query, a dos pagamentos.
+    """
+    usado = {cartao_id: Decimal("0.00") for cartao_id in cartao_ids}
+    if not cartao_ids:
+        return usado
+
+    # Só pago=True: ausência de registro E pago=False são ambos "não
+    # confirmado" (models/pagamento_fatura). O filtro não depende do PUT
+    # limpar valor_pago no reverso — o CHECK só exige valor_pago QUANDO pago,
+    # não proíbe sobra em pago=False.
+    pagos = {
+        (cartao_id, mes, ano): valor_pago
+        for cartao_id, mes, ano, valor_pago in session.exec(
+            select(
+                PagamentoFatura.cartao_id,
+                PagamentoFatura.fatura_mes,
+                PagamentoFatura.fatura_ano,
+                PagamentoFatura.valor_pago,
+            ).where(
+                PagamentoFatura.usuario_id == usuario_id,
+                PagamentoFatura.cartao_id.in_(cartao_ids),  # type: ignore[attr-defined]
+                PagamentoFatura.pago == True,  # noqa: E712
+            )
+        ).all()
+    }
+
+    for (cartao_id, mes, ano), total in totais.items():
+        if cartao_id not in usado:
+            continue
+        valor_pago = pagos.get((cartao_id, mes, ano))
+        # valor_pago NULL com pago=True não deve existir (CHECK + backfill);
+        # se aparecer, degrada seguro para "não cobre nada" — nunca libera
+        # limite que ninguém confirmou ter pago.
+        cobertura = (
+            min(valor_pago, total) if valor_pago is not None else Decimal("0.00")
+        )
+        usado[cartao_id] += total - cobertura
+
+    return usado
 
 
 def _competencias_com_fatura(session: Session, usuario_id: int) -> set[tuple[int, int]]:

@@ -1,0 +1,44 @@
+[
+  {
+    "titulo": "#1 o limite volta a olhar UMA competencia (a barra usa a fatura aberta, o defeito medido)",
+    "arquivo": "app/routers/cards.py",
+    "de": "                limite_usado=usados[card.id],",
+    "para": "                limite_usado=totais.get(\n                    (card.id, fatura_mes, fatura_ano), Decimal(\"0.00\")\n                ),",
+    "teste": "tests/routers/test_cards_router.py::TestLimiteComprometido::test_limite_usado_soma_TODAS_as_competencias_nao_so_a_aberta"
+  },
+  {
+    "titulo": "#2 a cobertura some (fatura paga deixa de liberar limite)",
+    "arquivo": "app/services/faturas.py",
+    "de": "        usado[cartao_id] += total - cobertura",
+    "para": "        usado[cartao_id] += total",
+    "teste": "tests/routers/test_cards_router.py::TestLimiteComprometido::test_fatura_paga_LIBERA_limite_no_valor_pago"
+  },
+  {
+    "titulo": "#3 o clamp POR FATURA some (min vira valor_pago cru: a sobra vaza para outra competencia)",
+    "arquivo": "app/services/faturas.py",
+    "de": "            min(valor_pago, total) if valor_pago is not None else Decimal(\"0.00\")",
+    "para": "            valor_pago if valor_pago is not None else Decimal(\"0.00\")",
+    "teste": "tests/routers/test_cards_router.py::TestLimiteComprometido::test_valor_pago_acima_do_total_nao_libera_limite_de_OUTRA_competencia"
+  },
+  {
+    "titulo": "#4 o filtro pago==True some (valor_pago de registro NAO confirmado passa a liberar limite)",
+    "arquivo": "app/services/faturas.py",
+    "de": "                PagamentoFatura.cartao_id.in_(cartao_ids),  # type: ignore[attr-defined]\n                PagamentoFatura.pago == True,  # noqa: E712",
+    "para": "                PagamentoFatura.cartao_id.in_(cartao_ids),  # type: ignore[attr-defined]",
+    "teste": "tests/routers/test_cards_router.py::TestLimiteComprometido::test_pagamento_NAO_confirmado_com_valor_pago_sujo_nao_libera_limite"
+  },
+  {
+    "titulo": "#5 o estorno volta a ser ignorado (soma Transacao.valor cru em vez do liquido)",
+    "arquivo": "app/services/faturas.py",
+    "de": "            func.sum(valor_avulsa_liquido),  # estorno ABATE (par inseparável)",
+    "para": "            func.sum(Transacao.valor),",
+    "teste": "tests/routers/test_cards_router.py::TestLimiteComprometido::test_estorno_ABATE_o_limite_usado"
+  },
+  {
+    "titulo": "#6 parcela cancelada volta a comprometer limite (some o filtro da composicao)",
+    "arquivo": "app/services/faturas.py",
+    "de": "        Parcela.fatura_ano == ano if ano is not None\n        else Parcela.fatura_ano != None,  # noqa: E711\n        Parcela.cancelado == False,  # noqa: E712",
+    "para": "        Parcela.fatura_ano == ano if ano is not None\n        else Parcela.fatura_ano != None,  # noqa: E711",
+    "teste": "tests/routers/test_cards_router.py::TestLimiteComprometido::test_parcela_cancelada_devolve_limite_em_TODAS_as_competencias"
+  }
+]

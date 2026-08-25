@@ -338,3 +338,66 @@ class TestTemLancamentosNoGetCards:
         cards = {c["id"]: c for c in as_user(user_a).get("/cards").json()}
         assert cards[com.id]["tem_lancamentos"] is True
         assert cards[sem.id]["tem_lancamentos"] is False
+
+
+def add_estorno(session, usuario_id: int, cartao_id: int, valor: str) -> Transacao:
+    """Estorno de cartão na fatura aberta — valor POSITIVO no banco, sinal
+    aplicado na leitura (valor_avulsa_liquido)."""
+    t = Transacao(
+        usuario_id=usuario_id,
+        tipo="estorno",
+        data=dt.date(2026, 6, 1),
+        descricao="Estorno",
+        valor=Decimal(valor),
+        categoria="Compras",
+        forma_pagamento="Crédito",
+        cartao_id=cartao_id,
+        parcelado=False,
+        fatura_mes=FATURA_ABERTA[0],
+        fatura_ano=FATURA_ABERTA[1],
+    )
+    session.add(t)
+    session.commit()
+    session.refresh(t)
+    return t
+
+
+class TestComposicaoCanonicaNoGetCards:
+    """GET /cards soma avulsas pela fonte única da composição.
+
+    A soma era `tipo == "despesa"` com `Transacao.valor` cru, fora do par
+    inseparável `_cond_avulsas_fatura` + `valor_avulsa_liquido`. O MESMO estorno
+    abatia em GET /cards/{id}/invoices e no "A pagar" do dashboard, e não abatia
+    aqui — dois números para a mesma fatura, em duas telas.
+    """
+
+    def test_estorno_ABATE_a_fatura_aberta(self, session, users, as_user, mocker):
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = make_card(session, user_a.id)
+
+        add_avulsa(session, user_a.id, card.id, "500.00")
+        add_estorno(session, user_a.id, card.id, "200.00")
+
+        (body,) = as_user(user_a).get("/cards").json()
+        assert Decimal(str(body["fatura_aberta_total"])) == Decimal("300.00")
+
+    def test_cartao_SO_com_estorno_tem_lancamentos_true(
+        self, session, users, as_user, mocker
+    ):
+        # `cartao_tem_lancamentos` (que o PUT usa para o 422) sempre disse True
+        # aqui; a derivação do GET dizia False enquanto filtrava só "despesa".
+        # O front habilitaria um campo de data que o servidor recusa.
+        mocker.patch("app.routers.cards.hoje", return_value=HOJE_FIXO)
+        user_a, _ = users
+        card = make_card(session, user_a.id)
+        add_estorno(session, user_a.id, card.id, "200.00")
+
+        (body,) = as_user(user_a).get("/cards").json()
+        assert body["tem_lancamentos"] is True
+        assert (
+            as_user(user_a)
+            .put(f"/cards/{card.id}", json={"dia_fechamento": 20})
+            .status_code
+            == 422
+        )

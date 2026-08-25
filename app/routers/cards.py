@@ -18,7 +18,12 @@ from app.schemas.card import (
     CartaoUpdate,
     fechamento_vencimento_coerentes,
 )
-from app.services.faturas import _current_open_fatura, cartao_tem_lancamentos
+from app.services.faturas import (
+    _TIPOS_AVULSA_FATURA,
+    _current_open_fatura,
+    cartao_tem_lancamentos,
+    valor_avulsa_liquido,
+)
 
 router = APIRouter(prefix="/cards", tags=["cards"])
 
@@ -68,21 +73,30 @@ def list_cards(
                 Transacao.cartao_id,
                 Transacao.fatura_mes,
                 Transacao.fatura_ano,
-                func.sum(Transacao.valor),
+                # Par INSEPARÁVEL de _cond_avulsas_fatura: quem soma avulsas soma
+                # o valor LÍQUIDO, nunca Transacao.valor cru. Antes daqui a soma
+                # era `tipo == "despesa"` com o valor cru, então o MESMO estorno
+                # abatia em GET /cards/{id}/invoices e no "A pagar" e NÃO abatia
+                # aqui — dois números para a mesma fatura, em duas telas.
+                func.sum(valor_avulsa_liquido),
             )
             .where(
                 Transacao.usuario_id == current_user.id,
                 Transacao.cartao_id.in_(card_ids),
                 Transacao.parcelado == False,
-                Transacao.tipo == "despesa",
+                Transacao.tipo.in_(_TIPOS_AVULSA_FATURA),
             )
             .group_by(Transacao.cartao_id, Transacao.fatura_mes, Transacao.fatura_ano)
         ).all()
     }
 
     # `tem_lancamentos` sai de graça dos mesmos maps (parcela não cancelada +
-    # avulsa despesa) — MESMA composição de cartao_tem_lancamentos, por
-    # construção, sem query extra. Presença do cartao_id em qualquer competência.
+    # avulsa despesa/estorno) — MESMA composição de cartao_tem_lancamentos, sem
+    # query extra. Presença do cartao_id em qualquer competência.
+    #
+    # A afirmação "por construção" que estava aqui era FALSA enquanto a soma
+    # filtrava `tipo == "despesa"`: cartão com APENAS estorno reportava False
+    # contra o True do canônico. Passar a soma pela composição fecha isso.
     cartoes_com_lancamento = {cid for (cid, _, _) in parcelas_map} | {
         cid for (cid, _, _) in avulsas_map
     }

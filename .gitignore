@@ -34,3 +34,15 @@ docs/AUDITORIA_TECNICA.md
 docs/SESSAO_ATUAL_API.md
 docs/PLANO_EXECUCAO_API.md
 docs/DEPLOY_CRON.md
+
+# --- Rede de higiene, acrescentada em 27/08/2026 antes de abrir o repo --------
+# Conferido com `git check-ignore` e `git ls-files`: NENHUM destes caminhos
+# estava rastreado quando estas linhas entraram, então elas não desrastreiam
+# nada — só evitam que uma cópia de outra máquina ou um editor diferente
+# adicione lixo sem alguém decidir.
+.env.*
+!.env.example
+node_modules/
+.DS_Store
+.vscode/
+.idea/

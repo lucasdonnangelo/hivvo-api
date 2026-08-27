@@ -5,6 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.schemas.forma_pagamento import FormaPagamentoRecorrencia
+
 
 class RecorrenciaCreate(BaseModel):
     # F-22: max_length generoso nos campos de texto de ENTRADA. Categoria é
@@ -13,7 +15,12 @@ class RecorrenciaCreate(BaseModel):
     tipo: str = Field(..., max_length=20)
     valor: Decimal
     categoria: str = Field(..., max_length=200)
-    forma_pagamento: str = Field("Pix", max_length=50)
+    # O default era "Pix" — grafia que NENHUMA linha do banco usa e que o
+    # frontend nunca manda (ele oferece "PIX"). Divergência inerte hoje, e
+    # exatamente o tipo de coisa que derrota uma régua por comparação de
+    # string amanhã. O Literal exclui "Crédito": o modelo já dizia
+    # "recorrência não passa por cartão (§3.4)" em COMENTÁRIO — agora é o tipo.
+    forma_pagamento: FormaPagamentoRecorrencia = "PIX"
     dia_do_mes: int = Field(..., ge=1, le=31)
     descricao: str = Field(..., max_length=200)
     # Início opcional (os dois juntos): ausente = mês corrente (hoje()).
@@ -57,7 +64,7 @@ class RecorrenciaUpdate(BaseModel):
     descricao: Optional[str] = Field(None, max_length=200)
     categoria: Optional[str] = Field(None, max_length=200)
     dia_do_mes: Optional[int] = Field(None, ge=1, le=31)
-    forma_pagamento: Optional[str] = Field(None, max_length=50)
+    forma_pagamento: Optional[FormaPagamentoRecorrencia] = None
 
     @field_validator("valor", mode="before")
     @classmethod

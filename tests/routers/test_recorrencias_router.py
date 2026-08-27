@@ -33,7 +33,7 @@ def _payload(**over):
         tipo="receita",
         valor="10000.00",
         categoria="Salário",
-        forma_pagamento="Pix",
+        forma_pagamento="PIX",
         # dia 20 > dia de hoje (15) → default início = mês corrente (regra do
         # dia, Fase 3a-backend). Mantém a intenção "começa no mês corrente" dos
         # testes de CRUD sem eles precisarem enviar mes_inicio explícito.
@@ -55,7 +55,7 @@ def _semear_recorrencia_passada(session, uid, valor="10000.00"):
         usuario_id=uid,
         tipo="receita",
         categoria="Salário",
-        forma_pagamento="Pix",
+        forma_pagamento="PIX",
         dia_do_mes=20,
         descricao="Salário CLT",
     )
@@ -611,7 +611,7 @@ class TestValorExibicao:
             usuario_id=users[0].id,
             tipo="receita",
             categoria="Salário",
-            forma_pagamento="Pix",
+            forma_pagamento="PIX",
             dia_do_mes=20,
             descricao="Salário CLT",
             ativa=False,

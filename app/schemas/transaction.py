@@ -4,6 +4,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.schemas.forma_pagamento import FormaPagamento
+
 
 class TransacaoCreate(BaseModel):
     # F-22: max_length generoso por campo nos campos de texto de ENTRADA
@@ -12,7 +14,12 @@ class TransacaoCreate(BaseModel):
     descricao: str = Field(..., max_length=200)
     valor: Decimal
     categoria: str = Field(..., max_length=200)
-    forma_pagamento: str = Field("Débito", max_length=50)
+    # Literal, não str: a forma de pagamento virou a régua que decide se a
+    # compra entra em fatura (faturas.deriva_competencia). Grafia fora do
+    # conjunto morre com 422 aqui, antes de chegar a uma comparação de string
+    # que ela derrotaria em silêncio. max_length sai junto — o tipo é mais
+    # estrito que qualquer limite de tamanho.
+    forma_pagamento: FormaPagamento = "Débito"
     tipo_gasto: str = Field("Variável", max_length=50)
     origem: str = Field("manual", max_length=50)
     cartao_id: Optional[int] = None
@@ -62,7 +69,7 @@ class TransacaoUpdate(BaseModel):
     descricao: Optional[str] = Field(None, max_length=200)
     valor: Optional[Decimal] = None
     categoria: Optional[str] = Field(None, max_length=200)
-    forma_pagamento: Optional[str] = Field(None, max_length=50)
+    forma_pagamento: Optional[FormaPagamento] = None
     tipo_gasto: Optional[str] = Field(None, max_length=50)
     cartao_id: Optional[int] = None
 
@@ -96,6 +103,11 @@ class TransacaoResponse(BaseModel):
     descricao: str
     valor: Decimal
     categoria: str
+    # LEITURA fica `str` de propósito — o aperto é na ESCRITA. Uma linha antiga
+    # com grafia fora do conjunto tem que poder ser LIDA (e corrigida pela tela);
+    # um Literal aqui a transformaria em erro 500 na listagem. Mesmo recorte que
+    # o `Transaction.tipo` do frontend, que tolera em runtime o que não aceita
+    # criar.
     forma_pagamento: str
     tipo_gasto: str
     origem: str

@@ -10,6 +10,7 @@ from app.models.card import Cartao
 from app.models.installment import Parcela
 from app.models.pagamento_fatura import PagamentoFatura
 from app.models.transaction import Transacao
+from app.schemas.forma_pagamento import FORMA_PAGAMENTO_FATURADA
 
 
 def clamp_dia_no_mes(dia: int, ano: int, mes: int) -> int:
@@ -53,6 +54,47 @@ def _data_vencimento_parcela(
     else:
         # Sem cartão: i meses a partir da data da compra
         return _add_months(transaction_date, parcela_num)
+
+
+def deriva_competencia(
+    forma_pagamento: str, card: Optional[Cartao], parcelado: bool
+) -> bool:
+    """A compra vira dívida de fatura? FONTE ÚNICA da régua (POST e PUT).
+
+    Existe porque a condição que ela substitui dizia "Crédito avulso" no
+    comentário e NÃO testava forma de pagamento nenhuma — o que decidia era o
+    cartão ter `dia_vencimento`. Medido em 27/08/2026: uma despesa no DÉBITO
+    num cartão "Ambos" gravava fatura_mes=10/2026, virava fatura aberta de
+    R$ 250,00 vencendo 10/10 e comia R$ 250,00 do limite. Dinheiro que já saiu
+    da conta aparecendo como dívida a pagar.
+
+    Três termos, e cada um responde uma pergunta diferente:
+
+    `parcelado` — a competência da compra parcelada NÃO mora na transação, mora
+    em cada parcela (services/parcelas._criar_parcelas). A âncora fica sem
+    competência POR DESENHO, e é isso que a mantém fora da composição da fatura
+    (que exige fatura_mes != None) — senão a compra contaria duas vezes.
+
+    `forma_pagamento` — LISTA BRANCA (FORMA_PAGAMENTO_FATURADA): só o crédito é
+    dívida futura. Débito, PIX, Dinheiro e TED/DOC são dinheiro que JÁ SAIU, e
+    a invariante do handoff é explícita: "A PAGAR = o que vence e ainda não
+    saiu; à vista/PIX/débito/recorrência não entram". Guardar cartao_id numa
+    compra no débito é ATRIBUIÇÃO (em qual cartão aconteceu); derivar
+    competência dela seria COBRANÇA. São coisas diferentes, e este `if` é a
+    junta entre as duas.
+
+    `card.dia_vencimento` — sem dia de vencimento não há ciclo do qual derivar
+    competência (cartão de débito puro, ou crédito ainda sem datas).
+
+    NOTA sobre a fronteira: isto governa só a avulsa. A compra PARCELADA deriva
+    competência em _criar_parcelas por outro caminho, hoje sem esta régua —
+    registrado como pendência #72, com o motivo, no PENDENCIAS_PRIORIZADAS.
+    """
+    if parcelado:
+        return False
+    if forma_pagamento != FORMA_PAGAMENTO_FATURADA:
+        return False
+    return card is not None and bool(card.dia_vencimento)
 
 
 def _fatura_cartao_avulso(data: dt.date, card: Cartao) -> tuple[int, int]:

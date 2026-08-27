@@ -63,6 +63,17 @@ session.add(
         dia_vencimento=8, dia_fechamento=1, mes_offset_vencimento=0,
     )
 )
+# Cartão de DÉBITO puro — sem dia_vencimento/dia_fechamento, que é a forma
+# real de um débito (não tem fatura para vencer). Entrou quando o formulário
+# passou a coletar em qual cartão a compra no débito aconteceu: sem ele, o
+# harness não conseguiria distinguir "a lista do débito filtra certo" de "a
+# lista do débito está vazia", porque os outros dois cartões fazem crédito.
+session.add(
+    Cartao(
+        usuario_id=user.id, nome="Inter Débito", tipo="Débito",
+        dia_vencimento=None, dia_fechamento=None,
+    )
+)
 # Um mês com movimento, para o /statistics/monthly não vir todo zero (o preview
 # do AddTransactionPage mostra "Saldo estimado após transação" só com saldo != null).
 session.add(

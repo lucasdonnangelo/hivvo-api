@@ -1,0 +1,51 @@
+[
+  {
+    "titulo": "REINTRODUZ O DEFEITO: a derivacao volta a ignorar a forma de pagamento (quem decide e' o cartao ter dia_vencimento)",
+    "arquivo": "app/services/faturas.py",
+    "de": "    if forma_pagamento != FORMA_PAGAMENTO_FATURADA:\n        return False\n",
+    "para": "",
+    "teste": "tests/routers/test_competencia_so_credito.py::TestPostNaoDerivaForaDoCredito::test_debito_com_cartao_grava_o_cartao_e_NAO_grava_competencia"
+  },
+  {
+    "titulo": "LISTA BRANCA VIRA NEGRA: so' o Debito e' barrado, e PIX/Dinheiro/TED vazam para a fatura",
+    "arquivo": "app/services/faturas.py",
+    "de": "    if forma_pagamento != FORMA_PAGAMENTO_FATURADA:\n        return False\n",
+    "para": "    if forma_pagamento == \"Débito\":\n        return False\n",
+    "teste": "tests/routers/test_competencia_so_credito.py::TestPostNaoDerivaForaDoCredito::test_lista_BRANCA_pix_dinheiro_e_ted_tambem_nao_derivam"
+  },
+  {
+    "titulo": "A RESTRICAO DEIXA DE SER O TIPO: Literal vira str e a grafia divergente chega a' comparacao",
+    "arquivo": "app/schemas/transaction.py",
+    "de": "    forma_pagamento: FormaPagamento = \"Débito\"",
+    "para": "    forma_pagamento: str = \"Débito\"",
+    "teste": "tests/routers/test_competencia_so_credito.py::TestFormaPagamentoERestritaPeloTIPO::test_grafia_fora_do_conjunto_morre_com_422"
+  },
+  {
+    "titulo": "O PUT volta a NAO rederivar quando so' a forma de pagamento muda (o terceiro estado)",
+    "arquivo": "app/routers/transactions.py",
+    "de": "        \"data\" in data or \"cartao_id\" in data or \"forma_pagamento\" in data",
+    "para": "        \"data\" in data or \"cartao_id\" in data",
+    "teste": "tests/routers/test_competencia_so_credito.py::TestPutRederivaQuandoAFormaMuda::test_trocar_SO_a_forma_para_debito_ZERA_a_competencia"
+  },
+  {
+    "titulo": "O PUT ZERA a competencia em vez de rederivar (um `= None` incondicional passaria pelo teste do debito)",
+    "arquivo": "app/routers/transactions.py",
+    "de": "        if deriva_competencia(transacao.forma_pagamento, card, transacao.parcelado):",
+    "para": "        if False:",
+    "teste": "tests/routers/test_competencia_so_credito.py::TestPutRederivaQuandoAFormaMuda::test_trocar_a_forma_de_volta_para_credito_REDERIVA"
+  },
+  {
+    "titulo": "A REGUA DESLIGA INTEIRA: nada mais entra em fatura (o teste de controle do credito e' quem pega)",
+    "arquivo": "app/services/faturas.py",
+    "de": "    return card is not None and bool(card.dia_vencimento)",
+    "para": "    return False",
+    "teste": "tests/routers/test_competencia_so_credito.py::TestOsNUMEROSQueOUsuarioVe::test_credito_no_mesmo_cartao_AINDA_vira_fatura_e_come_limite"
+  },
+  {
+    "titulo": "CRUZAMENTO COM O #48: sem a regua, o ESTORNO no debito vira credito fantasma abatendo uma fatura que ele nao tocou",
+    "arquivo": "app/services/faturas.py",
+    "de": "    if forma_pagamento != FORMA_PAGAMENTO_FATURADA:\n        return False\n",
+    "para": "",
+    "teste": "tests/routers/test_competencia_so_credito.py::TestCruzamentoComOEstorno::test_estorno_no_debito_guarda_o_cartao_e_NAO_ganha_competencia"
+  }
+]

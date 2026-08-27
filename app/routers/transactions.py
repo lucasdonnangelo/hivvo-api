@@ -23,6 +23,7 @@ from app.schemas.transaction import (
 from app.services.faturas import (
     _fatura_cartao_avulso,
     competencias_da_compra,
+    deriva_competencia,
     faturas_pagas_atingidas,
 )
 from app.services.parcelas import _criar_parcelas
@@ -127,8 +128,11 @@ def create_transaction(
         total_parcelas=body.total_parcelas,
     )
 
-    # Crédito avulso: calcula fatura_mes/fatura_ano pelo dia de vencimento do cartão
-    if not body.parcelado and card and card.dia_vencimento:
+    # Crédito avulso: calcula fatura_mes/fatura_ano pelo dia de vencimento do
+    # cartão. A régua de QUEM deriva é `deriva_competencia` (fonte única, par
+    # do PUT): a compra no débito guarda o cartão em que aconteceu e NÃO ganha
+    # competência — o dinheiro já saiu, não é dívida a pagar.
+    if deriva_competencia(body.forma_pagamento, card, body.parcelado):
         transacao.fatura_mes, transacao.fatura_ano = _fatura_cartao_avulso(body.data, card)
 
     # Transação + parcelas num único commit (T-41): falha na geração de
@@ -208,16 +212,31 @@ def update_transaction(
     for field, value in data.items():
         setattr(transacao, field, value)
 
-    # fatura_mes/ano são derivados de data + cartão — rederivar como na criação (T-35)
-    if not transacao.parcelado and ("data" in data or "cartao_id" in data):
+    # fatura_mes/ano são derivados de data + cartão + FORMA DE PAGAMENTO —
+    # rederivar como na criação (T-35).
+    #
+    # `forma_pagamento` entrou no gatilho junto com a régua da lista branca. Ela
+    # passou a ser ENTRADA da derivação, e uma entrada que muda sem rederivar
+    # deixa a saída velha: trocar Crédito → Débito no EditTransactionModal (que
+    # oferece a forma mas NÃO expõe cartao_id) mantinha a competência antiga, e
+    # a compra seguia na fatura depois de deixar de ser dívida. Derivado que
+    # não acompanha a entrada é dado errado, não dado antigo.
+    if not transacao.parcelado and (
+        "data" in data or "cartao_id" in data or "forma_pagamento" in data
+    ):
         card = new_card
         if card is None and transacao.cartao_id:
             card = session.get(Cartao, transacao.cartao_id)
-        if card and card.dia_vencimento:
+        if deriva_competencia(transacao.forma_pagamento, card, transacao.parcelado):
             transacao.fatura_mes, transacao.fatura_ano = _fatura_cartao_avulso(
                 transacao.data, card
             )
         else:
+            # NULL, nunca o valor velho: fatura_mes/ano são DERIVADOS (o cliente
+            # não os define — ver TransacaoUpdate). Sem entrada que produza
+            # competência, a saída é ausência. E é o NULL que tira a linha da
+            # composição da fatura (que filtra fatura_mes != None), devolvendo
+            # a compra ao consumo realizado — que é onde o dinheiro já saído mora.
             transacao.fatura_mes = None
             transacao.fatura_ano = None
 

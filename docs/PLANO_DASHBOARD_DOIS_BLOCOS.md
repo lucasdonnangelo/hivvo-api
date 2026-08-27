@@ -46,28 +46,28 @@ mesmo tempo, em blocos conceitualmente separados.
 >
 > | card | valor |
 > |---|---:|
-> | Receitas | 11.000,00 |
-> | Despesas *(consumo)* | 9.590,00 |
-> | A pagar | 362,50 |
-> | Saldo | **9.597,50** |
+> | Receitas | 7.400,00 |
+> | Despesas *(consumo)* | 6.180,00 |
+> | A pagar | 245,00 |
+> | Saldo | **6.465,00** |
 >
-> `11.000 − 9.590 = 1.410` ✗ · `11.000 − 362,50 = 10.637,50` ✗
+> `7.400 − 6.180 = 1.220` ✗ · `7.400 − 245 = 7.155` ✗
 > **NENHUM par de números visíveis produzia o Saldo.** O subtraendo verdadeiro é
-> `stats.despesas` (FLUXO) = **1.402,50**, que não estava na tela. O Saldo tinha
+> `stats.despesas` (FLUXO) = **935,00**, que não estava na tela. O Saldo tinha
 > um operando invisível.
 >
 > ### A LINHA NOVA — DECIDIDA
 >
 > ```
-> Receitas 11.000,00 · Saídas do mês 1.402,50 · Saldo no fim do mês 9.597,50
->                         saiu 1.040,00 · ainda sai 362,50
+> Receitas 7.400,00 · Saídas do mês 935,00 · Saldo no fim do mês 6.465,00
+>                         saiu 690,00 · ainda sai 245,00
 > ```
 >
-> `11.000 − 1.402,50 = 9.597,50`. Fecha, com **tudo visível**.
+> `7.400 − 935 = 6.465`. Fecha, com **tudo visível**.
 >
 > **Os rótulos, e cada palavra tem motivo:**
 > - **"Saídas do mês", nunca "Despesas".** A palavra *Despesas* já significa
->   CONSUMO (9.590,00) na aba Análise e no donut. Mesma palavra para dois
+>   CONSUMO (6.180,00) na aba Análise e no donut. Mesma palavra para dois
 >   valores é o defeito que criou o bug do limite do cartão (*usado* ×
 >   *comprometido*) — não se repete.
 > - **"Saldo no fim do mês", nunca "Saldo atual".** O app não tem entidade
@@ -135,8 +135,8 @@ mesmo tempo, em blocos conceitualmente separados.
 >
 > E a cadeia sozinha **não** tapa esse buraco: ela é satisfeita por construção
 > justamente quando alguém deriva. Por isso existem dois testes com fixture
-> DELIBERADAMENTE INCONSISTENTE (`saldo = 999,00` com receitas 11.000 e saídas
-> 1.402,50; `despesas = 500,00` com realizado 1.040 + a_vir 362,50) — valores
+> DELIBERADAMENTE INCONSISTENTE (`saldo = 999,00` com receitas 7.400 e saídas
+> 935,00; `despesas = 500,00` com realizado 690 + a_vir 245) — valores
 > que a API nunca produz, e é exatamente por isso que servem: só um número que a
 > aritmética NÃO gera distingue leitura de cálculo. ⚠️ Não "consertar" essas
 > fixtures: consertar apaga o teste.
@@ -166,18 +166,18 @@ mesmo tempo, em blocos conceitualmente separados.
 >
 > Uma **parcela vencida e não confirmada paga** conta em `realizado` (o dia já
 > passou) **E** em `a_pagar` (ainda é dívida) — contada duas vezes. Medido, com
-> R$ 1.040,00 vencendo dia 10 e R$ 362,50 dia 25, em 15/07:
+> R$ 690,00 vencendo dia 10 e R$ 245,00 dia 25, em 15/07:
 >
 > ```
-> despesas(fluxo)   = 1402.50
-> realizado         = 1040.00
-> a_vir             =  362.50
-> a_pagar           = 1402.50   ← a despesa INTEIRA
-> realizado + a_vir   = 1402.50  == despesas ✓
-> realizado + a_pagar = 2442.50  != despesas ✗
+> despesas(fluxo)   =  935.00
+> realizado         =  690.00
+> a_vir             =  245.00
+> a_pagar           =  935.00   ← a despesa INTEIRA
+> realizado + a_vir   =  935.00  == despesas ✓
+> realizado + a_pagar = 1625.00  != despesas ✗
 > ```
 >
-> No dataset que originou o batch os dois COINCIDIAM (362,50), porque o que já
+> No dataset que originou o batch os dois COINCIDIAM (245,00), porque o que já
 > tinha saído era à vista/PIX/recorrência, que nunca é `a_pagar`. **Coincidência
 > de dataset, não invariante** — e foi ela que quase fez a sublinha nascer com o
 > rótulo errado. Antes de usar um dos dois no lugar do outro, medir.
@@ -186,7 +186,7 @@ mesmo tempo, em blocos conceitualmente separados.
 >
 > O plano dizia: *"Decomposição realizado/a-vir (§1.3.1) encaixa AQUI se fizer
 > sentido ('já saiu X, ainda sai Y este mês') — a definir no layout se entra e
-> como."* **Entrou**: é exatamente a sublinha `saiu 1.040,00 · ainda sai 362,50`.
+> como."* **Entrou**: é exatamente a sublinha `saiu 690,00 · ainda sai 245,00`.
 > O backend já entregava `realizado` e `a_vir` em `MensalResponse` desde a
 > §1.3.1 e **o Dashboard não lia nenhum dos dois** — o dado existia, faltava a
 > pergunta que ele responde. Quando o contrato vier sem a decomposição, a

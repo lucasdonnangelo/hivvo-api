@@ -545,7 +545,7 @@ pagamento + vencimento (não só data pura, que tem furos):
 ### "SALDO" = caixa PROJETADO de fim de mês
 - Saldo = Receitas − (TODAS as saídas de fluxo do mês: à vista já pago + a vencer). "Como termino o
   mês." NÃO é "Receitas − A pagar" (que ignoraria o à vista já pago).
-- No caso de teste (jul): Receitas 8k − aluguel pago 2k − 0 a vencer = **6k**.
+- No caso de teste (jul): Receitas 7k − aluguel pago 3k − 0 a vencer = **4k**.
 
 ## B COMPLETO — os furos a corrigir (Lucas: B completo de uma vez)
 Do diagnóstico §6:
@@ -579,7 +579,7 @@ corrente (esse é o Bloco 1, evita duplicação). Fallback: mês seguinte se nã
 - Mexe no coração do cálculo de fluxo (_lancamentos_mes, Fonte 2, schema). É 🔴 — modelo potente.
 - Testes: à vista pago fora de "a pagar"; crédito a vencer DENTRO de "a pagar" (com dia de
   vencimento da Fonte 2); parcela atrasada (vencida não paga) ainda em "a pagar"; saldo = caixa fim
-  de mês; consistência com realizado/a_vir; o caso de teste do Lucas (jul: a_pagar=0, saldo=6k).
+  de mês; consistência com realizado/a_vir; o caso de teste de referência (jul: a_pagar=0, saldo=4k).
 - Aditivo onde possível; `despesas`/consumo/realizado/a_vir preservados.
 
 ## COMO FICOU (implementado 09/07/2026 — regras finais)

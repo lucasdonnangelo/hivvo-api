@@ -14,7 +14,7 @@ Supabase. Sempre sobrescreva por env vars (pydantic-settings: env var ganha do
 ```bash
 SCRATCH_WIN="C:/caminho/windows/para/scratchpad"   # path WINDOWS na URL do sqlite (POSIX /c/... falha)
 export DATABASE_URL="sqlite:///$SCRATCH_WIN/e2e.db" \
-       SECRET_KEY="chave-de-teste-local-sem-valor-real" \
+       SECRET_KEY=<qualquer-string-de-32-chars> \
        RATE_LIMIT_ENABLED=false ENVIRONMENT=e2e
 
 # 1. criar tabelas (não há create_all no boot; produção usa alembic)

@@ -2,12 +2,12 @@
 """
 populate_db.py — Popula o banco Hivvo com dados realistas de teste.
 
-Usuário-alvo : lucasjrdonnangelo@gmail.com
+Usuário-alvo : env HIVVO_SEED_EMAIL (default lucas@exemplo.com)
 Período      : outubro/2025 → junho/2026
 Idempotente  : verifica (usuario_id, descricao, data, valor) antes de inserir.
 
 Uso:
-    python populate_db.py
+    HIVVO_SEED_EMAIL=voce@exemplo.com python populate_db.py
 """
 
 import sys
@@ -46,7 +46,11 @@ if not DATABASE_URL:
 
 engine = create_engine(DATABASE_URL, echo=False)
 
-TARGET_EMAIL = "lucasjrdonnangelo@gmail.com"
+# Vem do ambiente para o script servir a QUALQUER pessoa: e-mail cravado no
+# fonte torna o povoamento inútil para quem clonou o repo — teria de editar o
+# arquivo para rodar. O default segue o padrão que avisar_vencimento.py já usa
+# na linha de exemplo (lucas@exemplo.com), e é endereço de exemplo, não real.
+TARGET_EMAIL = os.environ.get("HIVVO_SEED_EMAIL", "lucas@exemplo.com")
 TODAY = dt.date(2026, 6, 5)
 
 

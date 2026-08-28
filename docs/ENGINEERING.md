@@ -164,11 +164,16 @@ assume either.
 ### Secret scanning: one known historical finding, deliberately kept
 
 `gitleaks detect` over the full history of this repository reports **one**
-finding, and it is expected. It is a self-declared test placeholder —
-`SECRET_KEY="e2e-secret-key-0123456789abcdef0123456789abcdef"` in
-`.claude/skills/verify/SKILL.md`, in a commit from 9 July 2026. The literal says
-what it is, and the value is hexadecimal counting. It is not a credential, has
-never been one, and grants access to nothing.
+finding, and it is expected. It is a self-declared test placeholder assigned to
+`SECRET_KEY` in `.claude/skills/verify/SKILL.md`, in a commit from 9 July 2026.
+The value names itself as an end-to-end test key and then counts in hexadecimal.
+It is not a credential, has never been one, and grants access to nothing.
+
+The literal is deliberately **not** reproduced in this paragraph. The first
+draft quoted it in full, and the scan that was supposed to confirm a clean tree
+flagged this file instead — documenting a false positive had manufactured a
+second one. Describing the shape carries the same information at none of the
+cost.
 
 The current tree is clean: the placeholder was rewritten to
 `<qualquer-string-de-32-chars>`, which no longer trips the `generic-api-key`

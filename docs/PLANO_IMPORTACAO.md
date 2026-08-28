@@ -368,5 +368,11 @@ feedback (anônimo ou não).
   financiado -93,95 · Lançamentos atuais 93,95 · **Total desta fatura 0,00** (líquido, quitado por
   débito automático).
 - Âncora de consumo: "Total dos lançamentos atuais R$93,95".
-- Cartão `4705.XXXX.XXXX.4189` → portador 4189. Linha: "15/06 JIM.COMANALUIZAPEREZ 93,95".
+- Cartão `1111.XXXX.XXXX.2222` → portador 2222. Linha: "15/06 JIM.COMNOMEDOLOJISTA 93,95".
+  A FORMA é o que importa aqui: PAN com primeiro e último grupo visíveis, e descrição em
+  CAIXA ALTA com o prefixo do subadquirente terminando em ponto e o nome do lojista
+  CONCATENADO sem separador. É o mesmo `JIM.COM` que `tests/fixtures/faturas_validadas.py`
+  registra como `JIM.COM*ASSINATURA` — o Itaú imprime sem o `*`, e é justamente isso que
+  torna o token do lojista difícil de isolar (#42). Finais sintéticos e lojista genérico
+  seguem a higiene declarada no docstring daquela fixture.
 - **Lição:** "Total desta fatura" ≠ consumo do ciclo. Reconciliar por "Lançamentos atuais".

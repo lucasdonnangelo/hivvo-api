@@ -161,6 +161,40 @@ prove every npm version builds an identical tree — two of the five would insta
 resolve platform-optional dependencies. Not a defect, but not something to
 assume either.
 
+### Secret scanning: one known historical finding, deliberately kept
+
+`gitleaks detect` over the full history of this repository reports **one**
+finding, and it is expected. It is a self-declared test placeholder —
+`SECRET_KEY="e2e-secret-key-0123456789abcdef0123456789abcdef"` in
+`.claude/skills/verify/SKILL.md`, in a commit from 9 July 2026. The literal says
+what it is, and the value is hexadecimal counting. It is not a credential, has
+never been one, and grants access to nothing.
+
+The current tree is clean: the placeholder was rewritten to
+`<qualquer-string-de-32-chars>`, which no longer trips the `generic-api-key`
+rule. A scan of the working tree finds nothing in any tracked file, in either
+repository. The frontend repository reports zero findings against its full
+history as well.
+
+**The decision was not to rewrite history to remove it**, and the reasoning is
+the point:
+
+- Rewriting is the expensive operation, not the finding. This history was
+  already rewritten once with `git filter-repo`, and the documentation now cites
+  commit SHAs that were repaired to match. A second rewrite would invalidate
+  them again — this time with the SHAs already published from a public
+  repository.
+- The alternative of a `.gitleaksignore` was rejected too. An exception file is
+  maintenance, and the day it hides a real finding is the day nobody notices,
+  because a suppression list is exactly what stops being read.
+- Real credentials live in `.env`, which is git-ignored and untracked. A
+  filesystem scan confirms it: the two findings in that file are the production
+  values, and they have never been in a commit.
+
+So the finding stays, and this paragraph is why. **A scanner that reports one
+known, explained result is more useful than one silenced into always reporting
+zero** — the first can still surprise you, and the second cannot.
+
 ---
 
 ## Hypotheses are struck through, not deleted

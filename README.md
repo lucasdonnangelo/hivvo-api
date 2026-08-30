@@ -393,9 +393,26 @@ Feature-complete for its core and running in production. Honest gaps:
 - **Frontend dependency advisories** are tracked in the
   [hivvo-web README](https://github.com/lucasdonnangelo/hivvo-web#status-and-limitations).
 
-<!-- SCREENSHOT: dashboard — two-lens monthly view -->
-<!-- SCREENSHOT: invoice detail — instalments vs one-off charges -->
-<!-- SCREENSHOT: PDF import — reconciliation result -->
+![Hivvo dashboard on a 1440px desktop viewport, Visão geral tab: Receitas R$ 11.000,00, Saídas do mês R$ 1.402,50 with the cash-flow subline, Saldo no fim do mês R$ 9.597,50, the latest-transactions card and the Sua projeção block for the coming months.](docs/img/dashboard-desktop.png)
+
+*The two lenses side by side: cash flow for the month on top, and the
+projection for the months already committed below it.*
+
+![Consumo por cartão card on the Análise tab: spend per card for the month — Cartão Principal R$ 5.250,00, Cartão Secundário R$ 3.300,00, Sem cartão R$ 1.040,00 — with the note that instalment purchases count at full value, not per instalment.](docs/img/consumo-por-cartao.png)
+
+*Consumption per card, where an instalment purchase counts once at full
+value — the same rule the API applies when it splits a purchase into
+instalments.*
+
+![Invoice detail for Setembro 2026, total R$ 1.450,00, split into a Parcelas section with two instalment lines (1/12 and 1/10) and an Avulsas section with four one-off charges from the cycle.](docs/img/fatura-detalhe.png)
+
+*An invoice as the API assembles it: instalments due this cycle, plus the
+charges that landed in it.*
+
+![PDF import review step: a green reconciliation banner reading “A fatura fecha — os lançamentos batem com o total informado pelo banco” above a table of seven extracted charges, each with an editable, pre-suggested category.](docs/img/import-revisao.png)
+
+*Reconciliation is a quality signal, not a gate: the totals agree here, and
+a mismatch would be shown the same way without refusing the import.*
 
 ---
 

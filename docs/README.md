@@ -42,6 +42,13 @@ A lista de verdade — a que o script obedece — é a constante `SHARED` em
 [`scripts/sync-docs.py`](../scripts/sync-docs.py). Para tornar um doc
 compartilhado, adicione-o lá **e** nesta tabela.
 
+## `img/` — espelhado À MÃO
+
+As capturas de `docs/img/` estão duplicadas byte a byte nos dois repos e **fora
+da lista `SHARED`**, então o `sync-docs.py --check` não olha para elas: quem
+atualizar uma captura tem de copiá-la para o `hivvo-web` no mesmo commit, senão
+a versão nova chega num lado só e nada acusa.
+
 ## Docs ESPECÍFICOS deste repo (não sincronizados)
 
 Não há nenhum. Todos os documentos que existiam só aqui eram **operacionais** e

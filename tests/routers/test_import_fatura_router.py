@@ -68,22 +68,22 @@ def test_preview_feliz_devolve_fatura_e_reconciliacao(
 
     fatura = body["fatura"]
     assert fatura["banco"] == "Nubank"
-    assert fatura["total_a_pagar"] == "206.06"
+    assert fatura["total_a_pagar"] == "233.85"
     assert len(fatura["transacoes"]) == 8
 
     # números REAIS do run validado — inclusive o secundário que NÃO bate
     rec = body["reconciliacao"]
-    assert rec["ancora"] == "206.06"
-    assert rec["soma_gastos"] == "206.06"
+    assert rec["ancora"] == "233.85"
+    assert rec["soma_gastos"] == "233.85"
     assert rec["diferenca"] == "0.00"
     assert rec["bate"] is True
-    assert rec["excluidos"] == "-58.95"
-    assert rec["diferenca_secundaria"] == "-58.95"
+    assert rec["excluidos"] == "-60.00"
+    assert rec["diferenca_secundaria"] == "-60.00"
     assert rec["bate_secundario"] is False
 
     # nem o texto extraído do PDF nem o conteúdo da fatura vão para log
     assert "BANCO SINTETICO" not in caplog.text  # linha do PDF fixture
-    assert "Blacktag" not in caplog.text  # descrição vinda do Gemini
+    assert "Vexora" not in caplog.text  # descrição vinda do Gemini
 
 
 # --- faturas_passadas: a "armadilha do histórico" na tela de revisão ---------
@@ -93,7 +93,7 @@ def test_preview_lista_faturas_passadas_da_parcelada(as_user, users, cartoes, mo
     resp = _post(as_user(users[0]), cartoes[0].id)
     assert resp.status_code == 200
 
-    # Blacktag 4/7, âncora julho/2026 (vencimento 2026-07-13): parcelas 1..3
+    # Vexora 4/7, âncora julho/2026 (vencimento 2026-07-13): parcelas 1..3
     # recuam para 04,05,06/2026 — o histórico que a revisão precisa mostrar.
     passadas = resp.json()["faturas_passadas"]
     assert [(f["mes"], f["ano"]) for f in passadas] == [(4, 2026), (5, 2026), (6, 2026)]

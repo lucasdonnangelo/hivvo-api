@@ -50,8 +50,8 @@
 **O problema (achado na review do Batch 2):** a decisão "histórico completo → materializar 1/N..N/N a
 partir de uma fatura" funciona pra UMA fatura. Mas o onboarding é multi-mês, e cada fatura consecutiva
 **relista a parcelada em andamento**:
-- Importa julho: Blacktag 4/7 → cria a transação com 7 parcelas em abr..out.
-- Importa agosto (competência diferente, passa pelo guard do lote): Blacktag 5/7 → cria OUTRA
+- Importa julho: VEXORA 4/7 → cria a transação com 7 parcelas em abr..out.
+- Importa agosto (competência diferente, passa pelo guard do lote): VEXORA 5/7 → cria OUTRA
   transação com 7 parcelas em mai..nov. **Duplicado**, cronogramas inconsistentes.
 
 O guard do lote é por `(cartao, competência)` — não pega a mesma parcelada reaparecendo em faturas de
@@ -152,9 +152,10 @@ Itaú (2 linhas). Campos a corrigir na mão: praticamente zero. A régua "vence 
 ### O achado: reconciliar pelo TOTAL DE COMPRAS DO CICLO, não pelo "total a pagar"
 O Itaú deu "NÃO BATE" — não por erro de extração, mas porque o modelo pegou "Total desta fatura = 0,00"
 (líquido a pagar, quitado por débito automático). A reconciliação ancora no **total de
-compras/lançamentos do ciclo** (Itaú "Total dos lançamentos atuais R$93,95"; Nubank "Total de compras
-R$202,65" + "IOF R$3,41"). O cheque secundário (`gastos + excluídos` vs total) diagnostica a semântica
-do total do banco.
+compras/lançamentos do ciclo** — no Itaú o rótulo é "Total dos lançamentos atuais", no Nubank são dois
+rótulos somados, "Total de compras" + "IOF". O cheque secundário (`gastos + excluídos` vs total)
+diagnostica a semântica do total do banco. (Os números do run são sintéticos nos fixtures — ver o
+anexo e `tests/fixtures/faturas_validadas.py`.)
 
 ### Privacidade: redação best-effort NÃO é blindagem
 O `--redact` não pegou o nome completo nem o endereço → foram pro Gemini free. Lição: **produção =
@@ -200,15 +201,15 @@ semântica do banco de erro do LLM. Não bate → sinaliza na revisão, nunca gr
 ## IMPORTAÇÃO DE EXTRATO (ENTREGUE — o desenho abaixo é o que virou código)
 
 Fatura e extrato descrevem o **mesmo dinheiro por dois lados** — importá-los ingênuo **conta em dobro**.
-A linha "Pagamento fatura Nubank -R$500" no extrato **não é gasto novo** — é a quitação das compras que
-a fatura já capturou.
+A linha "Pagamento fatura <BANCO> -R$500" no extrato **não é gasto novo** — é a quitação das compras
+que a fatura já capturou.
 
-### Achados do spike de extrato (Nubank conta real) — dobrados no design E no código
-Classificação impecável (7 receita + 1 pagamento_fatura). O pagamento_fatura de R$206,06 casou com a
-fatura Nubank importada — sinergia #9 validada ao vivo. O balance-walk pegou dois achados:
+### Achados do spike de extrato — dobrados no design E no código
+Classificação impecável (7 receita + 1 pagamento_fatura). O pagamento_fatura casou com a fatura do
+mesmo cartão já importada — sinergia #9 validada ao vivo. O balance-walk pegou dois achados:
 
-- **RENDIMENTO — um `receita` que a extração só-movimentações perdia.** A conta Nubank rende juros
-  ("Rendimento líquido +0,45"), que aparece SÓ no resumo, não nas movimentações. Decisão: o schema
+- **RENDIMENTO — um `receita` que a extração só-movimentações perdia.** Contas que rendem juros
+  imprimem o rendimento SÓ no resumo, não nas movimentações. Decisão: o schema
   captura o rendimento do resumo e ele vira **receita** (categoria própria "Rendimentos"), e entra no
   walk: `saldo_inicial + rendimento + Σreceita − Σdebito − Σpagamento_fatura = saldo_final`. Com ele,
   o walk fecha.
@@ -354,21 +355,26 @@ feedback (anônimo ou não).
 
 ---
 
-## Anexo — fatura Nubank (formato real)
+## Anexo — fatura Nubank (FORMA real, valores sintéticos)
 - Cabeçalho: "FATURA 13 JUL 2026", "EMISSÃO 06 JUL 2026", período "06 JUN a 06 JUL".
-- RESUMO: "Total de compras R$202,65" + "IOF R$3,41" = "Total a pagar R$206,06". Fatura anterior R$58,95
-  / Pagamento recebido -R$58,95.
-- Linhas: `DATA •••• final descrição R$ valor`. Parcelamento "Blacktag - Parcela 4/7".
-- Internacional: "Anthropic BRL 20.00 = USD 3.86 · Conversão BRL 5.35 = USD 1".
-- Seção "Pagamentos e Financiamentos": "Pagamento em 12 JUN -R$58,95"; "Saldo restante da fatura
-  anterior R$0,00" (aparece DUAS vezes — é real).
+- RESUMO: "Total de compras R$230,00" + "IOF R$3,85" = "Total a pagar R$233,85". Fatura anterior
+  R$60,00 / Pagamento recebido -R$60,00.
+- Linhas: `DATA •••• final descrição R$ valor`. Parcelamento "VEXORA - Parcela 4/7".
+- Internacional: "QUANDRIL BRL 30,00 = USD 6.00 · Conversão BRL 5.00 = USD 1".
+- Seção "Pagamentos e Financiamentos": "Pagamento em 12 JUN -R$60,00"; "Saldo restante da fatura
+  anterior R$0,00" (aparece DUAS vezes — é assim mesmo no PDF, não é erro de extração).
+
+> **Higiene:** lojistas e valores são inventados, como no anexo do Itaú. O que este anexo
+> documenta é a FORMA — onde cada total aparece, como a linha é montada, como o parcelamento e a
+> conversão são impressos —, e a forma se preserva inteira com dado sintético. O mesmo conjunto
+> está em `tests/fixtures/faturas_validadas.py`.
 
 ## Anexo — fatura Itaú (formato real)
-- "Resumo da fatura em R$": Total da fatura anterior 0,00 · Pagamento efetuado 16/06 -93,95 · Saldo
-  financiado -93,95 · Lançamentos atuais 93,95 · **Total desta fatura 0,00** (líquido, quitado por
+- "Resumo da fatura em R$": Total da fatura anterior 0,00 · Pagamento efetuado 16/06 -88,40 · Saldo
+  financiado -88,40 · Lançamentos atuais 88,40 · **Total desta fatura 0,00** (líquido, quitado por
   débito automático).
-- Âncora de consumo: "Total dos lançamentos atuais R$93,95".
-- Cartão `1111.XXXX.XXXX.2222` → portador 2222. Linha: "15/06 JIM.COMNOMEDOLOJISTA 93,95".
+- Âncora de consumo: "Total dos lançamentos atuais R$88,40".
+- Cartão `1111.XXXX.XXXX.2222` → portador 2222. Linha: "15/06 JIM.COMNOMEDOLOJISTA 88,40".
   A FORMA é o que importa aqui: PAN com primeiro e último grupo visíveis, e descrição em
   CAIXA ALTA com o prefixo do subadquirente terminando em ponto e o nome do lojista
   CONCATENADO sem separador. É o mesmo `JIM.COM` que `tests/fixtures/faturas_validadas.py`

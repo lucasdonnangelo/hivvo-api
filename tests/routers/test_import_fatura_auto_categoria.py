@@ -397,7 +397,7 @@ def test_commit_com_categoria_desconhecida_cai_em_outros(
 ):
     """Guarda-corpo NOVO: antes deste batch a fatura gravava a string do request
     sem revalidar (o extrato já revalidava)."""
-    fatura = _fatura_com(["Blacktag"])
+    fatura = _fatura_com(["Vexora"])
     fatura["transacoes"][0]["categoria"] = "Categoria Inventada"
 
     assert _commit(as_user(users[0]), cartao.id, fatura).status_code == 200
@@ -413,7 +413,7 @@ def test_commit_com_categoria_de_outro_usuario_cai_em_outros(
         CategoriaCustomizada(usuario_id=users[1].id, nome="Vinhos", tipo="despesa")
     )
     session.commit()
-    fatura = _fatura_com(["Blacktag"])
+    fatura = _fatura_com(["Vexora"])
     fatura["transacoes"][0]["categoria"] = "Vinhos"
 
     assert _commit(as_user(users[0]), cartao.id, fatura).status_code == 200
@@ -425,7 +425,7 @@ def test_commit_com_categoria_de_receita_cai_em_outros(
     session, as_user, users, cartao, extracao
 ):
     """Fatura é de crédito: o universo é DESPESA. "Salário" não é opção."""
-    fatura = _fatura_com(["Blacktag"])
+    fatura = _fatura_com(["Vexora"])
     fatura["transacoes"][0]["categoria"] = "Salário"
 
     assert _commit(as_user(users[0]), cartao.id, fatura).status_code == 200

@@ -7,7 +7,7 @@ tudo-ou-nada com rollback total.
 
 SQLite in-memory isolado do conftest — NUNCA o banco do .env. Money via
 Decimal(str(x)) (SQLite coage Numeric por float). Reusa a fatura Nubank do
-run validado do spike (Blacktag 4/7 → âncora 07/2026: parcelas em
+run validado do spike (Vexora 4/7 → âncora 07/2026: parcelas em
 04..10/2026, 3 passadas + âncora + 3 futuras).
 """
 
@@ -61,12 +61,12 @@ def test_commit_feliz_recibo(as_user, users, cartoes):
     resp = _commit(as_user(users[0]), cartoes[0].id)
     assert resp.status_code == 200
     recibo = resp.json()
-    # 4 avulsas (IOF Anthropic, Anthropic, Cloudflare, IOF Cloudflare) + 1 parcelada
+    # 4 avulsas (IOF Quandril, Quandril, Zentaro, IOF Zentaro) + 1 parcelada
     assert recibo["transacoes_criadas"] == 5
     assert recibo["parcelas_criadas"] == 7
     assert recibo["faturas_marcadas_pagas"] == 0
     assert recibo["estornos_importados"] == 0  # Nubank não tem compra negativa
-    assert recibo["reconciliacao_bate"] is True  # primário bate (206.06)
+    assert recibo["reconciliacao_bate"] is True  # primário bate (233.85)
 
 
 def test_parcelada_distribuida_por_competencia(session, as_user, users, cartoes):
@@ -77,8 +77,8 @@ def test_parcelada_distribuida_por_competencia(session, as_user, users, cartoes)
     ).one()
     assert tx.total_parcelas == 7
     assert tx.fatura_mes is None and tx.fatura_ano is None  # competência vive nas parcelas
-    # soma = valor mostrado × N (105.26 * 7); MUTAÇÃO no sinal/valor mata isto
-    assert Decimal(str(tx.valor)) == Decimal("736.82")
+    # soma = valor mostrado × N (120.00 * 7); MUTAÇÃO no sinal/valor mata isto
+    assert Decimal(str(tx.valor)) == Decimal("840.00")
 
     parcelas = session.exec(
         select(Parcela)
@@ -94,7 +94,7 @@ def test_parcelada_distribuida_por_competencia(session, as_user, users, cartoes)
         (7, 2026),                        # âncora (indice 4)
         (8, 2026), (9, 2026), (10, 2026),  # futuras
     ]
-    assert all(Decimal(str(p.valor_parcela)) == Decimal("105.26") for p in parcelas)
+    assert all(Decimal(str(p.valor_parcela)) == Decimal("120.00") for p in parcelas)
     # data_vencimento usa o dia do cartão (13) na competência da parcela
     p_ancora = parcelas[3]
     assert p_ancora.data_vencimento.isoformat() == "2026-07-13"
@@ -112,13 +112,13 @@ def test_avulsas_caem_na_ancora(session, as_user, users, cartoes):
         assert a.forma_pagamento == "Crédito"
         assert a.origem == "importacao"
         # Categoria ausente no request → o servidor recomputou a auto-categoria
-        # e nenhuma camada teve o que dizer ("Blacktag", "Anthropic",
-        # "Cloudflare" não casam regra nenhuma e o usuário não tem histórico).
+        # e nenhuma camada teve o que dizer ("Vexora", "Quandril",
+        # "Zentaro" não casam regra nenhuma e o usuário não tem histórico).
         assert a.categoria == "Outros"
 
 
 def test_pagamento_e_ajuste_nao_viram_lancamento(session, as_user, users, cartoes):
-    # Nubank tem 1 pagamento (-58.95) e 2 ajuste_saldo (0.00): nenhum vira linha.
+    # Nubank tem 1 pagamento (-60.00) e 2 ajuste_saldo (0.00): nenhum vira linha.
     _commit(as_user(users[0]), cartoes[0].id)
     total = session.exec(select(Transacao)).all()
     assert len(total) == 5  # 4 avulsas + 1 parcelada, nada de pagamento/ajuste
@@ -129,14 +129,14 @@ def test_pagamento_e_ajuste_nao_viram_lancamento(session, as_user, users, cartoe
 def test_estorno_materializa_e_aparece_no_recibo(session, as_user, users, cartoes):
     fatura = copy.deepcopy(NUBANK)
     fatura["transacoes"].append({
-        "data": "2026-06-20", "descricao": "Estorno de Blacktag",
+        "data": "2026-06-20", "descricao": "Estorno de Vexora",
         "valor_brl": "-50.00", "tipo": "compra",
         "parcela": None, "portador_final": None, "internacional": None,
     })
-    # O banco declara o consumo do ciclo JÁ líquido do estorno (202.65 − 50):
+    # O banco declara o consumo do ciclo JÁ líquido do estorno (230.00 − 50):
     # a linha negativa abate em soma_gastos e a reconciliação segue batendo —
     # materializar o estorno não toca o cheque (ele roda sobre as linhas).
-    fatura["total_compras_periodo"] = "152.65"
+    fatura["total_compras_periodo"] = "180.00"
 
     resp = _commit(as_user(users[0]), cartoes[0].id, fatura=fatura)
     assert resp.status_code == 200
@@ -168,7 +168,7 @@ def test_estorno_abate_o_total_da_fatura_importada(session, as_user, users, cart
 
     fatura = copy.deepcopy(NUBANK)
     fatura["transacoes"].append({
-        "data": "2026-06-20", "descricao": "Estorno de Blacktag",
+        "data": "2026-06-20", "descricao": "Estorno de Vexora",
         "valor_brl": "-50.00", "tipo": "compra",
         "parcela": None, "portador_final": None, "internacional": None,
     })
@@ -182,7 +182,7 @@ def test_estorno_abate_o_total_da_fatura_importada(session, as_user, users, cart
             Transacao.tipo == "despesa",
         )
     ).all()
-    parcela_ancora = Decimal("105.26")  # parcela 4/7 na âncora
+    parcela_ancora = Decimal("120.00")  # parcela 4/7 na âncora
     bruto = sum((Decimal(str(t.valor)) for t in avulsas_despesa), parcela_ancora)
 
     total = total_fatura_cartao(session, users[0].id, cartoes[0].id, 7, 2026)

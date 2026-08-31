@@ -58,13 +58,13 @@ def test_rendimento_e_saldos_normalizam_e_preservam_sinal():
     extrato = ExtratoExtraido.model_validate(
         {
             "banco": "Nubank",
-            "saldo_inicial": "-58,95",
+            "saldo_inicial": "-60,00",
             "saldo_final": "R$ 1.234,56",
             "rendimento": "4,56",
             "linhas": [],
         }
     )
-    assert extrato.saldo_inicial == "-58.95"  # conta negativa preserva sinal
+    assert extrato.saldo_inicial == "-60.00"  # conta negativa preserva sinal
     assert extrato.saldo_final == "1234.56"
     assert extrato.rendimento == "4.56"
 

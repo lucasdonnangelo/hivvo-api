@@ -27,12 +27,12 @@ from app.models.pagamento_fatura import PagamentoFatura
 from app.models.transaction import Transacao
 from tests.fixtures.faturas_validadas import NUBANK
 
-# transacoes[0] da NUBANK é a Blacktag parcelada (4/7, 105.26). As demais são
+# transacoes[0] da NUBANK é a Vexora parcelada (4/7, 120.00). As demais são
 # avulsas/pagamento/ajuste.
 
 
 def _fatura(mes, ano, vencimento, indice):
-    """Uma NUBANK reancorada noutra competência, com a Blacktag no `indice`
+    """Uma NUBANK reancorada noutra competência, com a Vexora no `indice`
     daquele mês (mesmo total 7 e mesmo valor → mesma origem em abril)."""
     f = copy.deepcopy(NUBANK)
     f["competencia"] = {"mes": mes, "ano": ano}
@@ -41,7 +41,7 @@ def _fatura(mes, ano, vencimento, indice):
     return f
 
 
-# Julho 4/7 e agosto 5/7 — a MESMA Blacktag, origem abril nas duas.
+# Julho 4/7 e agosto 5/7 — a MESMA Vexora, origem abril nas duas.
 JULHO = _fatura(7, 2026, "2026-07-13", 4)
 AGOSTO = _fatura(8, 2026, "2026-08-13", 5)
 
@@ -81,7 +81,7 @@ def _avulsas(session):
     ).all()
 
 
-def _assert_uma_blacktag_completa(session):
+def _assert_uma_vexora_completa(session):
     """Uma transação parcelada, 7 parcelas no total (não 14), avulsas dos dois
     meses presentes — o estado-alvo do onboarding multi-mês."""
     parceladas = _parceladas(session)
@@ -110,12 +110,12 @@ def test_julho_depois_agosto_nao_duplica(session, as_user, users, cartao):
     r2 = _commit(client, cartao.id, AGOSTO)
     assert r2.status_code == 200
     # MUTAÇÃO-alvo: sem o guard de dedup (ou afrouxando a identidade), agosto
-    # criaria OUTRA Blacktag com 7 parcelas → _assert_uma_blacktag_completa
+    # criaria OUTRA Vexora com 7 parcelas → _assert_uma_vexora_completa
     # falharia (2 parceladas, 14 parcelas).
     assert r2.json()["parceladas_deduplicadas"] == 1
     assert r2.json()["parcelas_criadas"] == 0  # a parcelada pulou; só avulsas
 
-    _assert_uma_blacktag_completa(session)
+    _assert_uma_vexora_completa(session)
 
 
 def test_agosto_depois_julho_mesmo_resultado(session, as_user, users, cartao):
@@ -126,14 +126,14 @@ def test_agosto_depois_julho_mesmo_resultado(session, as_user, users, cartao):
     assert r2.status_code == 200
     assert r2.json()["parceladas_deduplicadas"] == 1
 
-    _assert_uma_blacktag_completa(session)
+    _assert_uma_vexora_completa(session)
 
 
 # --- Desempate por valor (colisão desc/total/origem, valores distintos) ------
 
-def _fatura_duas_blacktag(mes, ano, vencimento, indice):
+def _fatura_duas_vexora(mes, ano, vencimento, indice):
     """Duas parceladas colidindo em desc/total/origem, mas valores distintos
-    (105.26 e 200.00) — compras genuinamente diferentes."""
+    (120.00 e 200.00) — compras genuinamente diferentes."""
     f = _fatura(mes, ano, vencimento, indice)
     segunda = copy.deepcopy(f["transacoes"][0])
     segunda["valor_brl"] = "200.00"
@@ -143,16 +143,16 @@ def _fatura_duas_blacktag(mes, ano, vencimento, indice):
 
 def test_desempate_por_valor_mantem_duas(session, as_user, users, cartao):
     client = as_user(users[0])
-    r1 = _commit(client, cartao.id, _fatura_duas_blacktag(7, 2026, "2026-07-13", 4))
+    r1 = _commit(client, cartao.id, _fatura_duas_vexora(7, 2026, "2026-07-13", 4))
     assert r1.status_code == 200
     parceladas = _parceladas(session)
     assert len(parceladas) == 2  # valores distintos → duas transações
     valores = sorted(Decimal(str(p.valor)) for p in parceladas)
-    assert valores == [Decimal("736.82"), Decimal("1400.00")]  # 105.26×7, 200×7
+    assert valores == [Decimal("840.00"), Decimal("1400.00")]  # 120.00×7, 200×7
 
     # Cross-fatura: agosto relista as DUAS (5/7) → o valor desempata cada uma
     # contra a sua no snapshot → ambas dedupam, nenhuma nova.
-    r2 = _commit(client, cartao.id, _fatura_duas_blacktag(8, 2026, "2026-08-13", 5))
+    r2 = _commit(client, cartao.id, _fatura_duas_vexora(8, 2026, "2026-08-13", 5))
     assert r2.status_code == 200
     assert r2.json()["parceladas_deduplicadas"] == 2
     assert len(_parceladas(session)) == 2
@@ -165,7 +165,7 @@ def test_duas_identicas_mesma_fatura_materializam_ambas(
 ):
     client = as_user(users[0])
     fatura = copy.deepcopy(JULHO)
-    # Blacktag IDÊNTICA (mesma desc/total/origem/VALOR) repetida na MESMA fatura.
+    # Vexora IDÊNTICA (mesma desc/total/origem/VALOR) repetida na MESMA fatura.
     fatura["transacoes"].append(copy.deepcopy(fatura["transacoes"][0]))
 
     r = _commit(client, cartao.id, fatura)
@@ -185,11 +185,11 @@ def test_pagamento_passada_com_parcelada_pulada_aceita(
     session, as_user, users, cartao
 ):
     client = as_user(users[0])
-    # Julho materializa a Blacktag: parcelas em 04..10/2026 (05/2026 SÓ existe
+    # Julho materializa a Vexora: parcelas em 04..10/2026 (05/2026 SÓ existe
     # por ela — não há avulsa em maio).
     assert _commit(client, cartao.id, JULHO).status_code == 200
 
-    # Agosto DEDUPA a Blacktag (não recria 05/2026 neste request). Ainda assim,
+    # Agosto DEDUPA a Vexora (não recria 05/2026 neste request). Ainda assim,
     # marcar 05/2026 paga é aceito: a competência tem lançamento EXISTENTE
     # (< âncora 08) de julho. A regra antiga ("só o que ESTE import criou")
     # rejeitaria — é a MUTAÇÃO-alvo do gate de pagamento.

@@ -80,12 +80,12 @@ Regras de interpretação:
   * total_iof_periodo: o total de IOF do ciclo SE o banco mostrar separado; senão "0.00"
     (quando o IOF já está embutido no total de compras).
   * total_a_pagar: o líquido a pagar da fatura (pode embutir saldo anterior e pagamentos).
-  Exemplos reais:
-  * Itaú junta tudo: "Total dos lançamentos atuais R$93,95" -> total_compras_periodo="93.95",
+  Exemplos (formatos reais, valores ilustrativos):
+  * Itaú junta tudo: "Total dos lançamentos atuais R$88,40" -> total_compras_periodo="88.40",
     total_iof_periodo="0.00"; "Total desta fatura R$0,00" (já quitada) -> total_a_pagar="0.00".
-  * Nubank separa: "Total de compras ... R$202,65" -> total_compras_periodo="202.65";
-    "IOF de compras internacionais R$3,41" -> total_iof_periodo="3.41";
-    "Total a pagar R$206,06" -> total_a_pagar="206.06".
+  * Nubank separa: "Total de compras ... R$230,00" -> total_compras_periodo="230.00";
+    "IOF de compras internacionais R$3,85" -> total_iof_periodo="3.85";
+    "Total a pagar R$233,85" -> total_a_pagar="233.85".
   * NÃO confunda com "Total da fatura anterior", "Fatura anterior" ou "Saldo financiado" —
     são de ciclos passados e JAMAIS entram nesses campos.
 

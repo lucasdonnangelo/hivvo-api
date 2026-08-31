@@ -228,8 +228,32 @@ The claim was struck through and replaced with the measurement, plus an explicit
 note that the behaviour has to be re-checked rather than assumed when the
 surrounding conditions change.
 
-**Configuration you can see is not protection you have.** That sentence cost a
-measurement to earn, which is exactly why it is written down.
+That note came due. The repositories were made public, and the same ruleset —
+untouched, not one field changed — began to apply. A direct push to `master` was
+refused on both, by the server:
+
+```
+remote: error: GH013: Repository rule violations found for refs/heads/master.
+remote: - Required status check "pytest" is expected.
+ ! [remote rejected] master -> master (push declined due to repository rule violations)
+```
+
+That is `hivvo-api`; `hivvo-web` refused the same way, naming its own context,
+`lint + test + build`. One detail there is the distinction this whole case is
+about: on `hivvo-web` the local pre-push hook had just passed — 7 files, 65
+tests, build in about ten seconds — and the server refused the push anyway.
+**The hook is not what blocks; the rule is.** A green local run says nothing
+about whether the remote will take the commit.
+
+Note what did *not* happen in either act: nobody edited the ruleset. It was
+inert while the repository was private and it is enforced now, from the same
+configuration, because what changed was a condition outside it. That is the
+uncomfortable part — a settings page cannot show you either direction, and only
+the attempt can.
+
+**Configuration you can see is not protection you have — until you measure it
+again.** That sentence cost two measurements to earn, one in each direction,
+which is exactly why it is written down.
 
 ---
 

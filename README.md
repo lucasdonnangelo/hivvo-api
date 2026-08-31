@@ -234,13 +234,31 @@ fully pinned. CI recompiles it from the intent files and **exits non-zero if the
 result differs from what is committed** — before installing anything, so a lock
 that has drifted from its declared intent never reaches the suite.
 
-**What that gate does *not* do, stated precisely.** It reports; it does not
-block. A branch ruleset is configured and shows as active, but repository
-rulesets are not enforced on private repositories under the free plan — measured
-rather than assumed, by a force push that went through on both repositories with
-no bypass. So today the red is informational and the discipline is the
-enforcement. That changes when these repositories become public and the ruleset
-begins to apply, which is a thing to **re-measure then**, not presume.
+**What that gate does, stated precisely.** It reports *and*, since this
+repository was opened, it blocks. The branch ruleset on `master` was inert while
+the repository was private — repository rulesets are not applied to private
+repositories under the free plan, measured at the time by a force push that went
+through with no bypass. Going public switched it on, and that too was **measured
+rather than assumed**: a direct push of a documentation commit to `master`, in
+August 2026, was refused by the server.
+
+```
+remote: error: GH013: Repository rule violations found for refs/heads/master.
+remote: - Required status check "pytest" is expected.
+ ! [remote rejected] master -> master (push declined due to repository rule violations)
+```
+
+Three rules apply to `master`. Two of them, `deletion` and `non_fast_forward`,
+are declared by the ruleset and close the history against erasure and rewriting;
+neither was exercised here, so they are reported as configuration, not as
+behaviour observed. The third, `required_status_checks`, requires the `pytest`
+context — the job above, which means the lock drift gate guards `master` too,
+since it runs inside that job and fails it — and it is the one the refusal above
+measured: a commit whose required check has not passed does not reach `master`
+by direct push. So work lands through a branch and a pull request, merged once
+the check is green.
+
+There is no `pull_request` rule, so review is not required here; the check is.
 
 ### Mutation verification
 

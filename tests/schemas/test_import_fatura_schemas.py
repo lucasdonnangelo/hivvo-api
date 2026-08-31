@@ -17,7 +17,7 @@ from app.schemas.import_fatura import (
     [
         ("3.412,88", "3412.88"),
         ("3412.88", "3412.88"),
-        ("-58,95", "-58.95"),
+        ("-60,00", "-60.00"),
         ("R$ 1.234,56", "1234.56"),
         ("0,00", "0.00"),
     ],
@@ -78,15 +78,15 @@ def test_fatura_normaliza_totais_declarados():
         {
             "banco": "Sintético",
             "competencia": {"mes": 7, "ano": 2026},
-            "total_a_pagar": "206,06",
-            "total_compras_periodo": "R$ 202,65",
-            "total_iof_periodo": "3,41",
+            "total_a_pagar": "233,85",
+            "total_compras_periodo": "R$ 230,00",
+            "total_iof_periodo": "3,85",
             "transacoes": [],
         }
     )
-    assert fatura.total_a_pagar == "206.06"
-    assert fatura.total_compras_periodo == "202.65"
-    assert fatura.total_iof_periodo == "3.41"
+    assert fatura.total_a_pagar == "233.85"
+    assert fatura.total_compras_periodo == "230.00"
+    assert fatura.total_iof_periodo == "3.85"
 
 
 def test_fatura_rejeita_campo_obrigatorio_ausente():

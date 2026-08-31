@@ -161,34 +161,49 @@ prove every npm version builds an identical tree — two of the five would insta
 resolve platform-optional dependencies. Not a defect, but not something to
 assume either.
 
-### Secret scanning: one known historical finding, deliberately kept
+### Secret scanning: two known historical findings, deliberately kept
 
-`gitleaks detect` over the full history of this repository reports **one**
-finding, and it is expected. It is a self-declared test placeholder assigned to
-`SECRET_KEY` in `.claude/skills/verify/SKILL.md`, in a commit from 9 July 2026.
-The value names itself as an end-to-end test key and then counts in hexadecimal.
-It is not a credential, has never been one, and grants access to nothing.
+`gitleaks detect` over the full history reports **two** findings in this
+repository and **one** in the frontend. Measured 31 August 2026, version 8.30.1.
+None of them is a credential.
 
-The literal is deliberately **not** reproduced in this paragraph. The first
-draft quoted it in full, and the scan that was supposed to confirm a clean tree
-flagged this file instead — documenting a false positive had manufactured a
-second one. Describing the shape carries the same information at none of the
-cost.
+| Repo | Rule | File | Commit | Date |
+|---|---|---|---|---|
+| `hivvo-api` | `generic-api-key` | `.claude/skills/verify/SKILL.md`, line 17 | `f49faf51` | 9 Jul 2026 |
+| `hivvo-api` | `generic-api-key` | `docs/ENGINEERING.md`, line 168 | `5ee5ae93` | 28 Aug 2026 |
+| `hivvo-web` | `generic-api-key` | `docs/ENGINEERING.md`, line 168 | `1eef70f3` | 28 Aug 2026 |
 
-The current tree is clean: the placeholder was rewritten to
-`<qualquer-string-de-32-chars>`, which no longer trips the `generic-api-key`
-rule. A scan of the working tree finds nothing in any tracked file, in either
-repository. The frontend repository reports zero findings against its full
-history as well.
+The first is a self-declared test placeholder: it names itself an end-to-end
+test key and then counts upward in hexadecimal. It never granted access to
+anything.
 
-**The decision was not to rewrite history to remove it**, and the reasoning is
-the point:
+**The second and third are this section.** An earlier draft of this very
+paragraph quoted the placeholder in full to explain it, which put the matching
+string into a documentation file — and the scan meant to confirm a clean tree
+flagged the explanation. The sync to the frontend repository then copied the
+new finding into a second history. Documenting a false positive manufactured
+two more, one of them across a repo boundary.
+
+That is why nothing here reproduces the literal, or a variant of it, or a
+similar-looking example. Each finding is identified only by rule, path, line
+and commit. The shape is described in prose because prose does not match the
+rule.
+
+The working tree is clean in both repositories: the placeholder was rewritten
+to a self-describing angle-bracket phrase that no longer trips
+`generic-api-key`, and a working-tree scan finds nothing in any **tracked**
+file. (A `--no-git` scan of the backend checkout reports findings in `.venv/`
+and `.env`; both are git-ignored and untracked, so neither is published.)
+
+**The decision was not to rewrite history to remove them**, and the reasoning
+is the point:
 
 - Rewriting is the expensive operation, not the finding. This history was
   already rewritten once with `git filter-repo`, and the documentation now cites
   commit SHAs that were repaired to match. A second rewrite would invalidate
-  them again — this time with the SHAs already published from a public
-  repository.
+  them again — and these SHAs have since been handed to a company. It would also
+  need `non_fast_forward` switched off on `master`, contradicting the section
+  above within days of publishing it.
 - The alternative of a `.gitleaksignore` was rejected too. An exception file is
   maintenance, and the day it hides a real finding is the day nobody notices,
   because a suppression list is exactly what stops being read.
@@ -196,9 +211,10 @@ the point:
   filesystem scan confirms it: the two findings in that file are the production
   values, and they have never been in a commit.
 
-So the finding stays, and this paragraph is why. **A scanner that reports one
-known, explained result is more useful than one silenced into always reporting
-zero** — the first can still surprise you, and the second cannot.
+So the findings stay, and this section is why. **A scanner that reports three
+known, explained results is more useful than one silenced into always reporting
+zero** — the first can still surprise you, and the second cannot. The count is
+allowed to be inconvenient; what it is not allowed to be is arranged.
 
 ---
 

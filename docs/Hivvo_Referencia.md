@@ -206,7 +206,7 @@ hivvo-web/
 6. Valores monetários: sempre `toFixed(2)` no JS
 7. JWT nunca em localStorage — apenas httpOnly cookie ou memória
 
-> **Pendências cross-repo (ver §8):** quando o backend mover para `/api/v1` e mudar o contrato de listagem para envelope paginado, a base URL e os serviços do frontend mudam junto. A página de reset de senha precisa parar de deixar o token na URL.
+> **Pendências cross-repo (ver §8):** quando o backend mover para `/api/v1` e mudar o contrato de listagem para envelope paginado, a base URL e os serviços do frontend mudam junto. ✅ **Resolvido (FE-04):** a página de reset de senha já não deixa o token na URL — `ResetPasswordPage.tsx` captura o token uma única vez no estado inicial e limpa a query com `history.replaceState` no primeiro efeito, tirando-o do histórico e do `Referer`. Este doc já descreveu isso como pendente depois de corrigido.
 
 ---
 
@@ -272,7 +272,7 @@ hivvo-api/
 >
 > † **`/statistics/yearly` — candidato a aposentadoria (13/07/2026):** com o `/evolution` (série histórica do Resumo), o yearly perde o papel de "evolução mensal" — mas **não são equivalentes** (yearly = FLUXO em ano-calendário fixo; evolution = CONSUMO em horizonte relativo). Neste repo só testes/docs o referenciam. **Não remover** antes de confirmar que o hivvo-web não o consome.
 >
-> ‡ **`DELETE /auth/me` existe no backend desde sempre** (`app/routers/auth.py`, exige `{password}` → `204`) — este doc já o listou como "planejado", o que era falso. O que **não** existe é a exposição na UI: nenhuma tela chama a rota. Ver `PLANO_PERFIL_CONFIG.md` (§ INVENTÁRIO) — a exclusão de conta é feature de UI pendente, não de API.
+> ‡ **`DELETE /auth/me` existe no backend desde sempre** (`app/routers/auth.py`, exige `{password}` → `204`) — este doc já o listou como "planejado", o que era falso. A exposição na UI, que este doc depois descreveu como pendente, também já existe: Configurações → **Meus dados** chama `handleDeleteAccount` (`SettingsPage.tsx`), que vai em `deleteMe` (`services/auth.ts`) → `api.delete('/auth/me')`, com reautenticação por senha (F-07/LGPD). É o fluxo que a Política de Privacidade §8 promete. Ver `PLANO_PERFIL_CONFIG.md` (§ INVENTÁRIO).
 
 ### 5.1 Importação de fatura e extrato por PDF (29/07/2026)
 

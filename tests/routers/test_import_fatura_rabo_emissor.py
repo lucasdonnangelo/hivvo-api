@@ -177,7 +177,7 @@ def test_remove_o_rabo_do_emissor(bruta, esperada):
         "LOJA S.A",  # sigla curta: o mínimo de 4 letras a protege
         "VICEMALOTERIASLTDA SaoPaulo",  # LIMITE CONHECIDO: sem ponto, não mexe
         "IFD*40827151VICTORMA",
-        "Blacktag",
+        "Vexora",
     ],
 )
 def test_nao_come_descricao_legitima(descricao):
